@@ -4,4 +4,13 @@
    <FileRef
       location = "self:">
    </FileRef>
+   <FileRef
+      location = "group:Longhorn Artists Connect 3.entitlements">
+   </FileRef>
+   <FileRef
+      location = "group:CKRecord+Helpers.swift">
+   </FileRef>
+   <FileRef
+      location = "group:CloudKitTransitionAdapter.swift">
+   </FileRef>
 </Workspace>

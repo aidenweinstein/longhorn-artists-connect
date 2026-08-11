@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Xcode user-specific state (per-developer, not source)
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+
+# Build products / derived data
+build/
+DerivedData/
+*.app
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Dependency managers (not used, kept for safety)
+Pods/
+Carthage/Build/
