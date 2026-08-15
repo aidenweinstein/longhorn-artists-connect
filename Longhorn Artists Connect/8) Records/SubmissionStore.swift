@@ -474,14 +474,29 @@ class SubmissionStore_3_2: ObservableObject {
     /// in CloudKit and was deleted there" (remove locally). Persisted, not published.
     private var syncedRecordIDs: Set<UUID> = []
 
-    /// IDs of posts created on this device whose upload to CloudKit hasn't been
-    /// confirmed yet. Added the moment a post is created (`add`) and removed only
-    /// once a save succeeds. This is the *authoritative* "still needs uploading"
-    /// signal: during sync, a post CloudKit doesn't have is re-uploaded only if it's
-    /// in this set — otherwise its absence means it was deleted server-side (e.g. from
-    /// the CloudKit Dashboard) and it's dropped locally so the deletion sticks.
-    /// Persisted, not published.
-    private var pendingUploadIDs: Set<UUID> = []
+    /// IDs of posts whose upload to CloudKit hasn't been confirmed yet. Added the
+    /// moment a post is created (`add`) and removed once a save succeeds. Drives the
+    /// feed's "hide until uploaded" behavior (`visibleApprovedSubmissions`). Persisted
+    /// so a post shown mid-upload stays hidden across a relaunch.
+    @Published private var pendingUploadIDs: Set<UUID> = []
+
+    /// IDs of posts created (or explicitly retried) *in this app session* that still
+    /// need uploading. This is deliberately **in-memory only**: it's the sole signal
+    /// that authorizes re-uploading a post CloudKit doesn't have. CloudKit is the
+    /// master copy, so on a fresh launch/build this set is empty and any locally-cached
+    /// post the server doesn't have is dropped rather than resurrected — a post deleted
+    /// from CloudKit stays deleted, instead of a stale local copy re-uploading itself
+    /// forever. Genuine offline/failed uploads are still retried within the session
+    /// that created them.
+    private var sessionUploadIDs: Set<UUID> = []
+
+    /// Approved posts that are safe to show in the browse feeds: everything whose
+    /// CloudKit upload has confirmed. A post is withheld while it's still uploading
+    /// (its ID is in `pendingUploadIDs`) so a half-uploaded post never appears on the
+    /// main pages — the Home upload banner surfaces its progress in the meantime.
+    var visibleApprovedSubmissions: [Submission] {
+        approvedSubmissions.filter { !pendingUploadIDs.contains($0.id) }
+    }
 
     /// IDs of posts the user has soft-deleted in the app. They're hidden from the
     /// Home and Discover feeds but kept in the moderator "Deleted" section. This is
@@ -817,6 +832,9 @@ class SubmissionStore_3_2: ObservableObject {
         // the save is confirmed in `saveSubmissionToCloudKit`.
         pendingUploadIDs.insert(approvedSubmission.id)
         savePendingUploadIDs()
+        // Authorize re-upload retries for this post, but only for the current session —
+        // so it's never resurrected on a later launch if it ends up absent from CloudKit.
+        sessionUploadIDs.insert(approvedSubmission.id)
 
         // 🌐 Save to CloudKit for sharing with all users, tracking progress so the
         // submission form can show a live upload wheel → checkmark.
@@ -963,6 +981,11 @@ class SubmissionStore_3_2: ObservableObject {
             submissions.append(hidden)
         }
 
+        // Record the hide locally so it survives even if the CloudKit write below never
+        // sticks (the record belongs to another account, or the save errors). Without
+        // this, the next sync sees the server copy still approved and repopulates it.
+        hiddenSubmissionIDs.insert(submission.id)
+
         let entry = HistoryEntry(
             action: HistoryAction.deleted,
             submissionId: hidden.id,
@@ -974,6 +997,7 @@ class SubmissionStore_3_2: ObservableObject {
 
         saveSubmissions()
         saveHistory()
+        saveHiddenSubmissionIDs()
 
         // Sync the hidden state so the post disappears for everyone.
         Task {
@@ -1012,10 +1036,16 @@ class SubmissionStore_3_2: ObservableObject {
 
     /// Permanently removes a post from local storage AND CloudKit (irreversible).
     func permanentlyDelete(_ submission: Submission) {
-        hiddenSubmissionIDs.remove(submission.id)
-        saveHiddenSubmissionIDs()
         submissions.removeAll { $0.id == submission.id }
         approvedSubmissions.removeAll { $0.id == submission.id }
+
+        // Keep it in the hidden set for now. We only clear that safety net once CloudKit
+        // confirms the record is gone — otherwise a delete that can't go through (the
+        // record belongs to another account, or CloudKit is offline) would let the next
+        // sync pull the still-approved server copy right back into the feed.
+        hiddenSubmissionIDs.insert(submission.id)
+        // Don't let the session's re-upload path resurrect it either.
+        sessionUploadIDs.remove(submission.id)
 
         let entry = HistoryEntry(
             action: HistoryAction.deleted,
@@ -1028,9 +1058,17 @@ class SubmissionStore_3_2: ObservableObject {
 
         saveSubmissions()
         saveHistory()
+        saveHiddenSubmissionIDs()
 
         Task {
-            await deleteSubmissionFromCloudKit(submission)
+            let deleted = await deleteSubmissionFromCloudKit(submission)
+            if deleted {
+                // Server copy is gone, so the local hide flag is no longer needed.
+                hiddenSubmissionIDs.remove(submission.id)
+                syncedRecordIDs.remove(submission.id)
+                saveHiddenSubmissionIDs()
+                saveSyncedRecordIDs()
+            }
         }
     }
 
@@ -1351,11 +1389,19 @@ class SubmissionStore_3_2: ObservableObject {
                     }
                 }
                 
-                // Reconcile local submissions that aren't in CloudKit.
-                // A post missing from CloudKit is EITHER a brand-new local post that
-                // hasn't finished uploading (keep + retry) OR a post that used to be in
-                // CloudKit and was deleted there (drop it locally so deletions stick).
-                // `syncedRecordIDs` tells the two apart.
+                // Reconcile local submissions that aren't in this fetch.
+                //
+                // A single fetch is NOT authoritative about what's been deleted: the
+                // feed query pulls full video/audio assets, and a transient asset
+                // download failure (or CloudKit's index lag right after a write, e.g.
+                // just after deleting a post) silently drops otherwise-present records
+                // from the result. Trusting that to declare a server-side delete is
+                // exactly what made whole feeds vanish and then reappear on the next
+                // sync. So for ANY locally-cached post missing from the fetch, we keep
+                // it for now and verify it per-record with a lightweight `recordExists`
+                // lookup (see `reconcileMissingLocalSubmission`), which is immune to the
+                // query/asset issues above. Genuine deletes still stick — they just get
+                // confirmed one cycle later instead of guessed.
                 print("🔍 Reconciling local-only submissions...")
                 for localSubmission in submissions {
                     if !cloudSubmissionIDs.contains(localSubmission.id) {
@@ -1365,14 +1411,7 @@ class SubmissionStore_3_2: ObservableObject {
                             if !updatedPending.contains(where: { $0.id == localSubmission.id }) {
                                 updatedPending.append(localSubmission)
                             }
-                        } else if syncedRecordIDs.contains(localSubmission.id) {
-                            print("🗑️  Pending submission was deleted from CloudKit, removing locally: \(localSubmission.title)")
-                            syncedRecordIDs.remove(localSubmission.id)
                         } else {
-                            // `syncedRecordIDs` says we never confirmed this on the server,
-                            // but that set is a local heuristic that can drift. Verify with
-                            // a direct lookup before re-uploading so we don't resurrect a
-                            // deleted record (nor drop a genuine offline-created post).
                             updatedPending.append(localSubmission)
                             Task { await reconcileMissingLocalSubmission(localSubmission) }
                         }
@@ -1384,12 +1423,7 @@ class SubmissionStore_3_2: ObservableObject {
                         // A soft-deleted post should never sit in the approved feed.
                         if hiddenSubmissionIDs.contains(localApproved.id) {
                             continue
-                        } else if syncedRecordIDs.contains(localApproved.id) {
-                            print("🗑️  Approved submission was deleted from CloudKit, removing locally: \(localApproved.title)")
-                            syncedRecordIDs.remove(localApproved.id)
                         } else {
-                            // Same safety net as the pending branch: confirm against the
-                            // server before trusting the local "never synced" heuristic.
                             updatedApproved.append(localApproved)
                             Task { await reconcileMissingLocalSubmission(localApproved) }
                         }
@@ -1417,13 +1451,13 @@ class SubmissionStore_3_2: ObservableObject {
     /// return and that `syncedRecordIDs` has no record of syncing.
     ///
     /// Instead of blindly re-uploading (which resurrects records deleted straight from
-    /// the CloudKit Dashboard) we ask the server directly, then use `pendingUploadIDs`
-    /// to disambiguate the "confirmed absent" case:
+    /// the CloudKit Dashboard) we ask the server directly, then decide:
     ///   - present → it exists after all; record it as synced, no re-upload.
-    ///   - absent + pending upload → a post we created that never finished uploading
-    ///     (e.g. made offline); upload it.
-    ///   - absent + NOT pending → it was uploaded before and has since been deleted
-    ///     server-side; drop it locally so the deletion sticks.
+    ///   - absent + created/retried THIS session → a post we're actively trying to
+    ///     upload that never finished (e.g. made offline); upload it.
+    ///   - absent + not from this session → CloudKit is the master copy and doesn't
+    ///     have it, so drop it locally. This covers a post deleted from CloudKit *and* a
+    ///     stale local copy left over from a past session/build: neither is resurrected.
     ///   - unknown → couldn't reach CloudKit; leave it alone and let the next sync decide.
     @MainActor
     private func reconcileMissingLocalSubmission(_ submission: Submission) async {
@@ -1436,11 +1470,11 @@ class SubmissionStore_3_2: ObservableObject {
                 savePendingUploadIDs()
             }
         case .some(false):
-            if pendingUploadIDs.contains(submission.id) {
+            if sessionUploadIDs.contains(submission.id) {
                 print("⚠️  Pending-upload submission confirmed absent, uploading: \(submission.title)")
                 await saveSubmissionToCloudKit(submission)
             } else {
-                print("🗑️  '\(submission.title)' is absent from CloudKit and not awaiting upload — deleted server-side, removing locally")
+                print("🗑️  '\(submission.title)' is absent from CloudKit (deleted server-side or a stale local copy) — removing locally; CloudKit is the master copy")
                 removeSubmissionLocally(submission.id)
             }
         case .none:
@@ -1455,6 +1489,7 @@ class SubmissionStore_3_2: ObservableObject {
         submissions.removeAll { $0.id == id }
         approvedSubmissions.removeAll { $0.id == id }
         syncedRecordIDs.remove(id)
+        sessionUploadIDs.remove(id)
         if pendingUploadIDs.remove(id) != nil {
             savePendingUploadIDs()
         }
@@ -1519,7 +1554,8 @@ class SubmissionStore_3_2: ObservableObject {
             syncedRecordIDs.insert(submission.id)
             saveSyncedRecordIDs()
             // Upload confirmed, so it's no longer awaiting one. (On failure we leave it
-            // in the set so the next sync retries instead of dropping it.)
+            // in the set so the current session retries instead of dropping it.)
+            sessionUploadIDs.remove(submission.id)
             if pendingUploadIDs.remove(submission.id) != nil {
                 savePendingUploadIDs()
             }
@@ -1567,6 +1603,10 @@ class SubmissionStore_3_2: ObservableObject {
         // Flip the tracked state back to "uploading" immediately so the UI reacts
         // before the async save starts reporting progress.
         UploadProgressCenter.shared.begin(submission.id, title: submission.title, type: submission.type)
+        // An explicit retry re-authorizes this post for upload in the current session.
+        pendingUploadIDs.insert(submission.id)
+        savePendingUploadIDs()
+        sessionUploadIDs.insert(submission.id)
         Task {
             await saveSubmissionToCloudKit(submission, trackProgress: true)
         }
@@ -1580,19 +1620,24 @@ class SubmissionStore_3_2: ObservableObject {
         retryUpload(submission)
     }
 
-    /// Delete a submission from CloudKit
+    /// Delete a submission from CloudKit. Returns `true` if the record was removed
+    /// server-side, `false` if CloudKit was unavailable or the delete failed (e.g. the
+    /// record belongs to another account and can't be deleted from here).
     @MainActor
-    func deleteSubmissionFromCloudKit(_ submission: Submission) async {
+    @discardableResult
+    func deleteSubmissionFromCloudKit(_ submission: Submission) async -> Bool {
         guard cloudKitAdapter.isAvailable else {
             print("⚠️ CloudKit not available")
-            return
+            return false
         }
-        
+
         do {
             try await cloudKitAdapter.deleteSubmission(submission)
             print("✅ Deleted submission from CloudKit: \(submission.title)")
+            return true
         } catch {
             print("❌ Failed to delete from CloudKit: \(error.localizedDescription)")
+            return false
         }
     }
     
