@@ -21,3 +21,6 @@ DerivedData/
 # Dependency managers (not used, kept for safety)
 Pods/
 Carthage/Build/
+
+# Secrets — real API tokens live here, never commit (see Secrets.example.plist)
+Secrets.plist
