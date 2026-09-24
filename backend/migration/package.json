@@ -1,0 +1,26 @@
+{
+  "name": "nexus-cloudkit-migration",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "One-off CloudKit -> Supabase migration for Nexus (Longhorn Artists Connect).",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "export": "tsx src/export.ts",
+    "load": "tsx src/load.ts",
+    "verify": "tsx src/verify.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "p-limit": "^6.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

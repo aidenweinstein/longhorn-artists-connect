@@ -22,5 +22,24 @@ DerivedData/
 Pods/
 Carthage/Build/
 
-# Secrets — real API tokens live here, never commit (see Secrets.example.plist)
+# Secrets — real API tokens live here, never commit (see Secrets.example.plist / Secrets.example.xcconfig)
 Secrets.plist
+Secrets.xcconfig
+
+# Keys — the CloudKit server-to-server private key can write verification
+# records for any user. Never commit any PEM.
+*.pem
+*.p8
+*.key
+
+# Cloudflare Worker local state
+.wrangler/
+.dev.vars
+
+# Web app (see NEXUS_WEB_PLAN.md)
+web/.secrets/
+node_modules/
+.next/
+.vercel/
+*.tsbuildinfo
+.env.local

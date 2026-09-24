@@ -1,0 +1,40 @@
+name = "lac-verification"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+
+# Nightly sweep: 07:00 UTC (~2am Central).
+[triggers]
+crons = ["0 7 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "lac-verification"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+CK_CONTAINER = "iCloud.LAA.Longhorn-Artists-Connect"
+CK_ENVIRONMENT = "production"
+# The domain has no MX record, so replies to this address bounce. Keep it
+# no-reply until a forwarding mailbox exists (the email body says not to reply).
+MAIL_FROM = "no-reply@collegeartistsconnect.org"
+MAIL_FROM_NAME = "Longhorn Artists Connect"
+# Sweep action: "report" writes findings to the Quarantine record type and logs them.
+# "delete" actually removes offending records. Start on "report".
+SWEEP_ACTION = "report"
+# Unix seconds. Posts created before this are exempt from the sweep. Set this
+# to your verification launch date so existing users aren't swept away.
+SWEEP_GRANDFATHER_BEFORE = "0"
+# Flip to "true" once App Attest is implemented (see README "Follow-ups").
+APP_ATTEST_REQUIRED = "false"
+# School slug the schoolID backfill assigns to posts whose creator has no
+# verification on file (the grandfathered accounts). Must match
+# SchoolScope.legacyDefault in the app.
+BACKFILL_DEFAULT_SCHOOL = "ut-austin"
+
+# Secrets — set with `wrangler secret put <NAME>`, never commit:
+#   CK_KEY_ID          CloudKit server-to-server key ID
+#   CK_PRIVATE_KEY     PKCS#8 PEM of the server-to-server private key
+#   CODE_PEPPER        random 32+ byte string, used to HMAC verification codes
+#   RESEND_API_KEY     Resend API key
+#   ADMIN_TOKEN        bearer token for /v1/admin/*; leave unset to disable
+#                      those routes entirely (they 404 without it)

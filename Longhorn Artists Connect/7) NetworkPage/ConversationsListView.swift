@@ -10,6 +10,8 @@ import CloudKit
 
 struct ConversationsListView: View {
     @StateObject private var messageStore = MessageStore.shared
+    @ObservedObject private var blockManager = BlockedUsersManager.shared
+    @ObservedObject private var convoPrefs = ConversationPreferencesManager.shared
     @State private var isLoading = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -21,9 +23,9 @@ struct ConversationsListView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if isLoading && messageStore.conversations.isEmpty {
+                if isLoading && visibleConversations.isEmpty {
                     ProgressView("Loading conversations...")
-                } else if messageStore.conversations.isEmpty {
+                } else if visibleConversations.isEmpty {
                     ContentUnavailableView(
                         "No Messages",
                         systemImage: "message",
@@ -51,6 +53,9 @@ struct ConversationsListView: View {
                 Text(errorMessage)
             }
             .task {
+                // Ask for notification permission in context — the first time the user
+                // opens Messages — rather than cold at launch/onboarding.
+                PushAuthorization.request()
                 await loadConversations()
             }
             .refreshable {
@@ -60,28 +65,49 @@ struct ConversationsListView: View {
     }
     
     // MARK: - View Components
-    
+
+    /// Threads to show: the store's visible conversations minus any with a blocked
+    /// participant, with pinned threads sorted to the top and the rest by recency.
+    private var visibleConversations: [Conversation] {
+        let uid = currentUserID ?? ""
+        return messageStore.visibleConversations
+            .filter { !blockManager.isBlocked($0.otherParticipant(for: uid)) }
+            .sorted { a, b in
+                let aPinned = convoPrefs.isPinned(a.otherParticipant(for: uid))
+                let bPinned = convoPrefs.isPinned(b.otherParticipant(for: uid))
+                if aPinned != bPinned { return aPinned }   // pinned threads first
+                // then most-recent first
+                return (a.lastMessageTimestamp ?? .distantPast) > (b.lastMessageTimestamp ?? .distantPast)
+            }
+    }
+
     private var conversationsList: some View {
         List {
-            ForEach(messageStore.conversations) { conversation in
+            ForEach(visibleConversations) { conversation in
                 NavigationLink {
                     destinationView(for: conversation)
                 } label: {
                     ConversationRow(
                         conversation: conversation,
                         userInfo: userInfo(for: conversation),
-                        currentUserID: currentUserID
+                        currentUserID: currentUserID,
+                        // Per-user unread, derived from local messages (not the shared
+                        // Conversation.unreadCount field, which can't be per-participant).
+                        unreadCount: messageStore.unreadCount(for: conversation.id),
+                        isPinned: convoPrefs.isPinned(conversation.otherParticipant(for: currentUserID ?? "")),
+                        isMuted: convoPrefs.isMuted(conversation.otherParticipant(for: currentUserID ?? ""))
                     )
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        // TODO: Implement delete
+                    Button {
+                        messageStore.clearConversation(conversation.id)
                     } label: {
-                        Label("Delete", systemImage: "trash")
+                        Label("Clear", systemImage: "xmark.circle")
                     }
+                    .tint(.gray)
                 }
                 .swipeActions(edge: .leading) {
-                    if conversation.unreadCount > 0 {
+                    if messageStore.unreadCount(for: conversation.id) > 0 {
                         Button {
                             Task {
                                 await markAsRead(conversation)
@@ -203,7 +229,12 @@ struct ConversationRow: View {
     let conversation: Conversation
     let userInfo: UserDisplayInfo
     let currentUserID: String?
-    
+    /// Per-user unread count, derived from local messages by the parent list. Drives
+    /// the unread badge — replaces the shared `Conversation.unreadCount` field.
+    var unreadCount: Int = 0
+    var isPinned: Bool = false
+    var isMuted: Bool = false
+
     var body: some View {
         HStack(spacing: 12) {
             // Profile placeholder
@@ -216,16 +247,29 @@ struct ConversationRow: View {
                         .fontWeight(.medium)
                         .foregroundStyle(Color.brandOrange)
                 }
-            
+
             // Conversation info
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(userInfo.name)
                         .font(.headline)
                         .foregroundStyle(.primary)
-                    
+
+                    if isMuted {
+                        Image(systemName: "bell.slash.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Spacer()
-                    
+
+                    if isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(45))
+                    }
+
                     if let timestamp = conversation.lastMessageTimestamp {
                         Text(formatTimestamp(timestamp))
                             .font(.caption)
@@ -247,9 +291,9 @@ struct ConversationRow: View {
             }
             
             // Unread indicator
-            if conversation.unreadCount > 0 {
+            if unreadCount > 0 {
                 VStack {
-                    Badge(count: conversation.unreadCount)
+                    Badge(count: unreadCount)
                     Spacer()
                 }
             }
