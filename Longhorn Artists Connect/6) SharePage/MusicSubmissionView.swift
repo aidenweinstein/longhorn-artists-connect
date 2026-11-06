@@ -12,7 +12,6 @@ struct MusicSubmissionView: View {
     // MARK: - Bindings from Parent
     @Binding var title: String
     @Binding var artist: String
-    @Binding var category: String
     @Binding var selectedGenres: Set<String>
     @Binding var releaseYear: String
     @Binding var explicitRating: Bool
@@ -24,8 +23,8 @@ struct MusicSubmissionView: View {
     @Binding var soundcloudLink: String
     @Binding var lyrics: String
     @Binding var selectedAudioURL: URL?
-    /// EP/Album only: the additional audio tracks beyond `selectedAudioURL`, which stays
-    /// track 1. Ignored (and cleared) by the Song and Performance categories.
+    /// The additional audio tracks beyond `selectedAudioURL`, which stays track 1. Every
+    /// release can carry as many tracks as it likes.
     @Binding var additionalAudioURLs: [URL]
     @Binding var selectedAlbumCoverData: Data?
     @Binding var selectedMusicVideoURL: URL?
@@ -39,8 +38,7 @@ struct MusicSubmissionView: View {
     // MARK: - Local State
     @State private var showAlbumCoverPicker = false
     @State private var showAlbumCoverDocumentPicker = false
-    @State private var showAudioDocumentPicker = false
-    /// Files picker for an additional EP/Album track.
+    /// Files picker for the next track on the release.
     @State private var showExtraTrackPicker = false
     @State private var showMusicVideoPicker = false
     @State private var showMusicVideoDocumentPicker = false
@@ -48,7 +46,15 @@ struct MusicSubmissionView: View {
     @State private var showGenreSelection = false
     @State private var showStreamingLinksForm = false
     @State private var showLyricsForm = false
-    
+    /// Photos picker for the album cover.
+    @State private var showAlbumCoverPhotoPicker = false
+    @State private var albumCoverPhotoItem: PhotosPickerItem?
+    /// The open crop editor, if any (album cover or music video).
+    @State private var cropRequest: MediaCropRequest?
+    /// Set when the user trashes the existing audio while editing, so the row reads as
+    /// empty even though an already-posted file may not be on disk to hold a URL for.
+    @State private var existingAudioRemoved = false
+
     // MARK: - Constants
     private let availableGenres = [
         "Pop", "Rock", "Hip Hop", "R&B", "Country",
@@ -56,9 +62,6 @@ struct MusicSubmissionView: View {
         "Reggae", "Metal", "Punk", "Soul", "Funk",
         "Latin", "Gospel", "Indie", "Alternative"
     ]
-    /// What kind of music release this post is. Stored as the raw string so older
-    /// records (which have no category) simply read back as empty.
-    private let availableCategories = ["Song", "EP", "Album", "Performance"]
     /// Selectable release years: next year down through nine years back (e.g. 2027…2017).
     private var releaseYears: [String] {
         let current = Calendar.current.component(.year, from: Date())
@@ -79,43 +82,29 @@ struct MusicSubmissionView: View {
     /// other field behaves exactly as it does when creating a post.
     var isEditing: Bool = false
 
-    // MARK: - Category-Driven Fields
+    /// Editing only: set once CloudKit confirms the post has no `musicAudio` asset, so
+    /// the audio row offers "Select audio file" instead of claiming a file is attached.
+    var existingAudioMissing: Bool = false
 
-    /// EP and Album releases hold a whole tracklist; Song and Performance hold one track.
-    private var isMultiTrackRelease: Bool { category == "EP" || category == "Album" }
-    /// A live performance isn't on the streaming services, so it has no links.
-    private var showsStreamingLinks: Bool { category != "Performance" }
-    /// Lyrics belong to a single song, not to a release or a performance.
-    private var showsLyrics: Bool { category == "Song" }
+    // MARK: - Tracklist
 
     /// Every track on the release in running order: the primary audio file first, then
-    /// the additional EP/Album tracks.
+    /// the additional tracks.
     private var allTrackURLs: [URL] {
         (selectedAudioURL.map { [$0] } ?? []) + additionalAudioURLs
     }
 
     var body: some View {
         List {
-            // Category first, and on its own until it's chosen: it decides whether the
-            // release takes one track or a tracklist, and which extras it carries.
-            Section("Category") { categoryMenu }
+            Section("Upload") { uploadSection }
 
-            if !category.isEmpty {
-                Section("Upload") { uploadSection }
-
-                if uploadPhase == nil {
-                    detailsSection
-                    if showsStreamingLinks || showsLyrics { otherSection }
-                }
+            if uploadPhase == nil {
+                detailsSection
+                otherSection
             }
         }
         .scrollContentBackground(.hidden)
         .background(Color(.systemGray6))
-        // Switching to a single-track category drops any extra tracks, so they can't be
-        // silently submitted with a Song or a Performance.
-        .onChange(of: category) { _, _ in
-            if !isMultiTrackRelease { additionalAudioURLs.removeAll() }
-        }
         .navigationDestination(isPresented: $showCreditsForm) {
             MusicCreditsFormView(recordingCredits: $recordingCredits, productionCredits: $productionCredits)
         }
@@ -132,11 +121,6 @@ struct MusicSubmissionView: View {
         }
         .navigationDestination(isPresented: $showGenreSelection) {
             MusicGenreSelectionView(selectedGenres: $selectedGenres, availableGenres: availableGenres)
-        }
-        .sheet(isPresented: $showAudioDocumentPicker) {
-            DocumentPickerView(allowedTypes: [.audio]) { result in
-                onAudioPickerResult(result)
-            }
         }
         .sheet(isPresented: $showExtraTrackPicker) {
             DocumentPickerView(allowedTypes: [.audio]) { result in
@@ -163,6 +147,19 @@ struct MusicSubmissionView: View {
                 onMusicVideoSelected(result)
             }
         }
+        .photosPicker(isPresented: $showAlbumCoverPhotoPicker, selection: $albumCoverPhotoItem, matching: .images)
+        .onChange(of: albumCoverPhotoItem) { _, item in
+            guard let item else { return }
+            MediaDownloadCenter.shared.beginImageLoad()
+            Task {
+                let data = try? await item.loadTransferable(type: Data.self)
+                await MainActor.run {
+                    if let data { onAlbumCoverSelected(data) }
+                    MediaDownloadCenter.shared.finishImageLoad()
+                }
+            }
+        }
+        .mediaCropper($cropRequest)
     }
 
     // MARK: - Tracklist Editing
@@ -171,7 +168,9 @@ struct MusicSubmissionView: View {
     /// single-track playback and the CloudKit `musicAudio` asset keep working unchanged),
     /// every one after that becomes an additional track.
     private func addTrack(_ url: URL) {
-        if selectedAudioURL == nil {
+        // While editing, a posted track 1 that isn't on disk still holds its slot, so a
+        // new pick is an additional track rather than a replacement.
+        if selectedAudioURL == nil && !hasExistingAudioOffDisk {
             onAudioPickerResult(.success(url))
         } else {
             additionalAudioURLs.append(url)
@@ -195,58 +194,8 @@ struct MusicSubmissionView: View {
         if let uploadPhase {
             MediaUploadStatusView(phase: uploadPhase, onRetry: onRetryUpload)
         } else {
-        // Audio: a tracklist for an EP/Album, a single file otherwise.
-        if isMultiTrackRelease {
-            trackListRows
-        } else if isUploadingAudio {
-            HStack {
-                ProgressView()
-                    .padding(.trailing, 8)
-                Text("Uploading audio...")
-                    .foregroundStyle(.secondary)
-            }
-        } else if selectedAudioURL != nil || isEditing {
-            HStack(spacing: 12) {
-                Image(systemName: "waveform")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, alignment: .center)
-                Text("Audio file selected")
-                    .foregroundStyle(.secondary)
-                // Checkmark to the right of the audio text once it's uploaded.
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
-                Spacer()
-                if true { // media pickers available when creating and editing
-                    Button {
-                        showAudioDocumentPicker = true
-                    } label: {
-                        Label("Replace", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-                }
-            }
-        } else {
-            HStack(spacing: 12) {
-                Image(systemName: "waveform")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, alignment: .center)
-                Text("Select audio file")
-                    .foregroundStyle(.primary)
-                Spacer()
-
-                Button {
-                    showAudioDocumentPicker = true
-                } label: {
-                    Label("Files", systemImage: "folder")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.bordered)
-                .tint(.primary)
-            }
-        }
+        // Audio: the release's tracklist, one row per song plus an "add" row.
+        trackListRows
 
         // Album Cover
         VStack(alignment: .leading, spacing: 8) {
@@ -268,37 +217,24 @@ struct MusicSubmissionView: View {
 
                 Spacer()
 
-                if true { // media pickers available when creating and editing
-                    PhotosPicker(selection: Binding(
-                        get: { nil },
-                        set: { item in
-                            if let item = item {
-                                MediaDownloadCenter.shared.beginImageLoad()
-                                Task {
-                                    let data = try? await item.loadTransferable(type: Data.self)
-                                    await MainActor.run {
-                                        if let data { onAlbumCoverSelected(data) }
-                                        MediaDownloadCenter.shared.finishImageLoad()
-                                    }
+                UploadPickerButtons(
+                    hasSelection: selectedAlbumCoverData != nil,
+                    onPhotos: { showAlbumCoverPhotoPicker = true },
+                    onFiles: { showAlbumCoverDocumentPicker = true },
+                    onCrop: selectedAlbumCoverData.flatMap(UIImage.init).map { image in
+                        {
+                            cropRequest = .image(image) { cropped in
+                                if let data = cropped.jpegData(compressionQuality: 0.9) {
+                                    onAlbumCoverSelected(data)
                                 }
                             }
                         }
-                    ), matching: .images) {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
+                    },
+                    onRemove: {
+                        selectedAlbumCoverData = nil
+                        albumCoverPhotoItem = nil
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showAlbumCoverDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-                }
+                )
             }
             }
         }
@@ -307,91 +243,79 @@ struct MusicSubmissionView: View {
         VStack(alignment: .leading, spacing: 8) {
             if !isEditing, let fraction = downloadCenter.fraction {
                 DownloadProgressRow(fraction: fraction)
-            } else if selectedMusicVideoURL != nil {
-                HStack {
-                    // First frame of the music video, scaled to fit within the row.
-                    UploadRowThumbnail(image: musicVideoThumbnail, placeholderSystemName: "video")
-                    Text("Music video attached")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if true { // media pickers available when creating and editing
-                        Button {
-                            showMusicVideoPicker = true
-                        } label: {
-                            Label("Replace", systemImage: "photo")
-                                .labelStyle(.iconOnly)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.primary)
-
-                        Button {
-                            showMusicVideoDocumentPicker = true
-                        } label: {
-                            Label("Replace", systemImage: "folder")
-                                .labelStyle(.iconOnly)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.primary)
-                    }
-                }
             } else {
                 HStack(spacing: 12) {
-                    UploadRowThumbnail(image: nil, placeholderSystemName: "film")
-                        .frame(width: 24, alignment: .center)
-                    Text("Select music video")
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    Button {
-                        showMusicVideoPicker = true
-                    } label: {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
+                    if let selectedMusicVideoURL {
+                        // First frame of the music video, scaled to fit within the row.
+                        UploadRowThumbnail(image: musicVideoThumbnail, placeholderSystemName: "video")
+                        Text("Music video attached")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        UploadPickerButtons(
+                            hasSelection: true,
+                            onCrop: {
+                                cropRequest = .video(preview: musicVideoThumbnail, load: { selectedMusicVideoURL }) {
+                                    onMusicVideoSelected(.success($0))
+                                }
+                            },
+                            onRemove: {
+                                self.selectedMusicVideoURL = nil
+                                musicVideoThumbnail = nil
+                            }
+                        )
+                    } else {
+                        UploadRowThumbnail(image: nil, placeholderSystemName: "film")
+                            .frame(width: 24, alignment: .center)
+                        Text("Select music video")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        UploadPickerButtons(
+                            hasSelection: false,
+                            onPhotos: { showMusicVideoPicker = true },
+                            onFiles: { showMusicVideoDocumentPicker = true },
+                            onRemove: {}
+                        )
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showMusicVideoDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
                 }
             }
         }
         }
     }
 
-    /// One row per track on an EP/Album, plus the row that adds another. Track 1 is the
+    /// Editing only: the already-posted primary track when there's no local copy to hold
+    /// a URL for. It still counts as track 1 unless the user trashed it or CloudKit has
+    /// no audio for the post.
+    private var hasExistingAudioOffDisk: Bool {
+        isEditing && selectedAudioURL == nil && !existingAudioRemoved && !existingAudioMissing
+    }
+
+    /// How many tracks the release currently holds, counting a posted track 1 that
+    /// isn't on disk.
+    private var trackCount: Int {
+        allTrackURLs.count + (hasExistingAudioOffDisk ? 1 : 0)
+    }
+
+    /// One row per track on the release, plus the row that adds another. Track 1 is the
     /// primary audio file; the rest live in `additionalAudioURLs`.
     @ViewBuilder
     private var trackListRows: some View {
+        if hasExistingAudioOffDisk {
+            trackRow(number: 1, name: "Audio file attached") {
+                existingAudioRemoved = true
+            }
+        }
+
+        // Numbering continues after a posted track 1 that only lives in CloudKit.
+        let numberOffset = hasExistingAudioOffDisk ? 1 : 0
         ForEach(Array(allTrackURLs.enumerated()), id: \.offset) { index, url in
-            HStack(spacing: 12) {
-                Image(systemName: "waveform")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, alignment: .center)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Track \(index + 1)")
-                        .foregroundStyle(.primary)
-                    Text(url.lastPathComponent)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer()
-                Button {
+            trackRow(number: index + 1 + numberOffset, name: url.lastPathComponent) {
+                if hasExistingAudioOffDisk {
+                    // Every local URL is an additional track here, since track 1 is the
+                    // posted file; removing one must not promote anything to primary.
+                    additionalAudioURLs.remove(at: index)
+                } else {
                     removeTrack(at: index)
-                } label: {
-                    Image(systemName: "minus.circle.fill")
-                        .foregroundStyle(.red)
                 }
-                .buttonStyle(.plain)
             }
         }
 
@@ -408,10 +332,10 @@ struct MusicSubmissionView: View {
             Image(systemName: "waveform")
                 .foregroundStyle(.secondary)
                 .frame(width: 24, alignment: .center)
-            Text(allTrackURLs.isEmpty ? "Select songs" : "Add another song")
+            Text(trackCount == 0 ? "Select song(s)" : "Add another song")
                 .foregroundStyle(.primary)
-            if !allTrackURLs.isEmpty {
-                Text("\(allTrackURLs.count)")
+            if trackCount > 0 {
+                Text("\(trackCount)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.brandOrange)
             }
@@ -424,6 +348,31 @@ struct MusicSubmissionView: View {
             }
             .buttonStyle(.bordered)
             .tint(.primary)
+        }
+    }
+
+    /// A single tracklist row: waveform icon, "Track N" with the file name beneath, and
+    /// a remove button.
+    private func trackRow(number: Int, name: String, onRemove: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "waveform")
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .center)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Track \(number)")
+                    .foregroundStyle(.primary)
+                Text(name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button(action: onRemove) {
+                Image(systemName: "minus.circle.fill")
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -440,13 +389,32 @@ struct MusicSubmissionView: View {
                 showGenreSelection = true
             } label: {
                 HStack {
-                    Text("Genres")
+                    Text("Genre(s)")
                         .foregroundStyle(.primary)
                     Spacer()
                     Text(selectedGenres.isEmpty ? "Select" : selectedGenres.sorted().joined(separator: ", "))
                         .lineLimit(1)
                         .foregroundStyle(Color.brandOrange)
                     Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color.brandOrange)
+                }
+            }
+            .buttonStyle(.plain)
+
+            // The class or organization behind the release. No music classes/orgs are
+            // offered yet, so "None" is the only option for now.
+            Menu {
+                Button("None") {}
+            } label: {
+                HStack {
+                    Text("Class/Org")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text("None")
+                        .lineLimit(1)
+                        .foregroundStyle(Color.brandOrange)
+                    Image(systemName: "chevron.up.chevron.down")
                         .font(.caption)
                         .foregroundStyle(Color.brandOrange)
                 }
@@ -507,80 +475,42 @@ struct MusicSubmissionView: View {
 
     // MARK: - Other
 
-    /// Streaming links (every category except a live Performance) and lyrics (a single
-    /// Song only). Hidden entirely when the category carries neither.
-    @ViewBuilder
+    /// Streaming links and lyrics, both optional on every release.
     private var otherSection: some View {
         Section("Other") {
-            if showsStreamingLinks {
-                Button {
-                    showStreamingLinksForm = true
-                } label: {
-                    HStack {
-                        Text("Streaming Links")
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        let hasLinks = !spotifyLink.isEmpty || !appleMusicLink.isEmpty || !youtubeMusicLink.isEmpty || !soundcloudLink.isEmpty
-                        Text(hasLinks ? "Edited" : "Add")
-                            .foregroundStyle(Color.brandOrange)
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(Color.brandOrange)
-                    }
+            Button {
+                showStreamingLinksForm = true
+            } label: {
+                HStack {
+                    Text("Streaming Links")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    let hasLinks = !spotifyLink.isEmpty || !appleMusicLink.isEmpty || !youtubeMusicLink.isEmpty || !soundcloudLink.isEmpty
+                    Text(hasLinks ? "Edited" : "Add")
+                        .foregroundStyle(Color.brandOrange)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color.brandOrange)
                 }
-                .buttonStyle(.plain)
             }
+            .buttonStyle(.plain)
 
-            if showsLyrics {
-                Button {
-                    showLyricsForm = true
-                } label: {
-                    HStack {
-                        Text("Lyrics")
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Text(lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Add" : "Edited")
-                            .foregroundStyle(Color.brandOrange)
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(Color.brandOrange)
-                    }
+            Button {
+                showLyricsForm = true
+            } label: {
+                HStack {
+                    Text("Lyrics")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(lyrics.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Add" : "Edited")
+                        .foregroundStyle(Color.brandOrange)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(Color.brandOrange)
                 }
-                .buttonStyle(.plain)
             }
+            .buttonStyle(.plain)
         }
-    }
-
-    // MARK: - Category
-
-    private var categoryMenu: some View {
-        Menu {
-            ForEach(availableCategories, id: \.self) { option in
-                Button {
-                    category = option
-                } label: {
-                    HStack {
-                        Text(option)
-                        if category == option {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Text("Category")
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(category.isEmpty ? "Select Category" : category)
-                    .lineLimit(1)
-                    .foregroundStyle(Color.brandOrange)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
-            }
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -757,6 +687,8 @@ struct MusicEditView: View {
     /// Track which file assets the user replaced so `save()` copies/re-uploads them.
     @State private var audioWasReplaced = false
     @State private var musicVideoWasReplaced = false
+    /// True once CloudKit confirms the post was published without its audio asset.
+    @State private var existingAudioMissing = false
 
     init(submission: Submission, onSave: @escaping (Submission) -> Void) {
         self.submission = submission
@@ -776,7 +708,6 @@ struct MusicEditView: View {
             MusicSubmissionView(
                 title: $edited.title,
                 artist: $edited.artist,
-                category: $edited.musicCategory,
                 selectedGenres: $selectedGenres,
                 releaseYear: $releaseYear,
                 explicitRating: $edited.explicit,
@@ -801,8 +732,10 @@ struct MusicEditView: View {
                 },
                 onAlbumCoverSelected: { data in selectedAlbumCoverData = data },
                 onMusicVideoSelected: { result in handleMusicVideoPick(result) },
-                isEditing: true
+                isEditing: true,
+                existingAudioMissing: existingAudioMissing
             )
+            .task { await checkExistingAudio() }
             .navigationTitle("Edit Music")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -817,6 +750,18 @@ struct MusicEditView: View {
             }
         }
         .presentationDragIndicator(.hidden)
+    }
+
+    /// Asks CloudKit whether the post actually has its audio asset — the same lookup the
+    /// music card uses — when there's no local copy to vouch for it. Only a definite
+    /// "asset missing" flips the row; a network or lookup error keeps assuming the file
+    /// is there rather than inviting a needless re-upload.
+    private func checkExistingAudio() async {
+        guard selectedAudioURL == nil else { return }
+        let resolution = await CloudKitManager.shared.streamResolution(submissionID: submission.id, type: .music)
+        if case .assetMissing = resolution {
+            existingAudioMissing = true
+        }
     }
 
     /// A newly-picked music video during editing: preview its first frame and remember
@@ -869,16 +814,12 @@ struct MusicEditView: View {
 }
 
 #Preview {
-    // Category-backed state rather than a constant, so the canvas can switch between
-    // Song / EP / Album / Performance and exercise the fields each one shows.
-    @Previewable @State var category = "Song"
     @Previewable @State var additionalAudioURLs: [URL] = []
 
     NavigationStack {
         MusicSubmissionView(
             title: .constant(""),
             artist: .constant(""),
-            category: $category,
             selectedGenres: .constant([]),
             releaseYear: .constant(""),
             explicitRating: .constant(false),

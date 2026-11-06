@@ -70,7 +70,7 @@ nonisolated enum MediaUploadError: LocalizedError {
              "photographyThumbnail", "designThumbnail": return "cover image"
         case "musicCover":                          return "cover art"
         case "filmBTS":                             return "behind-the-scenes photo"
-        case "filmStills":                          return "still"
+        case "filmStills", "reelStills":            return "still"
         case "photographyImages":                   return "photo"
         case "designImages":                        return "image"
         default:                                    return "media file"
@@ -128,6 +128,7 @@ struct Film: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .film }
@@ -159,12 +160,18 @@ struct Film: MediaItem {
     
     // Studio
     var studio: String = ""
-    
+
+    /// Release year (4-digit string, empty if unset).
+    var releaseYear: String = ""
+
     // Media files
     var videoFileName: String?
 
     /// Video length in seconds. Synced so the duration badge shows on every device.
     var videoDuration: Double?
+
+    /// Playback crop for the video (`VideoCrop` string), applied by the player.
+    var videoCrop: String?
 
     // Film extras — a separate trailer video plus any number of BTS photos / stills.
     // Stored as deterministic file names (resolved via `mediaFileURL`), like `videoFileName`.
@@ -217,9 +224,12 @@ struct Film: MediaItem {
         record["filmLogline"] = logline as CKRecordValue
         record["filmAgeRating"] = ageRating as CKRecordValue
         record["filmStudio"] = studio as CKRecordValue
+        record["filmReleaseYear"] = releaseYear as CKRecordValue
         record["filmExplicit"] = (explicit ? 1 : 0) as CKRecordValue
         record["filmFestivalBound"] = (festivalBound ? 1 : 0) as CKRecordValue
-        
+        // Always written (empty = no crop) so removing a crop overwrites the server value.
+        record["filmVideoCrop"] = (videoCrop ?? "") as CKRecordValue
+
         // Always write, even when empty, so an edit that clears a field overwrites the
         // server value. The save uses a blind `.allKeys` policy (no fetch-merge), which
         // only overwrites keys present on the record — so omitting a key leaves the old
@@ -258,7 +268,10 @@ struct Film: MediaItem {
                     inputURL: videoURL,
                     outputURL: tempVideoURL
                 ) { progress in
-                    print("📊 Film compression progress: \(Int(progress * 100))%")
+                    // Show the encode on the form's ring as "Preparing video…".
+                    Task { @MainActor in
+                        UploadProgressCenter.shared.reportPreparing(recordName: id.uuidString, fraction: progress)
+                    }
                 }
 
                 let videoAsset = try uploadAsset(at: finalVideoURL, field: "filmVideo")
@@ -288,7 +301,9 @@ struct Film: MediaItem {
                     inputURL: trailerURL,
                     outputURL: tempTrailerURL
                 ) { progress in
-                    print("📊 Film trailer compression progress: \(Int(progress * 100))%")
+                    Task { @MainActor in
+                        UploadProgressCenter.shared.reportPreparing(recordName: id.uuidString, fraction: progress)
+                    }
                 }
                 record["filmTrailer"] = try uploadAsset(at: finalTrailerURL, field: "filmTrailer")
             } catch {
@@ -329,6 +344,7 @@ struct Film: MediaItem {
         film.submittedBy = record.getString("submittedBy") ?? "Anonymous"
         film.createdDate = record.getDate("createdDate") ?? Date()
         film.lastEditedDate = record.getDate("lastEditedDate")
+        film.schoolID = record.getString("schoolID")
         
         // Film-specific fields - using schema field names
         film.logline = record.getString("filmLogline") ?? ""
@@ -336,6 +352,7 @@ struct Film: MediaItem {
         film.explicit = (record.getInt("filmExplicit") ?? 0) == 1
         film.festivalBound = (record.getInt("filmFestivalBound") ?? 0) == 1
         film.studio = record.getString("filmStudio") ?? ""
+        film.releaseYear = record.getString("filmReleaseYear") ?? ""
         
         // Genres - using schema field name
         if let genresArray = record["filmGenres"] as? [String] {
@@ -366,6 +383,7 @@ struct Film: MediaItem {
         }
         
         film.videoDuration = record.getDouble("filmVideoDuration")
+        film.videoCrop = record.getString("filmVideoCrop").flatMap { $0.isEmpty ? nil : $0 }
 
         // Download video (or reuse an already-downloaded copy if this fetch didn't
         // include the asset — see `persistCloudKitAsset`).
@@ -421,6 +439,7 @@ struct Music: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .music }
@@ -442,6 +461,8 @@ struct Music: MediaItem {
     /// What kind of release this is — "Song", "EP", "Album" or "Performance".
     /// Empty on records created before the category picker existed.
     var category: String = ""
+    /// Release year (4-digit string, empty if unset).
+    var releaseYear: String = ""
     var genres: [String] = []
     var explicit: Bool = false
     
@@ -511,6 +532,7 @@ struct Music: MediaItem {
         
         // Music-specific fields - using schema field names
         record["musicArtist"] = artist as CKRecordValue
+        record["musicReleaseYear"] = releaseYear as CKRecordValue
         // `musicCategory` does not exist in the deployed MusicSubmission schema in
         // either environment, and one unknown field fails the whole atomic save — the
         // same gap that sank photography credits and the event lineup fields. Writing
@@ -616,7 +638,9 @@ struct Music: MediaItem {
                     inputURL: videoURL,
                     outputURL: tempVideoURL
                 ) { progress in
-                    print("📊 Music video compression progress: \(Int(progress * 100))%")
+                    Task { @MainActor in
+                        UploadProgressCenter.shared.reportPreparing(recordName: id.uuidString, fraction: progress)
+                    }
                 }
                 
                 let videoAsset = try uploadAsset(at: finalVideoURL, field: "musicVideo")
@@ -652,9 +676,11 @@ struct Music: MediaItem {
         music.submittedBy = record.getString("submittedBy") ?? "Anonymous"
         music.createdDate = record.getDate("createdDate") ?? Date()
         music.lastEditedDate = record.getDate("lastEditedDate")
+        music.schoolID = record.getString("schoolID")
         
         // Music-specific fields - using schema field names
         music.artist = record.getString("musicArtist") ?? ""
+        music.releaseYear = record.getString("musicReleaseYear") ?? ""
         music.explicit = (record.getInt("musicExplicit") ?? 0) == 1
         
         // Genres - using schema field name
@@ -745,6 +771,7 @@ struct Reel: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .reel }
@@ -774,7 +801,11 @@ struct Reel: MediaItem {
     /// The reel's headline artist/creator, shown under the title (mirrors music's Artist).
     var artist: String = ""
 
-    // Crew credits
+    /// Release year (4-digit string, empty if unset).
+    var releaseYear: String = ""
+
+    // Cast and crew credits
+    var orderedCast: [OrderedEntry] = []
     var orderedCrew: [OrderedEntry] = []
 
     // Media files
@@ -782,10 +813,21 @@ struct Reel: MediaItem {
     /// The reel video's length in seconds, persisted so the duration badge shows on the
     /// feed even on devices that haven't downloaded the video (mirrors film/music).
     var videoDuration: Double?
+    /// Playback crop for the video (`VideoCrop` string), applied by the player.
+    var videoCrop: String?
 
     var videoURL: URL? {
         guard let videoFileName = videoFileName else { return nil }
         return FileManager.default.mediaFileURL(named: videoFileName)
+    }
+
+    /// Production stills on an Actor/Dance Showcase reel, stored as deterministic file
+    /// names (`<id>_still_<n>.jpg`) like the film's stills.
+    var stillImageFileNames: [String] = []
+
+    /// Local URLs of the stills currently on disk (missing files skipped).
+    var stillImageURLs: [URL] {
+        stillImageFileNames.compactMap { FileManager.default.mediaFileURL(named: $0) }
     }
 
     // MARK: - CloudKit Conversion
@@ -818,6 +860,10 @@ struct Reel: MediaItem {
         // `.allKeys` save leaves omitted keys at their stale server value.
         record["orderedCrew"] = orderedCrew.map { "\($0.role): \($0.name)" } as CKRecordValue
         record["orderedCrewIDs"] = orderedCrew.map { $0.profileID ?? "" } as CKRecordValue
+        // Cast in the same shape as crew ("role: name" plus a parallel profile-ID
+        // array), always written for the same overwrite-on-edit reason.
+        record["orderedCast"] = orderedCast.map { "\($0.role): \($0.name)" } as CKRecordValue
+        record["orderedCastIDs"] = orderedCast.map { $0.profileID ?? "" } as CKRecordValue
 
         // Featured Work post IDs. Always written (even empty) so removing the last one
         // during an edit overwrites the server — the blind `.allKeys` save leaves omitted
@@ -828,6 +874,9 @@ struct Reel: MediaItem {
         record["featuredWorkManual"] = featuredWorkManual as CKRecordValue
 
         record["reelArtist"] = artist as CKRecordValue
+        record["reelReleaseYear"] = releaseYear as CKRecordValue
+        // Always written (empty = no crop) so removing a crop overwrites the server value.
+        record["reelVideoCrop"] = (videoCrop ?? "") as CKRecordValue
 
         // Video asset - using schema field name
         if let videoURL = videoURL {
@@ -853,7 +902,9 @@ struct Reel: MediaItem {
                     inputURL: videoURL,
                     outputURL: tempVideoURL
                 ) { progress in
-                    print("📊 Reel compression progress: \(Int(progress * 100))%")
+                    Task { @MainActor in
+                        UploadProgressCenter.shared.reportPreparing(recordName: id.uuidString, fraction: progress)
+                    }
                 }
 
                 let videoAsset = try uploadAsset(at: finalVideoURL, field: "reelVideo")
@@ -872,7 +923,16 @@ struct Reel: MediaItem {
             )
             record["reelThumbnail"] = try uploadAsset(at: uploadURL, field: "reelThumbnail")
         }
-        
+
+        // Showcase stills — an Asset List field (each image downscaled before upload),
+        // mirroring the film's "filmStills". Omitted from the feed; fetched on demand.
+        let stillAssets = try stillImageURLs.enumerated().map { index, url in
+            try uploadAsset(at: downscaledImageForUpload(
+                at: url, maxDimension: 2000, tempName: "\(id.uuidString)_still_\(index).jpg"
+            ), field: "reelStills")
+        }
+        if !stillAssets.isEmpty { record["reelStills"] = stillAssets as CKRecordValue }
+
         return record
     }
     
@@ -889,13 +949,28 @@ struct Reel: MediaItem {
         reel.submittedBy = record.getString("submittedBy") ?? "Anonymous"
         reel.createdDate = record.getDate("createdDate") ?? Date()
         reel.lastEditedDate = record.getDate("lastEditedDate")
+        reel.schoolID = record.getString("schoolID")
         
         reel.reelType = record.getString("reelType") ?? ""
         reel.reelDescription = record.getString("reelDescription") ?? ""
         reel.featuredWorkIDs = record["featuredWork"] as? [String] ?? []
         reel.featuredWorkManual = record["featuredWorkManual"] as? [String] ?? []
         reel.artist = record.getString("reelArtist") ?? ""
+        reel.releaseYear = record.getString("reelReleaseYear") ?? ""
         reel.videoDuration = record.getDouble("reelVideoDuration")
+        reel.videoCrop = record.getString("reelVideoCrop").flatMap { $0.isEmpty ? nil : $0 }
+
+        // Parse cast from string array (profile IDs from parallel array)
+        if let castArray = record["orderedCast"] as? [String] {
+            let ids = record["orderedCastIDs"] as? [String]
+            reel.orderedCast = castArray.enumerated().compactMap { index, entry in
+                let parts = entry.split(separator: ":", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { return nil }
+                return OrderedEntry(role: parts[0].trimmingCharacters(in: .whitespaces),
+                                   name: parts[1].trimmingCharacters(in: .whitespaces),
+                                   profileID: creditProfileID(from: ids, at: index))
+            }
+        }
 
         // Parse crew from string array (profile IDs from parallel array)
         if let crewArray = record["orderedCrew"] as? [String] {
@@ -923,6 +998,17 @@ struct Reel: MediaItem {
             subdirectory: "thumbnails"
         )
 
+        // Showcase stills. The feed omits this heavy key (see FeedKeys), so it's only
+        // populated when the full record is fetched (e.g. `downloadReelStills`).
+        if let stillAssets = record["reelStills"] as? [CKAsset] {
+            reel.stillImageFileNames = stillAssets.enumerated().compactMap { index, asset in
+                FileManager.default.persistCloudKitAsset(
+                    asset, fileName: "\(id.uuidString)_still_\(index).jpg",
+                    baseDirectory: FileManager.default.mediaCacheDirectory
+                )
+            }
+        }
+
         return reel
     }
 }
@@ -937,6 +1023,7 @@ struct Photography: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?
 
     var mediaType: MediaType { .photography }
@@ -996,10 +1083,14 @@ struct Photography: MediaItem {
         record["photographyArtist"] = artist as CKRecordValue
         record["photographyReleaseYear"] = releaseYear as CKRecordValue
 
-        // Equipment (JSON blob; omitted when nothing was entered)
-        let equipmentJSON = equipment.jsonString
-        if !equipmentJSON.isEmpty {
-            record["photographyEquipment"] = equipmentJSON as CKRecordValue
+        // Equipment — a String List of "Label: value" entries in `photographyGear`.
+        // Not `photographyEquipment`: that field was deployed to Production as an Asset
+        // by mistake, and a deployed field can never be retyped or deleted, so it's
+        // left unused. Omitted when nothing was entered: an empty list has no
+        // inferable element type (see the credits below).
+        let equipmentEntries = equipment.listEntries
+        if !equipmentEntries.isEmpty {
+            record["photographyGear"] = equipmentEntries as CKRecordValue
         }
 
         // Credits — stored as parallel "role: name" and profile-ID string arrays,
@@ -1050,10 +1141,11 @@ struct Photography: MediaItem {
         photo.submittedBy = record.getString("submittedBy") ?? "Anonymous"
         photo.createdDate = record.getDate("createdDate") ?? Date()
         photo.lastEditedDate = record.getDate("lastEditedDate")
+        photo.schoolID = record.getString("schoolID")
         photo.artist = record.getString("photographyArtist") ?? ""
         photo.releaseYear = record.getString("photographyReleaseYear") ?? ""
-        if let equipmentJSON = record.getString("photographyEquipment") {
-            photo.equipment = EquipmentInfo(jsonString: equipmentJSON)
+        if let entries = record["photographyGear"] as? [String] {
+            photo.equipment = EquipmentInfo(listEntries: entries)
         }
 
         // Parse credits from the parallel "role: name" / profile-ID string arrays.
@@ -1119,6 +1211,7 @@ struct Design: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?
 
     var mediaType: MediaType { .design }
@@ -1149,6 +1242,8 @@ struct Design: MediaItem {
     /// post HAS a video without the (heavy) asset riding along with the feed fetch.
     /// Nil / zero means "no video".
     var videoDuration: Double?
+    /// Playback crop for the video (`VideoCrop` string), applied by the player.
+    var videoCrop: String?
 
     /// People credited on the piece, each a role + name (with an optional linked
     /// profile). Empty when none were added.
@@ -1175,10 +1270,14 @@ struct Design: MediaItem {
         record["designDescription"] = details as CKRecordValue
         record["isApproved"] = (isApproved ? 1 : 0) as CKRecordValue
         record["submittedBy"] = submittedBy as CKRecordValue
-        record["createdDate"] = createdDate as CKRecordValue
+        // Unlike the other post types, Design's dates live in `designCreatedDate` /
+        // `designLastEditedDate` (Date/Time). DesignSubmission's `createdDate` and
+        // `lastEditedDate` were deployed as STRING, and a deployed field can never be
+        // retyped or deleted, so those two are left unused.
+        record["designCreatedDate"] = createdDate as CKRecordValue
 
         if let lastEditedDate = lastEditedDate {
-            record["lastEditedDate"] = lastEditedDate as CKRecordValue
+            record["designLastEditedDate"] = lastEditedDate as CKRecordValue
         }
 
         if let userID = userRecordID?.recordName {
@@ -1187,6 +1286,8 @@ struct Design: MediaItem {
 
         record["designCategory"] = category as CKRecordValue
         record["designReleaseYear"] = releaseYear as CKRecordValue
+        // Always written (empty = no crop) so removing a crop overwrites the server value.
+        record["designVideoCrop"] = (videoCrop ?? "") as CKRecordValue
 
         // Credits — parallel "role: name" and profile-ID string arrays, like photography.
         //
@@ -1229,7 +1330,9 @@ struct Design: MediaItem {
                     inputURL: videoURL,
                     outputURL: tempVideoURL
                 ) { progress in
-                    print("📊 Design video compression progress: \(Int(progress * 100))%")
+                    Task { @MainActor in
+                        UploadProgressCenter.shared.reportPreparing(recordName: id.uuidString, fraction: progress)
+                    }
                 }
                 record["designVideo"] = try uploadAsset(at: finalVideoURL, field: "designVideo")
             } catch {
@@ -1259,10 +1362,12 @@ struct Design: MediaItem {
 
         design.isApproved = (record.getInt("isApproved") ?? 0) == 1
         design.submittedBy = record.getString("submittedBy") ?? "Anonymous"
-        design.createdDate = record.getDate("createdDate") ?? Date()
-        design.lastEditedDate = record.getDate("lastEditedDate")
+        design.createdDate = record.getDate("designCreatedDate") ?? Date()
+        design.lastEditedDate = record.getDate("designLastEditedDate")
+        design.schoolID = record.getString("schoolID")
         design.category = record.getString("designCategory") ?? ""
         design.releaseYear = record.getString("designReleaseYear") ?? ""
+        design.videoCrop = record.getString("designVideoCrop").flatMap { $0.isEmpty ? nil : $0 }
         design.videoDuration = record.getDouble("designVideoDuration")
 
         // Parse credits from the parallel "role: name" / profile-ID string arrays.
@@ -1331,6 +1436,7 @@ struct Project: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .project }
@@ -1351,6 +1457,9 @@ struct Project: MediaItem {
     var shootDates: String = ""
     var expectedReleaseDate: String = ""
     var genres: [String] = []
+    /// The organization or production class behind the project, the same values a film
+    /// stores in `Submission.studio`. Empty when unset.
+    var studio: String = ""
     
     // Needed positions
     var castNeeded: [String] = []
@@ -1363,6 +1472,11 @@ struct Project: MediaItem {
     /// The slideshow images shown in place of the poster on the detail view, in order.
     /// The poster stays the feed thumbnail and is shown last, after these.
     var slideImageFileNames: [String] = []
+
+    /// Where to sign up for an audition. Empty when unset.
+    var auditionURL: String = ""
+    /// Who to reach out to, one free-form line each.
+    var contacts: [String] = []
 
     /// Local URLs of the slideshow images currently on disk (missing files skipped).
     var slideImageURLs: [URL] {
@@ -1391,37 +1505,13 @@ struct Project: MediaItem {
         }
         
         // Project-specific fields - using schema field names
-        // CloudKit schema expects TIMESTAMP for projectShootStart, but we store it as String
-        // We need to convert the string to a Date
-        
-        if !shootDates.isEmpty {
-            // Try to parse the shootDates string as a date
-            // Expected formats from ProjectDate.dateString: "Mar 15, 2025" or "March 15, 2025"
-            let dateFormatter = DateFormatter()
-            dateFormatter.locale = Locale(identifier: "en_US_POSIX")  // Consistent parsing
-            
-            // Try short month format first: "Mar 15, 2025"
-            dateFormatter.dateFormat = "MMM d, yyyy"
-            if let date = dateFormatter.date(from: shootDates) {
-                record["projectShootStart"] = date as CKRecordValue
-                print("✅ Converted shoot date '\(shootDates)' to timestamp")
-            } else {
-                // Try full month format: "March 15, 2025"
-                dateFormatter.dateFormat = "MMMM d, yyyy"
-                if let date = dateFormatter.date(from: shootDates) {
-                    record["projectShootStart"] = date as CKRecordValue
-                    print("✅ Converted shoot date '\(shootDates)' to timestamp")
-                } else {
-                    // Try numeric format: "03/15/2025"
-                    dateFormatter.dateFormat = "MM/dd/yyyy"
-                    if let date = dateFormatter.date(from: shootDates) {
-                        record["projectShootStart"] = date as CKRecordValue
-                        print("✅ Converted shoot date '\(shootDates)' to timestamp")
-                    } else {
-                        print("⚠️ Could not parse shoot date '\(shootDates)' - skipping field")
-                    }
-                }
-            }
+        // `projectShootStart` is a TIMESTAMP: the first shoot day, taken from the text
+        // schedule (or a legacy "start - end" range). Loose text that doesn't parse just
+        // skips the field; the verbatim text written below is the source of truth.
+        if let firstShootDate = ShootSchedule.firstDate(in: shootDates) {
+            record["projectShootStart"] = firstShootDate as CKRecordValue
+        } else if !shootDates.isEmpty {
+            print("⚠️ Could not parse shoot date '\(shootDates)' - skipping field")
         }
         
         // Same for expectedReleaseDate
@@ -1499,6 +1589,16 @@ struct Project: MediaItem {
         }
         if !slideAssets.isEmpty { record["projectSlides"] = slideAssets as CKRecordValue }
 
+        // Audition link + contacts. Written only when filled in, for the same reason as
+        // the slides above: neither field is in the deployed schema yet, and naming an
+        // unknown field forces a drop-and-retry that re-uploads the poster and slides.
+        // Trade-off: clearing one on edit leaves the old server value in place until the
+        // fields exist and this can always write.
+        if !auditionURL.isEmpty { record["projectAuditionURL"] = auditionURL as CKRecordValue }
+        if !contacts.isEmpty { record["projectContacts"] = contacts as CKRecordValue }
+        // The org / class behind the project — same written-only-when-set rule.
+        if !studio.isEmpty { record["projectStudio"] = studio as CKRecordValue }
+
         // Thumbnail - using schema field name
         if let thumbnailURL = thumbnailURL,
            let thumbnailData = try? Data(contentsOf: thumbnailURL) {
@@ -1527,6 +1627,7 @@ struct Project: MediaItem {
         project.submittedBy = record.getString("submittedBy") ?? "Anonymous"
         project.createdDate = record.getDate("createdDate") ?? Date()
         project.lastEditedDate = record.getDate("lastEditedDate")
+        project.schoolID = record.getString("schoolID")
         
         // Project-specific fields - using schema field names
         // Prefer the verbatim text field (lossless for any format). Fall back to the
@@ -1577,6 +1678,12 @@ struct Project: MediaItem {
         if let genresArray = record["projectGenres"] as? [String] {
             project.genres = genresArray
         }
+
+        project.auditionURL = record.getString("projectAuditionURL") ?? ""
+        if let contactsArray = record["projectContacts"] as? [String] {
+            project.contacts = contactsArray
+        }
+        project.studio = record.getString("projectStudio") ?? ""
 
         // Parse assembled cast & crew from string arrays (profile IDs from parallel arrays)
         if let castAssembledArray = record["projectCastAssembled"] as? [String] {
@@ -1651,6 +1758,7 @@ struct Event: MediaItem {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
+    var schoolID: String?  // Registry slug; nil on records that predate stamping
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .event }
@@ -1680,6 +1788,9 @@ struct Event: MediaItem {
     var eventExpectations: String?
     /// Recruitment Schedule: application link.
     var eventApplicationURL: String?
+    /// "Other" links, available on every category.
+    var eventRSVPURL: String?
+    var eventWebsiteURL: String?
     /// Category lineup — Artists / Actors / Films depending on the category. Held as one
     /// freeform line (that's how the form collects it) and split into entries for
     /// CloudKit, where the field is a String list.
@@ -1754,6 +1865,14 @@ struct Event: MediaItem {
         record["eventExpectations"] = (eventExpectations ?? "") as CKRecordValue
         record["eventApplicationURL"] = (eventApplicationURL ?? "") as CKRecordValue
 
+        // "Other" links (every category). Newer than the rest of this record, so a
+        // deployed schema that lacks them rejects the save — the manager's schema-gap
+        // rescue then drops them and retries, publishing the post without these links
+        // (see `CloudKitManager.nonCoreKeys`). Written unconditionally so clearing one
+        // on an edit overwrites the server value.
+        record["eventRSVPURL"] = (eventRSVPURL ?? "") as CKRecordValue
+        record["eventWebsiteURL"] = (eventWebsiteURL ?? "") as CKRecordValue
+
         // `eventLineup` is a String LIST server-side, while the form collects one
         // freeform line of names — so the text is split into entries here and rejoined
         // in `fromCloudKitRecord`. Writing the raw String is a type mismatch that fails
@@ -1797,6 +1916,7 @@ struct Event: MediaItem {
         event.submittedBy = record.getString("submittedBy") ?? "Anonymous"
         event.createdDate = record.getDate("createdDate") ?? Date()
         event.lastEditedDate = record.getDate("lastEditedDate")
+        event.schoolID = record.getString("schoolID")
         
         // Event-specific fields - using schema field names
         event.eventStartDate = record.getDate("eventStartTime")
@@ -1812,6 +1932,8 @@ struct Event: MediaItem {
         // Empty strings (written to clear a field) map back to nil so display guards work.
         event.eventExpectations = record.getString("eventExpectations").flatMap { $0.isEmpty ? nil : $0 }
         event.eventApplicationURL = record.getString("eventApplicationURL").flatMap { $0.isEmpty ? nil : $0 }
+        event.eventRSVPURL = record.getString("eventRSVPURL").flatMap { $0.isEmpty ? nil : $0 }
+        event.eventWebsiteURL = record.getString("eventWebsiteURL").flatMap { $0.isEmpty ? nil : $0 }
         // Stored as a String list (see `lineupEntries`); rejoined into the single line the
         // form and the cards display. `getString` covers any record written before the
         // switch to the list field.

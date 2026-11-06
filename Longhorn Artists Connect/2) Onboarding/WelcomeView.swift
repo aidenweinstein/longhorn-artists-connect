@@ -3,8 +3,11 @@
 //  Longhorn Artists Connect
 //
 //  Onboarding page 1: the "Welcome to Nexus" screen where the user declares which
-//  kind of account they're creating — UT student, industry professional, or guest.
-//  Each choice sets the matching flags on `profileModel` and routes onward.
+//  kind of account they're creating — student, industry professional, or guest
+//  (the "Guest" button in the upper right). The "?" in the upper left explains
+//  LAC and Nexus.
+//  Each choice sets the matching flags on `profileModel` and routes onward
+//  (students go to `SchoolSelectionView` first).
 //  Extracted from OnboardingView.swift.
 //
 
@@ -20,6 +23,9 @@ struct WelcomeView: View {
     /// skips account details entirely.
     let onComplete: () -> Void
 
+    /// Drives the "?" sheet describing LAC and Nexus.
+    @State private var showAbout = false
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -31,8 +37,7 @@ struct WelcomeView: View {
                     .font(.title)
                     .foregroundStyle(.secondary)
 
-                Image("NexusOrange")
-                    .resizable()
+                SchoolAssetImage("NexusOrange")
                     .scaledToFit()
                     .frame(height: 72)
 
@@ -47,18 +52,13 @@ struct WelcomeView: View {
             // Action buttons
             VStack(spacing: 16) {
                 Button {
-                    profileModel.isUTStudent = true
-                    profileModel.isGuest = false
-                    profileModel.school = UserProfileModel.utSchoolName
+                    // Students pick their school on the next page (page 5), which
+                    // then continues down the student path.
                     withAnimation {
-                        // Verify the school email first: the user has declared
-                        // they're a student but hasn't typed anything yet, so
-                        // finding out they're ineligible here costs them nothing.
-                        // Falls through to details when the service is absent.
-                        currentPage = StudentVerificationManager.isUIAvailable ? 4 : 1
+                        currentPage = 5
                     }
                 } label: {
-                    Text("I am a UT Student")
+                    Text("I am a Student")
                         .font(.headline)
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -74,6 +74,7 @@ struct WelcomeView: View {
                     profileModel.isIndustryProfessional = true
                     profileModel.isUTStudent = false
                     profileModel.isGuest = false
+                    profileModel.accountKind = nil
                     withAnimation {
                         currentPage = 3
                     }
@@ -88,25 +89,96 @@ struct WelcomeView: View {
                         .background(Color.brandOrange.opacity(0.55))
                         .cornerRadius(12)
                 }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 40)
+        }
+        .toolbar {
+            // What LAC and Nexus are.
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showAbout = true
+                } label: {
+                    Image(systemName: "questionmark")
+                        .foregroundStyle(Color.brandOrange)
+                }
+                .accessibilityLabel("About LAC and Nexus")
+            }
 
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     // Guests skip account details entirely — no name or photo — and go
                     // straight into the app.
                     profileModel.isUTStudent = false
                     profileModel.isGuest = true
+                    profileModel.accountKind = nil
                     onComplete()
                 } label: {
-                    Text("I am a Guest User")
+                    Text("Guest")
                         .font(.headline)
                         .foregroundStyle(Color.brandOrange)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.brandOrange.opacity(0.12))
-                        .cornerRadius(12)
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 40)
         }
+        .sheet(isPresented: $showAbout) {
+            AboutNexusView()
+        }
+    }
+}
+
+// MARK: - About LAC & Nexus
+
+/// The copy for the Welcome page's "?" sheet. Fill these in — they're empty
+/// on purpose so no placeholder wording ships.
+enum AboutNexusText {
+    static let lac = ""
+    static let nexus = ""
+}
+
+/// Opened from the "?" on the Welcome page: what Longhorn Artists Connect and
+/// Nexus are.
+struct AboutNexusView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    section(title: "Longhorn Artists Connect", body: AboutNexusText.lac)
+                    section(title: "Nexus", body: AboutNexusText.nexus)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func section(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.title2)
+                .fontWeight(.bold)
+            if !body.isEmpty {
+                Text(body)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+#Preview {
+    @Previewable @State var currentPage = 0
+    NavigationStack {
+        WelcomeView(
+            profileModel: UserProfileModel(),
+            currentPage: $currentPage,
+            onComplete: {}
+        )
     }
 }

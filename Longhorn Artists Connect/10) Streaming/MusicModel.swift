@@ -54,6 +54,13 @@ class MusicModel: ObservableObject {
     /// True while the user is dragging the scrubber, so the periodic time observer
     /// doesn't fight the drag by writing stale positions back over it.
     private var isScrubbing = false
+    /// Turns playback time into moderator-analytics play/engaged events. Kept across
+    /// EP/Album track changes, so a whole-record listen counts once.
+    private var engagement = PlaybackEngagementTracker()
+
+    /// Called when a track plays to its end. EP/Album cards use it to advance to the next
+    /// song; when nil, the track simply rewinds to the start.
+    var onTrackFinished: (() -> Void)?
     
     // MARK: - Dependencies
     let submission: Submission
@@ -99,7 +106,10 @@ class MusicModel: ObservableObject {
     /// override is applied only when AVFoundation lists the type as supported, so a
     /// container we guessed wrong about falls back to normal sniffing instead of failing.
     /// Local files are left alone — those are read from the file itself.
-    private static func playbackAsset(for url: URL) -> AVURLAsset {
+    ///
+    /// Shared with the feed's audio autoplay (`FeedVideoPreloader`) so a track that
+    /// streams fine in the detail view also streams fine inline.
+    static func playbackAsset(for url: URL) -> AVURLAsset {
         guard
             let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
             let mimeType = audioMIMEType(forExtension: url.pathExtension),
@@ -167,6 +177,14 @@ class MusicModel: ObservableObject {
             let seconds = time.seconds
             guard seconds.isFinite, seconds >= 0 else { return }
             self.currentTime = seconds
+            // Moderator analytics: count real listens, not just the auto-started load.
+            let crossed = self.engagement.update(time: seconds, duration: self.duration)
+            if !crossed.isEmpty {
+                let submission = self.submission
+                MainActor.assumeIsolated {
+                    crossed.forEach { PostAnalytics.shared.record($0, for: submission) }
+                }
+            }
         }
 
         // Mirror the player's real state rather than assuming `play()` took effect. A
@@ -221,8 +239,12 @@ class MusicModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            self.audioPlayer?.seek(to: .zero)
-            self.currentTime = 0
+            if let onTrackFinished = self.onTrackFinished {
+                onTrackFinished()
+            } else {
+                self.audioPlayer?.seek(to: .zero)
+                self.currentTime = 0
+            }
         }
     }
     

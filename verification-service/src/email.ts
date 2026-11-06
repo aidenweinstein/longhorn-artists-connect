@@ -11,12 +11,12 @@ export async function sendVerificationCode(
     env: Env,
     params: { to: string; code: string; schoolName: string },
 ): Promise<void> {
-    const subject = `${params.code} is your Longhorn Artists Connect code`;
+    const subject = `${params.code} is your Nexus by LAC code`;
 
     const text = [
         `Your verification code is ${params.code}`,
         ``,
-        `Enter it in Longhorn Artists Connect to confirm your ${params.schoolName} email address.`,
+        `Enter it in Nexus by LAC to confirm your ${params.schoolName} email address.`,
         `The code expires in 10 minutes.`,
         ``,
         `If you didn't request this, you can ignore this email — no account was created.`,
@@ -28,7 +28,7 @@ export async function sendVerificationCode(
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;line-height:1.5;color:#1a1a1a">
           <p>Your verification code is</p>
           <p style="font-size:32px;font-weight:600;letter-spacing:6px;margin:16px 0">${params.code}</p>
-          <p>Enter it in Longhorn Artists Connect to confirm your ${escapeHTML(params.schoolName)} email address. The code expires in 10 minutes.</p>
+          <p>Enter it in Nexus by LAC to confirm your ${escapeHTML(params.schoolName)} email address. The code expires in 10 minutes.</p>
           <p style="color:#666;font-size:14px">If you didn't request this, you can ignore this email — no account was created.</p>
           <p style="color:#999;font-size:12px">This mailbox isn't monitored — replies won't reach us.</p>
         </div>`;

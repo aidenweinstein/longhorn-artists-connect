@@ -61,18 +61,18 @@ struct FilmSubmissionView: View {
     @State private var stillPhotoItems: [PhotosPickerItem] = []
     @State private var showStillPhotoPicker = false
     @State private var showStillDocumentPicker = false
-    
-    /// The production category, derived from `selectedStudio` on appear and written back
-    /// to it whenever the user changes category. Not persisted on its own. `nil` until a
-    /// category is picked — the rest of the form stays hidden until then.
-    @State private var selectedCategory: FilmCategory?
+    /// The open crop editor, if any (video, thumbnail, or trailer).
+    @State private var cropRequest: MediaCropRequest?
+    /// Set when the user trashes the existing video while editing, so the row reads as
+    /// empty even though an already-posted video may not be on disk to hold a URL for.
+    @State private var existingVideoRemoved = false
 
     // MARK: - Constants
-    /// Studios shown when the category is "Org Project".
+    /// Organizations offered in the "Class or Org" menu.
     private let availableStudios = ["Collective", "Incubator", "Beyond Frame Productions", "DKA", "Black Lens"]
-    /// Production classes shown when the category is "Class Project". Each is listed by
-    /// course code and name (e.g. "RTF 304D Intro to Production"); the home feed credits them
-    /// by code alone.
+    /// Production classes offered in the "Class or Org" menu. Each is listed by course
+    /// code and name (e.g. "RTF 304D Intro to Production"); the home feed credits them by
+    /// code alone.
     private let availableClasses = ProductionClassCatalog.names
     private let allGenres = [
         "Action", "Adventure", "Advertisement", "Animation", "Biographical", "Comedy", "Coming-of-Age", "Crime",
@@ -101,144 +101,144 @@ struct FilmSubmissionView: View {
     /// hidden. Every other field behaves exactly as it does when creating a post.
     var isEditing: Bool = false
 
+    /// Edit screen only: a URL for the already-posted film video (its streaming link)
+    /// when it isn't on disk, so its first frame can be read for cropping.
+    var loadExistingVideo: (() async -> URL?)? = nil
+
+    /// The film video's playback crop (`VideoCrop` string). Applied by the player, so
+    /// cropping never re-encodes or downloads the video.
+    var videoCrop: Binding<String?> = .constant(nil)
+
     var body: some View {
         List {
-            // Category first, and on its own until it's chosen: the rest of the form
-            // depends on it (Org films pick a studio, class films pick a class).
-            Section("Category") {
-                categoryMenu
+            Section("Upload") {
+                filmUploadSection
             }
 
-            if selectedCategory != nil {
-                Section("Upload") {
-                    filmUploadSection
-                }
+            Section("Details") {
+                TextField("Title", text: $title, axis: .vertical)
 
-                Section("Details") {
-                    TextField("Title", text: $title, axis: .vertical)
+                TextField("Logline", text: $logline, axis: .vertical)
+                    .lineLimit(3...6)
 
-                    // Only Org and Class films carry this; independent films have no such field.
-                    studioOrClassField
-
-                    TextField("Logline", text: $logline, axis: .vertical)
-                        .lineLimit(3...6)
-
-                    Menu {
-                        ForEach(allGenres, id: \.self) { genre in
-                            Button {
+                Menu {
+                    ForEach(allGenres, id: \.self) { genre in
+                        Button {
+                            if selectedGenres.contains(genre) {
+                                selectedGenres.remove(genre)
+                            } else {
+                                selectedGenres.insert(genre)
+                            }
+                        } label: {
+                            HStack {
+                                Text(genre)
                                 if selectedGenres.contains(genre) {
-                                    selectedGenres.remove(genre)
-                                } else {
-                                    selectedGenres.insert(genre)
-                                }
-                            } label: {
-                                HStack {
-                                    Text(genre)
-                                    if selectedGenres.contains(genre) {
-                                        Image(systemName: "checkmark")
-                                    }
+                                    Image(systemName: "checkmark")
                                 }
                             }
                         }
-                    } label: {
-                        HStack {
-                            Text("Genres")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            let summary = selectedGenres.isEmpty ? "Select" : selectedGenres.sorted().joined(separator: ", ")
-                            Text(summary)
-                                .lineLimit(1)
-                                .foregroundStyle(Color.brandOrange)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption)
-                                .foregroundStyle(Color.brandOrange)
-                        }
                     }
-                    .buttonStyle(.plain)
+                } label: {
+                    HStack {
+                        Text("Genre(s)")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        let summary = selectedGenres.isEmpty ? "Select" : selectedGenres.sorted().joined(separator: ", ")
+                        Text(summary)
+                            .lineLimit(1)
+                            .foregroundStyle(Color.brandOrange)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(Color.brandOrange)
+                    }
+                }
+                .buttonStyle(.plain)
 
-                    Menu {
-                        ForEach(releaseYears, id: \.self) { year in
-                            Button {
-                                releaseYear = year
-                            } label: {
-                                HStack {
-                                    Text(year)
-                                    if releaseYear == year {
-                                        Image(systemName: "checkmark")
-                                    }
+                // The organization or production class behind the film, if any.
+                classOrOrgMenu
+
+                Menu {
+                    ForEach(releaseYears, id: \.self) { year in
+                        Button {
+                            releaseYear = year
+                        } label: {
+                            HStack {
+                                Text(year)
+                                if releaseYear == year {
+                                    Image(systemName: "checkmark")
                                 }
                             }
                         }
-                    } label: {
-                        HStack {
-                            Text("Release Year")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Text(releaseYear.isEmpty ? "Select" : releaseYear)
-                                .lineLimit(1)
-                                .foregroundStyle(Color.brandOrange)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption)
-                                .foregroundStyle(Color.brandOrange)
-                        }
                     }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        showCastForm = true
-                    } label: {
-                        HStack {
-                            Text("Cast")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Text(castInfo.summary.isEmpty ? "Add" : "Edited")
-                                .foregroundStyle(Color.brandOrange)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(Color.brandOrange)
-                        }
+                } label: {
+                    HStack {
+                        Text("Release Year")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(releaseYear.isEmpty ? "Select" : releaseYear)
+                            .lineLimit(1)
+                            .foregroundStyle(Color.brandOrange)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(Color.brandOrange)
                     }
-                    .buttonStyle(.plain)
-                
-                    Button {
-                        showCrewForm = true
-                    } label: {
-                        HStack {
-                            Text("Crew")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Text(crewInfo.summary.isEmpty ? "Add" : "Edited")
-                                .foregroundStyle(Color.brandOrange)
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(Color.brandOrange)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                
-                    Picker("Age Rating", selection: $selectedAgeRating) {
-                        ForEach(AgeRating.allCases) { rating in
-                            Text(rating.rawValue).tag(rating)
-                        }
-                    }
-                    .pickerStyle(.segmented)
                 }
+                .buttonStyle(.plain)
 
-                Section {
-                    Toggle("Festival-Bound", isOn: $festivalBound)
-                        .tint(Color.brandOrange)
-                } header: {
-                    Text("Other")
-                } footer: {
-                    Text("Keeps the actual film private while still showing thumbnail, logline, credits, etc. Submission can be editied at any time to be publicly visible when ready.")
+                Button {
+                    showCastForm = true
+                } label: {
+                    HStack {
+                        Text("Cast")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(castInfo.summary.isEmpty ? "Add" : "Edited")
+                            .foregroundStyle(Color.brandOrange)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(Color.brandOrange)
+                    }
                 }
+                .buttonStyle(.plain)
+
+                Button {
+                    showCrewForm = true
+                } label: {
+                    HStack {
+                        Text("Crew")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(crewInfo.summary.isEmpty ? "Add" : "Edited")
+                            .foregroundStyle(Color.brandOrange)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(Color.brandOrange)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Picker("Age Rating", selection: $selectedAgeRating) {
+                    ForEach(AgeRating.allCases) { rating in
+                        Text(rating.rawValue).tag(rating)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Section {
+                Toggle("Festival-Bound", isOn: $festivalBound)
+                    .tint(Color.brandOrange)
+            } header: {
+                Text("Other")
+            } footer: {
+                Text("Keeps the actual film private while still showing thumbnail, logline, credits, etc. Submission can be editied at any time to be publicly visible when ready.")
             }
         }
         .scrollContentBackground(.hidden)
         .background(Color(.systemGray6))
-        // Seed the category from the stored studio value so resuming a draft or editing
-        // an existing film shows the right category and field.
-        .onAppear { deriveCategory() }
+        // Films posted before the classes were renamed store the old class name, which
+        // wouldn't match any menu entry; upgrade it so the menu shows it as selected.
+        .onAppear { normalizeLegacyClassName() }
         // Navigation destinations live on the List itself, not on rows inside
         // it: rows in a lazy container may not exist yet, so destinations
         // declared there can be missed by the navigation stack.
@@ -312,32 +312,37 @@ struct FilmSubmissionView: View {
                 showStillDocumentPicker = false
             }
         }
+        .mediaCropper($cropRequest)
+        // A crop belongs to the video it was framed on; a newly picked video starts uncropped.
+        .onChange(of: selectedVideoURL) { _, _ in videoCrop.wrappedValue = nil }
     }
     
-    // MARK: - Category
+    // MARK: - Class or Org
 
-    /// "Category" row: Org / Class / Independent. Changing it resets the stored studio so
-    /// a value from the previous category doesn't linger.
-    private var categoryMenu: some View {
+    /// Whether `selectedStudio` names a real organization or class. Empty, and the
+    /// "Independent" value older posts stored, both read as "None".
+    private var hasStudio: Bool {
+        !selectedStudio.isEmpty && selectedStudio != "Independent"
+    }
+
+    /// The "Class or Org" menu: the organizations and production classes in two
+    /// sections, plus "None" for an independent film. The pick is stored in
+    /// `Submission.studio`, exactly as projects do.
+    private var classOrOrgMenu: some View {
         Menu {
-            ForEach(FilmCategory.allCases) { category in
-                Button {
-                    applyCategory(category)
-                } label: {
-                    HStack {
-                        Text(category.rawValue)
-                        if selectedCategory == category {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
+            Section("Organizations") {
+                ForEach(availableStudios, id: \.self) { option in studioOption(option) }
             }
+            Section("Classes") {
+                ForEach(availableClasses, id: \.self) { option in studioOption(option) }
+            }
+            Button("None") { selectedStudio = "" }
         } label: {
             HStack {
-                Text("Category")
+                Text("Class/Org")
                     .foregroundStyle(.primary)
                 Spacer()
-                Text(selectedCategory?.rawValue ?? "Select Category")
+                Text(hasStudio ? selectedStudio : "None")
                     .lineLimit(1)
                     .foregroundStyle(Color.brandOrange)
                 Image(systemName: "chevron.up.chevron.down")
@@ -348,86 +353,23 @@ struct FilmSubmissionView: View {
         .buttonStyle(.plain)
     }
 
-    /// The studio/class selector, shown in Details only for Org (studios) and Class
-    /// (classes) categories. Independent films have no such field.
-    @ViewBuilder
-    private var studioOrClassField: some View {
-        switch selectedCategory {
-        case .org:
-            studioSelectionMenu(label: "Studio", options: availableStudios)
-        case .classProject:
-            studioSelectionMenu(label: "Class", options: availableClasses)
-        case .independent, nil:
-            EmptyView()
-        }
-    }
-
-    /// A single-select menu bound to `selectedStudio`, reused for both the studio and
-    /// class lists.
-    private func studioSelectionMenu(label: String, options: [String]) -> some View {
-        Menu {
-            ForEach(options, id: \.self) { option in
-                Button {
-                    selectedStudio = option
-                } label: {
-                    HStack {
-                        Text(option)
-                        if selectedStudio == option {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
+    /// One row of the Class or Org menu, checked when it's the current pick.
+    private func studioOption(_ option: String) -> some View {
+        Button {
+            selectedStudio = option
         } label: {
             HStack {
-                Text(label)
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(selectedStudio.isEmpty ? "Select" : selectedStudio)
-                    .lineLimit(1)
-                    .foregroundStyle(Color.brandOrange)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
+                Text(option)
+                if selectedStudio == option { Image(systemName: "checkmark") }
             }
         }
-        .buttonStyle(.plain)
     }
 
-    /// Derives the category from the current `selectedStudio` value: a class name means
-    /// Class, "Independent" means Independent, anything else means Org. An empty studio
-    /// means nothing has been chosen yet, so the category stays unset and the rest of the
-    /// form stays hidden.
-    private func deriveCategory() {
-        // Only seed once. Org/Class both clear `selectedStudio` when picked, so re-deriving
-        // after the view reappears (e.g. returning from the Cast page) would wipe the
-        // user's choice.
-        guard selectedCategory == nil else { return }
-
+    /// Films posted before the classes were renamed store the old class name. Upgrade it
+    /// to the canonical "code + name" so the menu shows it as selected.
+    private func normalizeLegacyClassName() {
         if let productionClass = ProductionClassCatalog.match(selectedStudio) {
-            selectedCategory = .classProject
-            // Films posted before the classes were renamed store the old name, which
-            // wouldn't match any menu entry. Upgrade it to the canonical "code + name"
-            // so the picker shows it as selected.
             selectedStudio = productionClass.fullName
-        } else if selectedStudio.isEmpty {
-            selectedCategory = nil
-        } else if selectedStudio == "Independent" {
-            selectedCategory = .independent
-        } else {
-            selectedCategory = .org
-        }
-    }
-
-    /// Applies a newly-chosen category and resets `selectedStudio` so it never holds a
-    /// value that doesn't belong to the new category's field.
-    private func applyCategory(_ category: FilmCategory) {
-        selectedCategory = category
-        switch category {
-        case .independent:
-            selectedStudio = "Independent"
-        case .org, .classProject:
-            selectedStudio = ""
         }
     }
 
@@ -527,43 +469,73 @@ struct FilmSubmissionView: View {
 
     // MARK: - Upload Rows
 
-    /// "Select video" row: film-strip icon, label, and Photos/Files pickers.
+    /// The video row's preview frame with the playback crop applied, so the row shows
+    /// what the player will.
+    private var croppedFirstFrame: UIImage? {
+        guard let frame = videoFirstFrame else { return nil }
+        // While editing, the row frame is the post's poster, not the video's frame.
+        guard let crop = VideoCrop(videoCrop.wrappedValue), !isEditing else { return frame }
+        return ImageCropper.crop(frame, to: crop.rect)
+    }
+
+    /// Whether the video row holds a video: a picked one, or (while editing) the
+    /// already-posted one unless the user trashed it.
+    private var hasVideo: Bool {
+        selectedVideoURL != nil || (isEditing && !existingVideoRemoved)
+    }
+
+    /// "Select video" row: film-strip icon, label, and Photos/Files pickers — swapped
+    /// for Crop + Trash once a video is picked.
     private var videoSelectionRow: some View {
         HStack {
             // Show the video's first frame (the auto-generated thumbnail) once a video
             // is picked, scaled to fit so it stays within the row; film icon otherwise.
-            UploadRowThumbnail(image: (selectedVideoURL == nil && !isEditing) ? nil : videoFirstFrame,
+            UploadRowThumbnail(image: hasVideo ? croppedFirstFrame : nil,
                                placeholderSystemName: "film")
-            Text((selectedVideoURL == nil && !isEditing) ? "Select film" : "Video selected")
+            Text(hasVideo ? "Video selected" : "Select film")
                 .foregroundStyle(.primary)
-            if selectedVideoURL != nil || isEditing {
+            if hasVideo {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            if true { // media pickers available when creating and editing
-                HStack(spacing: 12) {
-                    Button {
-                        showVideoPicker = true
-                    } label: {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
-                            .symbolRenderingMode(.multicolor)
+            UploadPickerButtons(
+                hasSelection: hasVideo,
+                onPhotos: { showVideoPicker = true },
+                onFiles: { showDocumentPicker = true },
+                onCrop: {
+                    // Frame the crop on the video's first frame; the player applies it.
+                    let url = selectedVideoURL
+                    let loadExisting = loadExistingVideo
+                    // Only a picked video's row frame is its real first frame; while editing
+                    // it's the post's poster, so let the editor pull the frame itself.
+                    cropRequest = .playbackCrop(
+                        preview: url == nil ? nil : videoFirstFrame,
+                        load: {
+                            if let url { return url }
+                            return await loadExisting?()
+                        },
+                        current: VideoCrop(videoCrop.wrappedValue)
+                    ) { crop in
+                        videoCrop.wrappedValue = crop?.encoded
+                        // A new post's auto poster is the first frame — keep it matching
+                        // what the player will show.
+                        if !isEditing, !videoThumbnailIsCustom, let frame = videoFirstFrame {
+                            videoThumbnail = crop.map { ImageCropper.crop(frame, to: $0.rect) } ?? frame
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
+                },
+                onRemove: {
+                    selectedVideoURL = nil
+                    videoFirstFrame = nil
+                    videoCrop.wrappedValue = nil
+                    existingVideoRemoved = true
+                    // Drop the auto-generated poster with its video; a custom one (or a
+                    // posted one, while editing) stays.
+                    if !videoThumbnailIsCustom && !isEditing { videoThumbnail = nil }
                 }
-            }
+            )
         }
     }
 
@@ -584,28 +556,24 @@ struct FilmSubmissionView: View {
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            if true { // media pickers available when creating and editing
-                HStack(spacing: 12) {
-                    Button {
-                        showThumbnailPhotoPicker = true
-                    } label: {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
-                            .symbolRenderingMode(.multicolor)
+            UploadPickerButtons(
+                hasSelection: videoThumbnail != nil,
+                onPhotos: { showThumbnailPhotoPicker = true },
+                onFiles: { showThumbnailDocumentPicker = true },
+                onCrop: videoThumbnail.map { image in
+                    {
+                        cropRequest = .image(image) { cropped in
+                            videoThumbnail = cropped
+                            videoThumbnailIsCustom = true
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showThumbnailDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
+                },
+                onRemove: {
+                    videoThumbnail = nil
+                    videoThumbnailIsCustom = false
+                    thumbnailPhotoItem = nil
                 }
-            }
+            )
         }
         }
     }
@@ -626,26 +594,22 @@ struct FilmSubmissionView: View {
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            HStack(spacing: 12) {
-                Button {
-                    showTrailerPicker = true
-                } label: {
-                    Label("Photos", systemImage: "photo.stack")
-                        .labelStyle(.iconOnly)
-                        .symbolRenderingMode(.multicolor)
+            UploadPickerButtons(
+                hasSelection: selectedTrailerURL != nil,
+                onPhotos: { showTrailerPicker = true },
+                onFiles: { showTrailerDocumentPicker = true },
+                onCrop: selectedTrailerURL.map { url in
+                    {
+                        cropRequest = .video(preview: trailerFirstFrame, load: { url }) {
+                            onTrailerPickerResult(.success($0))
+                        }
+                    }
+                },
+                onRemove: {
+                    selectedTrailerURL = nil
+                    trailerFirstFrame = nil
                 }
-                .buttonStyle(.bordered)
-                .tint(.primary)
-
-                Button {
-                    showTrailerDocumentPicker = true
-                } label: {
-                    Label("Files", systemImage: "folder")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.bordered)
-                .tint(.primary)
-            }
+            )
         }
     }
 
@@ -682,65 +646,13 @@ struct FilmSubmissionView: View {
                                 images: Binding<[UIImage]>,
                                 showPhotoPicker: Binding<Bool>,
                                 showFilePicker: Binding<Bool>) -> some View {
-        VStack(alignment: .leading, spacing: images.wrappedValue.isEmpty ? 0 : 10) {
-            HStack {
-                UploadRowThumbnail(image: images.wrappedValue.first, placeholderSystemName: placeholderSystemName)
-                Text(title)
-                    .foregroundStyle(.primary)
-                if !images.wrappedValue.isEmpty {
-                    Text("\(images.wrappedValue.count)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.brandOrange)
-                }
-                Spacer()
-                HStack(spacing: 12) {
-                    Button {
-                        showPhotoPicker.wrappedValue = true
-                    } label: {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
-                            .symbolRenderingMode(.multicolor)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showFilePicker.wrappedValue = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-                }
-            }
-
-            if !images.wrappedValue.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(images.wrappedValue.enumerated()), id: \.offset) { index, image in
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 64, height: 64)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay(alignment: .topTrailing) {
-                                    Button {
-                                        images.wrappedValue.remove(at: index)
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .font(.system(size: 18))
-                                            .foregroundStyle(.white, .black.opacity(0.6))
-                                            .padding(2)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        }
+        MultiImageUploadRow(
+            title: title,
+            placeholderSystemName: placeholderSystemName,
+            images: images,
+            showPhotoPicker: showPhotoPicker,
+            showFilePicker: showFilePicker
+        )
     }
 
     // MARK: - Thumbnail Loading
@@ -882,7 +794,12 @@ struct FilmEditView: View {
                 onVideoPickerResult: { result in handleVideoPick(result) },
                 onGenerateThumbnail: { _ in },
                 onTrailerPickerResult: { result in handleTrailerPick(result) },
-                isEditing: true
+                isEditing: true,
+                loadExistingVideo: { [submissionID = submission.id] in
+                    // The streaming link gives the first frame without a download.
+                    await CloudKitManager.shared.streamingURL(submissionID: submissionID, type: .film)
+                },
+                videoCrop: $edited.videoCrop
             )
             .navigationTitle("Edit Film")
             .navigationBarTitleDisplayMode(.inline)

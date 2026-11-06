@@ -2,7 +2,8 @@
 //  EventSubmissionView.swift
 //  Longhorn Artists Connect
 //
-//  Event submission form - the Category field dictates which detail fields appear.
+//  Event submission form - flyer, host, description, one or more showings, location,
+//  lineup and links.
 //
 
 import SwiftUI
@@ -19,23 +20,17 @@ enum EventCategoryKind: String, CaseIterable {
     case actorShowcase = "Showcase"
     case theatrePerformance = "Theatre Performance"
     case filmFestival = "Film Festival"
+    case screening = "Screening"
     case artistMixer = "Artist Mixer"
-    case recruitmentSchedule = "Recruitment Schedule"
     case infoSession = "Info Session"
     case speaker = "Speaker"
 
-    /// Recruitment uses a Start/End DATE range (no times); Theatre Performance uses a
-    /// list of showings (a date with start/end times each); every other category uses a
-    /// single date with start/end times.
-    var usesDateRange: Bool { self == .recruitmentSchedule }
-    var usesDateTime: Bool { self != .recruitmentSchedule && self != .theatrePerformance }
+    /// Theatre Performance uses a list of showings (a date with start/end times each);
+    /// every other category uses a single date with start/end times.
+    var usesDateTime: Bool { self != .theatrePerformance }
     /// Theatre runs play more than once, so the date/time fields repeat: one group per
     /// showing instead of a single date.
     var usesShowings: Bool { self == .theatrePerformance }
-    var showsLocation: Bool { self != .recruitmentSchedule }
-    var showsExpectations: Bool { self == .recruitmentSchedule }
-    var showsApplicationLink: Bool { self == .recruitmentSchedule }
-    var showsTicketLink: Bool { self == .concert || self == .theatrePerformance }
 
     /// Label for the freeform "lineup" field, or `nil` when the category has none.
     var lineupLabel: String? {
@@ -44,6 +39,7 @@ enum EventCategoryKind: String, CaseIterable {
         case .actorShowcase:      return "Actors"
         case .theatrePerformance: return "Cast"
         case .filmFestival:       return "Films"
+        case .screening:          return "Films"
         case .speaker:            return "Speakers"
         default:                  return nil
         }
@@ -53,13 +49,13 @@ enum EventCategoryKind: String, CaseIterable {
     /// differently at a glance.
     var accentIcon: String {
         switch self {
-        case .recruitmentSchedule: return "calendar.badge.clock"
         case .infoSession:         return "info.circle.fill"
         case .concert:             return "music.mic"
         case .actorShowcase:       return "theatermasks.fill"
         case .theatrePerformance:  return "theatermask.and.paintbrush.fill"
         case .filmFestival:        return "popcorn"
-        case .artistMixer:         return "person.2.fill"
+        case .screening:           return "film"
+        case .artistMixer:         return "party.popper.fill"
         case .speaker:             return "person.wave.2.fill"
         }
     }
@@ -90,15 +86,16 @@ struct EventSubmissionView: View {
     @Binding var title: String
     @Binding var eventDetails: String
     @Binding var eventHost: String
-    @Binding var eventCategory: String
     @Binding var eventStartDate: Date
     @Binding var eventEndDate: Date
     @Binding var eventLocation: String
     @Binding var ticketsURL: String
     @Binding var eventExpectations: String
     @Binding var eventApplicationURL: String
+    @Binding var eventRSVPURL: String
+    @Binding var eventWebsiteURL: String
     @Binding var eventLineup: String
-    /// Theatre Performance: the run's showings. Ignored by every other category.
+    /// The event's showings: every event has at least one, and can run over several days.
     @Binding var eventShowings: [EventShowing]
     @Binding var selectedEventImageData: Data?
     @Binding var showEventImagePicker: Bool
@@ -122,68 +119,126 @@ struct EventSubmissionView: View {
     /// exact name, which lets the detail page later link the host to that org's page.
     @ObservedObject private var orgStore = OrganizationStore.shared
     @FocusState private var hostFieldFocused: Bool
+    /// The open flyer crop editor, if any.
+    @State private var cropRequest: MediaCropRequest?
 
-    private var categoryKind: EventCategoryKind? { EventCategoryKind(rawValue: eventCategory) }
-
-    /// Organizations to suggest under the Host field. Filtered by the current text; hidden
-    /// once the field already holds an exact org name (i.e. a suggestion was chosen).
+    /// Up to 4 organizations whose name contains the typed text, matching how profile-name
+    /// credits suggest people. Nothing shows until 2+ characters are typed, and the list
+    /// hides once the field already holds an exact org name (i.e. a suggestion was chosen).
     private var hostSuggestions: [Organization] {
-        let trimmed = eventHost.trimmingCharacters(in: .whitespaces)
-        if orgStore.organizations.contains(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-            return []
+        let query = eventHost.trimmingCharacters(in: .whitespaces).lowercased()
+        guard query.count >= 2 else { return [] }
+        if orgStore.organizations.contains(where: { $0.name.lowercased() == query }) { return [] }
+        return Array(
+            orgStore.organizations
+                .filter { $0.name.lowercased().contains(query) }
+                .sorted { $0.name.lowercased() < $1.name.lowercased() }
+                .prefix(4)
+        )
+    }
+
+    /// Whether the typed host exactly matches a known organization, meaning the event
+    /// will link to that org's page.
+    private var hostIsConfirmed: Bool {
+        let query = eventHost.trimmingCharacters(in: .whitespaces).lowercased()
+        return !query.isEmpty && orgStore.organizations.contains { $0.name.lowercased() == query }
+    }
+
+    /// Host text field plus an organization autocomplete card, styled to match
+    /// `CreditNameField`. Each suggestion shows the org's logo and name; picking one
+    /// fills in the org's exact name so the host can be linked to its page on the
+    /// event's detail view.
+    private var hostField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                TextField("Host", text: $eventHost, axis: .vertical)
+                    .focused($hostFieldFocused)
+                if hostIsConfirmed {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Color.brandOrange)
+                        .font(.caption)
+                }
+            }
+
+            if hostFieldFocused && !hostSuggestions.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(hostSuggestions) { org in
+                        Button {
+                            eventHost = org.name
+                            hostFieldFocused = false
+                        } label: {
+                            HStack(spacing: 8) {
+                                OrgAvatar(imageData: org.profileImageData, diameter: 28,
+                                          tint: .secondary, assetName: org.profileAssetName)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(org.name)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    if !org.displayDescription.isEmpty {
+                                        Text(org.displayDescription)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if org.id != hostSuggestions.last?.id {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(uiColor: .tertiarySystemBackground))
+                )
+            }
         }
-        guard !trimmed.isEmpty else { return orgStore.organizations }
-        return orgStore.organizations.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
     var body: some View {
         List {
-            // Category first, and on its own until it's chosen: the rest of the form
-            // stays hidden until then.
-            Section("Category") { categoryMenu }
+            Section("Upload") { uploadSection }
 
-            if let kind = categoryKind {
-                Section("Upload") { uploadSection }
+            Section("Details") {
+                TextField("Title", text: $title, axis: .vertical)
 
-                Section("Details") {
-                    TextField("Title", text: $title, axis: .vertical)
+                hostField
 
-                    TextField("Host", text: $eventHost, axis: .vertical)
-                        .focused($hostFieldFocused)
+                // Open-ended: starts three lines tall and keeps growing with the
+                // text instead of capping out and scrolling inside the row, so a
+                // long event description stays fully visible while it's written.
+                TextField("Description", text: $eventDetails, axis: .vertical)
+                    .lineLimit(3...)
 
-                    // Org autofill: while the Host field is focused, suggest matching
-                    // organizations. Picking one fills in the org's exact name so the host
-                    // can be linked to its page on the event's detail view.
-                    if hostFieldFocused {
-                        ForEach(hostSuggestions) { org in
-                            Button {
-                                eventHost = org.name
-                                hostFieldFocused = false
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "building.2.crop.circle.fill")
-                                        .foregroundStyle(Color.brandOrange)
-                                    Text(org.name)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                showingsFields
 
-                    // Open-ended: starts three lines tall and keeps growing with the
-                    // text instead of capping out and scrolling inside the row, so a
-                    // long event description stays fully visible while it's written.
-                    TextField("Description", text: $eventDetails, axis: .vertical)
-                        .lineLimit(3...)
+                TextField("Location", text: $eventLocation, axis: .vertical)
 
-                    categoryFields(for: kind)
-                }
+                TextField("Artists", text: $eventLineup, axis: .vertical)
+                    .lineLimit(1...4)
+            }
+
+            // Optional links. Each one that's filled in becomes its own button on the
+            // event's detail page.
+            Section("Other") {
+                linkField("Ticket Link", text: $ticketsURL)
+                linkField("RSVP Link", text: $eventRSVPURL)
+                linkField("Website Link", text: $eventWebsiteURL)
             }
         }
         .scrollContentBackground(.hidden)
         .background(Color(.systemGray6))
+        .mediaCropper($cropRequest)
+        // Every event has at least one showing; seed the first from the form's dates so
+        // the editor never opens on an empty list (older posts have only those dates).
+        .onAppear { if eventShowings.isEmpty { addShowing() } }
     }
 
     // MARK: - Upload
@@ -209,142 +264,84 @@ struct EventSubmissionView: View {
                         .foregroundStyle(Color.brandOrange)
                 }
                 Spacer()
-                HStack(spacing: 12) {
-                    Button {
-                        showEventImagePicker = true
-                    } label: {
-                        Label("Photos", systemImage: "photo")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showEventImageDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-                }
-            }
-        }
-    }
-
-    // MARK: - Category Selector
-
-    private var categoryMenu: some View {
-        Menu {
-            ForEach(EventCategoryKind.allCases, id: \.self) { kind in
-                Button {
-                    eventCategory = kind.rawValue
-                    // Seed the first showing so the Showings editor isn't an empty list
-                    // the moment the category is picked.
-                    if kind.usesShowings && eventShowings.isEmpty { addShowing() }
-                } label: {
-                    HStack {
-                        Text(kind.rawValue)
-                        if eventCategory == kind.rawValue {
-                            Image(systemName: "checkmark")
+                UploadPickerButtons(
+                    hasSelection: selectedEventImageData != nil,
+                    onPhotos: { showEventImagePicker = true },
+                    onFiles: { showEventImageDocumentPicker = true },
+                    onCrop: selectedEventImageData.flatMap(UIImage.init).map { image in
+                        {
+                            cropRequest = .image(image) { cropped in
+                                if let data = cropped.jpegData(compressionQuality: 0.9) {
+                                    selectedEventImageData = data
+                                }
+                            }
                         }
-                    }
-                }
+                    },
+                    onRemove: { selectedEventImageData = nil }
+                )
             }
-        } label: {
-            HStack {
-                Text("Category")
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(eventCategory.isEmpty ? "Select Category" : eventCategory)
-                    .foregroundStyle(Color.brandOrange)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Category-specific fields
-
-    @ViewBuilder
-    private func categoryFields(for kind: EventCategoryKind) -> some View {
-        if kind.usesDateRange {
-            DatePicker("Start Date", selection: $eventStartDate, displayedComponents: .date)
-            DatePicker("End Date", selection: $eventEndDate, in: eventStartDate..., displayedComponents: .date)
-        }
-
-        if kind.usesDateTime {
-            DatePicker("Date", selection: eventDayBinding, displayedComponents: .date)
-            DatePicker("Start Time", selection: $eventStartDate, displayedComponents: .hourAndMinute)
-            DatePicker("End Time", selection: $eventEndDate, displayedComponents: .hourAndMinute)
-        }
-
-        if kind.usesShowings {
-            showingsFields
-        }
-
-        if kind.showsLocation {
-            TextField("Location", text: $eventLocation, axis: .vertical)
-        }
-
-        if let lineupLabel = kind.lineupLabel {
-            TextField(lineupLabel, text: $eventLineup, axis: .vertical)
-                .lineLimit(1...4)
-        
-        }
-
-        if kind.showsApplicationLink {
-            TextField("Application Link", text: $eventApplicationURL, axis: .vertical)
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-        }
-
-        if kind.showsTicketLink {
-            TextField("Ticket Link", text: $ticketsURL, axis: .vertical)
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
         }
     }
 
-    // MARK: - Showings (Theatre Performance)
+    /// A URL entry row. `axis: .vertical` keeps iOS 26's single-line field box away.
+    private func linkField(_ label: String, text: Binding<String>) -> some View {
+        TextField(label, text: text, axis: .vertical)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .keyboardType(.URL)
+    }
 
-    /// The Showings editor: one "Showing N" header plus a Date / Start Time / End Time
-    /// group per performance, so a run that plays several nights is one post with a list
-    /// of dates rather than one post per night. Rows can be removed down to the last one
-    /// (a performance with no date isn't worth posting), and "Add Showing" appends
-    /// another.
+    // MARK: - Showings
+
+    /// The Showings editor: one row per showing, each a "Showing N" header over a single
+    /// Date / Start "to" End line, so an event that runs several days is one post with a
+    /// list of dates rather than one post per day. Rows can be removed down to the last
+    /// one (an event with no date isn't worth posting), and "Add Showing" appends another.
     @ViewBuilder
     private var showingsFields: some View {
         ForEach($eventShowings) { $showing in
-            HStack {
-                Text("Showing \(showingNumber(of: showing))")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if eventShowings.count > 1 {
-                    Button {
-                        eventShowings.removeAll { $0.id == showing.id }
-                    } label: {
-                        Image(systemName: "minus.circle.fill")
-                            .foregroundStyle(.red)
+            // Header and pickers share one row so no separator falls between them.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Day \(showingNumber(of: showing))")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if eventShowings.count > 1 {
+                        Button {
+                            eventShowings.removeAll { $0.id == showing.id }
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                }
+
+                // Date, then start "to" end. The Date picker moves both of this
+                // showing's timestamps onto the chosen day (see `EventShowing.day`), so
+                // date and times can't fall out of step.
+                HStack(spacing: 6) {
+                    DatePicker("Date", selection: $showing.day, displayedComponents: .date)
+                        .labelsHidden()
+                    Spacer(minLength: 0)
+                    DatePicker("Start Time", selection: $showing.start, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                    Text("to")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    DatePicker("End Time", selection: $showing.end, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
                 }
             }
-
-            // The Date picker moves both of this showing's timestamps onto the chosen
-            // day (see `EventShowing.day`), so date and times can't fall out of step.
-            DatePicker("Date", selection: $showing.day, displayedComponents: .date)
-            DatePicker("Start Time", selection: $showing.start, displayedComponents: .hourAndMinute)
-            DatePicker("End Time", selection: $showing.end, displayedComponents: .hourAndMinute)
         }
 
         Button {
             addShowing()
         } label: {
-            Label("Add Showing", systemImage: "plus.circle.fill")
+            Label("Add Day", systemImage: "plus.circle.fill")
                 .foregroundStyle(Color.brandOrange)
         }
         .buttonStyle(.plain)
@@ -368,28 +365,6 @@ struct EventSubmissionView: View {
         let nextStart = calendar.date(byAdding: .day, value: 1, to: last.start) ?? last.start
         let nextEnd = calendar.date(byAdding: .day, value: 1, to: last.end) ?? last.end
         eventShowings.append(EventShowing(start: nextStart, end: nextEnd))
-    }
-
-    /// The shared calendar day for time-based categories. Editing it moves both the
-    /// start and end timestamps onto that day while preserving each one's time — so the
-    /// single "Date" picker and the two time pickers stay in sync on one date.
-    private var eventDayBinding: Binding<Date> {
-        Binding(
-            get: { eventStartDate },
-            set: { newDay in
-                let calendar = Calendar.current
-                let dayComponents = calendar.dateComponents([.year, .month, .day], from: newDay)
-                func applyDay(to date: Date) -> Date {
-                    let time = calendar.dateComponents([.hour, .minute], from: date)
-                    var combined = dayComponents
-                    combined.hour = time.hour
-                    combined.minute = time.minute
-                    return calendar.date(from: combined) ?? date
-                }
-                eventStartDate = applyDay(to: eventStartDate)
-                eventEndDate = applyDay(to: eventEndDate)
-            }
-        )
     }
 }
 
@@ -418,23 +393,16 @@ struct EventEditView: View {
         _selectedEventImageData = State(initialValue: submission.thumbnailData)
     }
 
-    private var categoryBinding: Binding<String> {
-        Binding(
-            get: { edited.genres.first ?? "" },
-            set: { edited.genres = $0.isEmpty ? [] : [$0] }
-        )
-    }
-
     private var startDateBinding: Binding<Date> {
         Binding(
-            get: { edited.eventStartDate ?? Date() },
+            get: { edited.eventStartDate ?? Date().roundedToNearestHour() },
             set: { edited.eventStartDate = $0 }
         )
     }
 
     private var endDateBinding: Binding<Date> {
         Binding(
-            get: { edited.eventEndDate ?? edited.eventStartDate ?? Date() },
+            get: { edited.eventEndDate ?? edited.eventStartDate ?? Date().roundedToNearestHour() },
             set: { edited.eventEndDate = $0 }
         )
     }
@@ -467,6 +435,20 @@ struct EventEditView: View {
         )
     }
 
+    private var rsvpBinding: Binding<String> {
+        Binding(
+            get: { edited.eventRSVPURL ?? "" },
+            set: { edited.eventRSVPURL = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private var websiteBinding: Binding<String> {
+        Binding(
+            get: { edited.eventWebsiteURL ?? "" },
+            set: { edited.eventWebsiteURL = $0.isEmpty ? nil : $0 }
+        )
+    }
+
     private var lineupBinding: Binding<String> {
         Binding(
             get: { edited.eventLineup ?? "" },
@@ -487,13 +469,14 @@ struct EventEditView: View {
                 title: $edited.title,
                 eventDetails: $edited.logline,
                 eventHost: $edited.eventHost,
-                eventCategory: categoryBinding,
                 eventStartDate: startDateBinding,
                 eventEndDate: endDateBinding,
                 eventLocation: locationBinding,
                 ticketsURL: ticketsBinding,
                 eventExpectations: expectationsBinding,
                 eventApplicationURL: applicationBinding,
+                eventRSVPURL: rsvpBinding,
+                eventWebsiteURL: websiteBinding,
                 eventLineup: lineupBinding,
                 eventShowings: showingsBinding,
                 selectedEventImageData: $selectedEventImageData,
@@ -554,13 +537,14 @@ struct EventEditView: View {
     @Previewable @State var title = ""
     @Previewable @State var eventDetails = ""
     @Previewable @State var eventHost = ""
-    @Previewable @State var eventCategory = ""
     @Previewable @State var eventStartDate = Date()
     @Previewable @State var eventEndDate = Date().addingTimeInterval(3 * 60 * 60)
     @Previewable @State var eventLocation = ""
     @Previewable @State var ticketsURL = ""
     @Previewable @State var eventExpectations = ""
     @Previewable @State var eventApplicationURL = ""
+    @Previewable @State var eventRSVPURL = ""
+    @Previewable @State var eventWebsiteURL = ""
     @Previewable @State var eventLineup = ""
     @Previewable @State var eventShowings: [EventShowing] = []
     @Previewable @State var selectedEventImageData: Data? = nil
@@ -572,13 +556,14 @@ struct EventEditView: View {
             title: $title,
             eventDetails: $eventDetails,
             eventHost: $eventHost,
-            eventCategory: $eventCategory,
             eventStartDate: $eventStartDate,
             eventEndDate: $eventEndDate,
             eventLocation: $eventLocation,
             ticketsURL: $ticketsURL,
             eventExpectations: $eventExpectations,
             eventApplicationURL: $eventApplicationURL,
+            eventRSVPURL: $eventRSVPURL,
+            eventWebsiteURL: $eventWebsiteURL,
             eventLineup: $eventLineup,
             eventShowings: $eventShowings,
             selectedEventImageData: $selectedEventImageData,

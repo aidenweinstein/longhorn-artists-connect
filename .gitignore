@@ -43,3 +43,10 @@ node_modules/
 .vercel/
 *.tsbuildinfo
 .env.local
+
+# Local leftovers
+*.zip
+_backup_*/
+
+*.zip
+_backup_*/

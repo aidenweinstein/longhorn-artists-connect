@@ -77,17 +77,35 @@ struct VideoUnavailableView: View {
     let tintColor: Color
     /// Compact diagnostic of what the server handed this device (environment, HTTP status,
     /// field keys, …). Shown small under the label so a device-only failure can be read
-    /// off the screen without a console. Tap to copy.
+    /// off the screen without a console. Tap to copy. Only shown in moderator mode.
     var detail: String? = nil
+    /// The post's thumbnail, shown darkened behind the message. Falls back to the tint
+    /// gradient when the post has no thumbnail.
+    var thumbnailData: Data? = nil
+
+    @AppStorage("isModeratorMode") private var isModeratorMode: Bool = false
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(LinearGradient(
-                    colors: [tintColor.opacity(0.55), tintColor.opacity(0.25)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ))
+            if let thumbnailData, let thumbnail = UIImage(data: thumbnailData) {
+                // Tinted thumbnail: fill the 16:9 frame, then darken so the white text
+                // stays legible over any artwork.
+                Color.clear
+                    .overlay(
+                        Image(uiImage: thumbnail)
+                            .resizable()
+                            .scaledToFill()
+                    )
+                    .clipped()
+                    .overlay(Color.black.opacity(0.55))
+            } else {
+                Rectangle()
+                    .fill(LinearGradient(
+                        colors: [tintColor.opacity(0.55), tintColor.opacity(0.25)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
+            }
             VStack(spacing: 10) {
                 Image(systemName: status.systemImage)
                     .font(.system(size: 44, weight: .semibold))
@@ -96,7 +114,8 @@ struct VideoUnavailableView: View {
                     .font(.headline)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
-                if let detail {
+                // Raw diagnostics (env=…, field=…) are for moderators only.
+                if let detail, isModeratorMode, ModeratorAccess.isModerator {
                     Text(detail)
                         .font(.system(size: 10, weight: .regular, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.85))
@@ -118,6 +137,9 @@ struct VideoUnavailableView: View {
 /// in-progress fetch is distinguishable from the failure states above.
 struct VideoStreamingLoadingView: View {
     let tintColor: Color
+    /// The shape the player will take once the stream resolves, so the box doesn't
+    /// jump when the video appears. Defaults to 16:9 when the shape isn't known.
+    var aspectRatio: CGFloat = 16.0 / 9.0
 
     var body: some View {
         ZStack {
@@ -126,7 +148,7 @@ struct VideoStreamingLoadingView: View {
             Rectangle()
                 .fill(Color.black)
                 .frame(maxWidth: .infinity)
-                .aspectRatio(16.0/9.0, contentMode: .fit)
+                .aspectRatio(aspectRatio, contentMode: .fit)
             VStack(spacing: 10) {
                 ProgressView()
                     .tint(.white)
@@ -150,20 +172,57 @@ struct VideoStreamingLoadingView: View {
 final class VideoPlayerModel: ObservableObject {
     let player: AVPlayer
     let submissionID: UUID
+    private let submission: Submission
 
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
     @Published var duration: Double = 1
 
     private var timeObserver: Any?
+    private var stallObserver: NSObjectProtocol?
+    private var startTask: Task<Void, Never>?
+    private var stallRecovery: Task<Void, Never>?
+    /// Set once the owning view is gone, so a start still waiting on the buffer
+    /// can't begin playing into a view that no longer exists.
+    private var isTornDown = false
+    private var engagement = PlaybackEngagementTracker()
 
-    init(url: URL, submissionID: UUID) {
-        self.player = AVPlayer(url: url)
-        self.submissionID = submissionID
+    init(url: URL, submission: Submission) {
+        // Prefer whatever the home feed already warmed for this stream: a player
+        // item that's been buffering since the card was hovered (instant start),
+        // else an asset whose container metadata is already loaded. The feed only
+        // builds these on the main thread, which is where SwiftUI constructs us.
+        var warmItem: AVPlayerItem?
+        var warmAsset: AVURLAsset?
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                warmItem = FeedVideoPreloader.shared.takeWarmItem(for: url)
+                if warmItem == nil { warmAsset = FeedVideoPreloader.shared.warmedAsset(for: url) }
+            }
+        }
+        if let warmItem {
+            self.player = AVPlayer(playerItem: warmItem)
+        } else if let warmAsset {
+            self.player = AVPlayer(playerItem: AVPlayerItem(asset: warmAsset))
+        } else {
+            self.player = AVPlayer(url: url)
+        }
+        self.submissionID = submission.id
+        self.submission = submission
 
         // Read far enough ahead that a dip in CDN throughput mid-film is covered
         // by media already buffered, instead of stopping playback for a moment.
         StreamPlaybackBuffer.tuneForVideo(player)
+
+        // If the stream does stall, hold the frame and refill a deep buffer before
+        // resuming rather than letting it limp along in fits and starts.
+        if let item = player.currentItem {
+            stallObserver = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.playbackStalledNotification, object: item, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.recoverFromStall() }
+            }
+        }
 
         // Drives the scrubber. The observer fires on the main queue, so updating the
         // published state directly here is safe.
@@ -171,10 +230,19 @@ final class VideoPlayerModel: ObservableObject {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { [weak self] time in
-            self?.currentTime = time.seconds
+            guard let self else { return }
+            self.currentTime = time.seconds
+            // Moderator analytics: count real plays, not just the auto-started load.
+            let crossed = self.engagement.update(time: time.seconds, duration: self.duration)
+            if !crossed.isEmpty {
+                let submission = self.submission
+                MainActor.assumeIsolated {
+                    crossed.forEach { PostAnalytics.shared.record($0, for: submission) }
+                }
+            }
         }
 
-        Task { @MainActor in await self.restoreAndPlay() }
+        startTask = Task { @MainActor in await self.restoreAndPlay() }
     }
 
     @MainActor
@@ -187,13 +255,41 @@ final class VideoPlayerModel: ObservableObject {
                 currentTime = saved
             }
         }
+        // Don't start on a thin buffer: wait until enough is loaded ahead of the
+        // playhead to ride out a dip in throughput. A slightly later start beats a
+        // stutter a second in.
+        if let item = player.currentItem {
+            _ = await StreamPlaybackBuffer.waitUntilBuffered(
+                item, secondsAhead: StreamPlaybackBuffer.videoStartAheadSeconds
+            )
+        }
+        guard !isTornDown, !Task.isCancelled else { return }
         player.play()
         isPlaying = true
+    }
+
+    /// Pauses on the current frame and resumes only once a deep buffer is back.
+    @MainActor
+    private func recoverFromStall() {
+        guard isPlaying, !isTornDown, stallRecovery == nil, let item = player.currentItem else { return }
+        player.pause()
+        stallRecovery = Task { @MainActor [weak self] in
+            defer { self?.stallRecovery = nil }
+            let ready = await StreamPlaybackBuffer.waitUntilBuffered(
+                item, secondsAhead: StreamPlaybackBuffer.videoStartAheadSeconds
+            )
+            // `isPlaying` is the user's intent; if they paused meanwhile, stay paused.
+            guard ready, !Task.isCancelled, let self, self.isPlaying, !self.isTornDown else { return }
+            self.player.play()
+        }
     }
 
     func togglePlay() {
         if isPlaying { player.pause() } else { player.play() }
         isPlaying.toggle()
+        // A manual pause/play supersedes any stall recovery in progress.
+        stallRecovery?.cancel()
+        stallRecovery = nil
     }
 
     func seek(to seconds: Double) {
@@ -208,6 +304,9 @@ final class VideoPlayerModel: ObservableObject {
         if currentTime > 0, currentTime < duration - 1 {
             SubmissionStore_3_2.shared.savePlaybackPosition(for: submissionID, position: currentTime)
         }
+        isTornDown = true
+        startTask?.cancel()
+        stallRecovery?.cancel()
         player.pause()
         removeObserver()
     }
@@ -216,6 +315,10 @@ final class VideoPlayerModel: ObservableObject {
         if let token = timeObserver {
             player.removeTimeObserver(token)
             timeObserver = nil
+        }
+        if let stallObserver {
+            NotificationCenter.default.removeObserver(stallObserver)
+            self.stallObserver = nil
         }
     }
 
@@ -257,6 +360,61 @@ private struct PlayerLayerView: UIViewRepresentable {
 final class PlayerContainerView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+}
+
+// MARK: - Cropped Playback
+
+/// Plays `player` showing only the post's `crop` region. The crop is applied at display
+/// time (the file is never re-encoded): the full frame is scaled up so the crop area fills
+/// the largest rect of the crop's shape that fits here, offset so the crop sits in it, and
+/// everything outside is clipped away. Any leftover space is letterboxed in black.
+struct CroppedPlayerSurface: View {
+    let player: AVPlayer
+    let crop: VideoCrop
+    /// The video's upright width ÷ height if already known (from `VideoAspectCache`),
+    /// so the crop is placed correctly on the first frame rather than after the
+    /// track loads. Falls back to 16:9 when nil.
+    var initialAspect: CGFloat? = nil
+
+    /// The video's upright width ÷ height, read from its track once it loads.
+    @State private var videoAspect: CGFloat?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let rect = crop.rect
+            let frameAspect = videoAspect ?? initialAspect ?? (16.0 / 9.0)
+            let cropAspect = frameAspect * rect.width / rect.height
+            let visible = Self.fit(aspect: cropAspect, in: proxy.size)
+            let full = CGSize(width: visible.width / rect.width, height: visible.height / rect.height)
+
+            PlayerLayerView(player: player)
+                .frame(width: full.width, height: full.height)
+                .offset(x: -rect.minX * full.width, y: -rect.minY * full.height)
+                .frame(width: visible.width, height: visible.height, alignment: .topLeading)
+                .clipped()
+                .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+        }
+        .background(Color.black)
+        .task { await loadVideoAspect() }
+    }
+
+    /// Largest size with the given width ÷ height that fits inside `container`.
+    private static func fit(aspect: CGFloat, in container: CGSize) -> CGSize {
+        guard aspect > 0, container.width > 0, container.height > 0 else { return container }
+        if container.width / container.height > aspect {
+            return CGSize(width: container.height * aspect, height: container.height)
+        }
+        return CGSize(width: container.width, height: container.width / aspect)
+    }
+
+    private func loadVideoAspect() async {
+        guard let asset = player.currentItem?.asset,
+              let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) else { return }
+        let upright = size.applying(transform)
+        guard upright.height != 0 else { return }
+        videoAspect = abs(upright.width / upright.height)
+    }
 }
 
 // MARK: - Volume Control (custom, replaces the system HUD in fullscreen)
@@ -404,14 +562,23 @@ struct CustomVideoPlayerView: View {
         self.videoURL = videoURL
         self.thumbnailData = thumbnailData
         self.tintColor = tintColor
-        _model = StateObject(wrappedValue: VideoPlayerModel(url: videoURL, submissionID: submission.id))
+        _model = StateObject(wrappedValue: VideoPlayerModel(url: videoURL, submission: submission))
     }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ScreenshotProtectedView {
-                VideoPlayer(player: model.player)
-                    .disabled(true)                 // hide native controls; we draw our own
+                if let crop = VideoCrop(submission.videoCrop) {
+                    // Show only the cropped region of the (streamed) video.
+                    CroppedPlayerSurface(
+                        player: model.player,
+                        crop: crop,
+                        initialAspect: VideoAspectCache.shared.naturalAspect(for: submission.id)
+                    )
+                } else {
+                    VideoPlayer(player: model.player)
+                        .disabled(true)             // hide native controls; we draw our own
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { toggleControls() }
@@ -652,7 +819,15 @@ struct FullscreenOverlay: View {
     private func videoContent(size: CGSize) -> some View {
         ZStack {
             ScreenshotProtectedView {
-                PlayerLayerView(player: model.player)
+                if let crop = VideoCrop(submission.videoCrop) {
+                    CroppedPlayerSurface(
+                        player: model.player,
+                        crop: crop,
+                        initialAspect: VideoAspectCache.shared.naturalAspect(for: submission.id)
+                    )
+                } else {
+                    PlayerLayerView(player: model.player)
+                }
             }
 
             // Full-area tap target toggles the controls.

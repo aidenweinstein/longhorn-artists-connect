@@ -2,8 +2,15 @@
 //  VideoCompressionHelper.swift
 //  Longhorn Artists Connect
 //
-//  Helper for transcoding oversized videos. Videos within the app's 10 GB
-//  upload ceiling are uploaded at original quality (no compression).
+//  Prepares a picked video for upload as a *playback rendition* — the file the
+//  CDN streams to every viewer:
+//    - At most 1080p, encoded as HEVC (H.264 when the source can't be exported as
+//      HEVC), in a fast-start layout. A 4K phone recording is 5–10× the bytes of
+//      this for no visible gain on a phone screen, and every one of those bytes
+//      had to arrive before playback could start.
+//    - A source already at or below 1080p and a modest bitrate is only remuxed
+//      (no re-encode), so it's uploaded exactly as it was made.
+//    - Videos above the app's upload ceiling are compressed harder as a safety net.
 //
 
 import AVFoundation
@@ -11,39 +18,53 @@ import Foundation
 
 actor VideoCompressionHelper {
     
-    /// Threshold above which we transcode. This is NOT a CloudKit limit — CKAsset
-    /// supports multi-GB files. It matches the app's 10 GB upload ceiling so that
-    /// any video the user is allowed to submit is uploaded at ORIGINAL quality;
-    /// videos are effectively never compressed. Compression only remains as a
-    /// safety net for pathological files at/above the ceiling.
+    /// Hard ceiling above which the aggressive fallback compression runs. This is NOT a
+    /// CloudKit limit — CKAsset supports multi-GB files. Under it, every video still
+    /// becomes a 1080p playback rendition (see `preparePlaybackRendition`), so this only
+    /// catches pathological files.
     static let maxFileSizeMB: Double = 10240  // 10 GB
     static let maxFileSizeBytes: Int64 = Int64(maxFileSizeMB * 1024 * 1024)
-    
-    /// Compress a video only if it exceeds the upload ceiling (`maxFileSizeMB`)
+
+    // MARK: - Playback rendition limits
+
+    /// Longest edge (pixels) of the playback rendition. 1080p is as much as a phone or
+    /// the inline player can show; anything larger is re-encoded down to fit.
+    static let renditionMaxLongEdge: CGFloat = 1920
+
+    /// A source whose video track is already under this bitrate is passed through
+    /// unchanged. Apple's 1080p HEVC preset lands around 8–10 Mbps, so a file under
+    /// this wouldn't get meaningfully smaller by re-encoding — only lose a generation.
+    static let renditionMaxBitrate: Float = 14_000_000
+
+    /// Prepares `inputURL` for upload, writing the result to `outputURL`.
+    ///
+    /// Under the upload ceiling this produces the playback rendition (re-encoded to
+    /// ≤1080p if the source is bigger or heavier than that, otherwise just remuxed
+    /// fast-start). Above the ceiling it compresses aggressively.
     /// - Parameters:
     ///   - inputURL: The original video URL
-    ///   - outputURL: Where to save the compressed video
-    ///   - progressHandler: Optional callback for progress updates (0.0 to 1.0)
-    /// - Returns: The URL of the compressed video (same as outputURL)
-    /// - Throws: Error if compression fails
+    ///   - outputURL: Where to write the prepared video
+    ///   - progressHandler: Optional 0...1 progress while re-encoding. Not called for a
+    ///     plain remux, which is quick.
+    /// - Returns: The URL to upload — `outputURL`, or `inputURL` if nothing could be written.
+    /// - Throws: Only from the over-ceiling compression path.
     static func compressVideoIfNeeded(
         inputURL: URL,
         outputURL: URL,
         progressHandler: ((Double) -> Void)? = nil
     ) async throws -> URL {
         
-        // Check if compression is needed
         let fileSize = try getFileSize(at: inputURL)
         let fileSizeMB = Double(fileSize) / 1024.0 / 1024.0
         
         print("📹 Original video size: \(String(format: "%.2f", fileSizeMB)) MB")
         
-        // If under limit, don't re-encode — but still remux to a "fast start" layout
-        // (moov atom at the front) so the file streams over HTTP range requests and
-        // playback can begin before the whole file downloads.
         if fileSize < maxFileSizeBytes {
-            print("✅ Video is under \(Int(maxFileSizeMB))MB limit, no compression needed")
-            return await fastStartRemux(inputURL: inputURL, outputURL: outputURL)
+            return await preparePlaybackRendition(
+                inputURL: inputURL,
+                outputURL: outputURL,
+                progressHandler: progressHandler
+            )
         }
 
         print("🔄 Video exceeds \(Int(maxFileSizeMB))MB, compressing...")
@@ -54,6 +75,102 @@ actor VideoCompressionHelper {
             outputURL: outputURL,
             progressHandler: progressHandler
         )
+    }
+
+    // MARK: - Playback rendition
+
+    /// Turns the source into the file the CDN will stream: re-encoded to ≤1080p HEVC
+    /// when it's larger or heavier than that, otherwise remuxed as-is. Never fails the
+    /// upload — if the re-encode can't run or errors out, the source is remuxed instead.
+    private static func preparePlaybackRendition(
+        inputURL: URL,
+        outputURL: URL,
+        progressHandler: ((Double) -> Void)?
+    ) async -> URL {
+        let asset = AVURLAsset(url: inputURL)
+        guard await needsPlaybackTranscode(asset) else {
+            print("✅ Video is already ≤1080p at a streaming-friendly bitrate; remuxing only")
+            return await fastStartRemux(inputURL: inputURL, outputURL: outputURL)
+        }
+        if let rendition = await transcodeToPlaybackRendition(
+            asset: asset, outputURL: outputURL, progressHandler: progressHandler
+        ) {
+            return rendition
+        }
+        print("⚠️ 1080p re-encode unavailable; uploading the source remuxed instead")
+        return await fastStartRemux(inputURL: inputURL, outputURL: outputURL)
+    }
+
+    /// Whether the source is bigger than 1080p or heavier than `renditionMaxBitrate`.
+    /// `naturalSize` is the stored frame before orientation, so the longer edge is the
+    /// right measure for both landscape and portrait footage. An unreadable track is
+    /// treated as "don't transcode" so the upload proceeds via the remux path.
+    private static func needsPlaybackTranscode(_ asset: AVURLAsset) async -> Bool {
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let (size, dataRate) = try? await track.load(.naturalSize, .estimatedDataRate)
+        else { return false }
+        let longEdge = max(abs(size.width), abs(size.height))
+        if longEdge > renditionMaxLongEdge + 1 {
+            print("🎞️ Source is \(Int(size.width))×\(Int(size.height)); re-encoding to 1080p")
+            return true
+        }
+        if dataRate > renditionMaxBitrate {
+            print("🎞️ Source bitrate \(Int(dataRate / 1_000_000)) Mbps; re-encoding for streaming")
+            return true
+        }
+        return false
+    }
+
+    /// Re-encodes `asset` to ≤1080p. HEVC first — half the bytes of H.264 at the same
+    /// quality, hardware-decoded on every device this app runs on — then H.264 for the
+    /// rare source the HEVC preset can't take. Returns nil if no preset is compatible or
+    /// the export fails, so the caller can fall back to uploading the source.
+    private static func transcodeToPlaybackRendition(
+        asset: AVURLAsset,
+        outputURL: URL,
+        progressHandler: ((Double) -> Void)?
+    ) async -> URL? {
+        let outputType: AVFileType = outputURL.pathExtension.lowercased() == "mov" ? .mov : .mp4
+
+        var export: AVAssetExportSession?
+        for preset in [AVAssetExportPresetHEVC1920x1080, AVAssetExportPreset1920x1080] {
+            let compatible = await AVAssetExportSession.compatibility(
+                ofExportPreset: preset, with: asset, outputFileType: outputType
+            )
+            guard compatible, let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
+            export = session
+            print("🎬 Re-encoding playback rendition with \(preset)…")
+            break
+        }
+        guard let export else { return nil }
+
+        try? FileManager.default.removeItem(at: outputURL)
+        // Fast-start layout: moov atom at the front so the stream can start before
+        // the whole file arrives.
+        export.shouldOptimizeForNetworkUse = true
+
+        // Surface encode progress — a long 4K film takes minutes, and without this
+        // the submission form would sit at "0%" the whole time.
+        let progressTask = Task {
+            for await state in export.states(updateInterval: 0.5) {
+                guard case .exporting(let progress) = state else { continue }
+                let fraction = progress.fractionCompleted
+                await MainActor.run { progressHandler?(fraction) }
+            }
+        }
+        defer { progressTask.cancel() }
+
+        do {
+            try await export.export(to: outputURL, as: outputType)
+        } catch {
+            print("❌ Playback rendition export failed: \(error.localizedDescription)")
+            return nil
+        }
+        guard isReadableNonEmptyFile(at: outputURL) else { return nil }
+        if let size = try? getFileSize(at: outputURL) {
+            print("✅ Playback rendition ready: \(String(format: "%.1f", Double(size) / 1024 / 1024)) MB")
+        }
+        return outputURL
     }
     
     /// Get file size in bytes

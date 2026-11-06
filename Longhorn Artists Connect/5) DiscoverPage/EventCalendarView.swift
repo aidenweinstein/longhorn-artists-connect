@@ -513,7 +513,7 @@ struct EventCalendarView: View {
         )
     }
 
-    /// "7:30pm" for a timed event; nil for a date-range category that carries no time.
+    /// "7:30pm" for a timed event; nil when the event has no date.
     ///
     /// For a run of showings this is the time of the performance on the day being listed,
     /// not the run's opening night.
@@ -522,8 +522,6 @@ struct EventCalendarView: View {
             .first { calendar.isDate($0.start, inSameDayAs: selectedDay) }?
             .start
         guard let start = showingStart ?? event.eventStartDate else { return nil }
-        let kind = EventCategoryKind(rawValue: event.genres.first ?? "")
-        guard kind?.usesDateRange != true else { return nil }
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mma"
         return formatter.string(from: start).lowercased()
@@ -722,9 +720,6 @@ private extension Submission {
             .sampleCalendarEvent(title: "Indie Mixer", host: "Some Unlisted Host",
                                  dayOffset: 8, flyer: .systemGreen,
                                  category: .artistMixer),
-            .sampleCalendarEvent(title: "Fall Recruitment", host: "Black Lens",
-                                 dayOffset: -2, flyer: .brown,
-                                 category: .recruitmentSchedule, spanDays: 5),
             .sampleCalendarEvent(title: "Late Night Taping", host: "Longhorn Late Night",
                                  dayOffset: 12, hour: 23, flyer: .systemBlue,
                                  category: .concert)

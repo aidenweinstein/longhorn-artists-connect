@@ -15,7 +15,10 @@ have most of the answer:
   `iCloud.LAA.Longhorn-Artists-Connect` — `FilmSubmission`, `MusicSubmission`,
   `ReelSubmission`, `PhotographySubmission`, `ProjectSubmission`, `EventSubmission`,
   legacy `Submission`, `UserProfile`, `PostLike`, `ModerationAction`, `ModerationEdit`,
-  `Flag`, `Organization`, `OrgContentLink`.
+  `Flag`, `Organization`, `OrgContentLink`, and (added 2026-11-04) `CreativeProfile` and
+  `DirectoryListing` — a person's base profile style (Filmmaker / Actor / Musician) with
+  its details and headshot, and the moderator's decision to list them on the public
+  Actors / Filmmakers / Musicians pages. See `13) Profile Styles/CreativeProfileStore.swift`.
 - `10) Cloudkit/CloudKitWebServices.swift` is already a working CloudKit Web Services
   REST client (record lookup + `downloadURL` assets + range streaming). The website uses
   the same API, from a server instead of from the app.
@@ -118,8 +121,10 @@ The bulk of the value. No app changes, no schema changes.
 | `/discover` | Projects + events | `B) DiscoverView.swift` |
 | `/film/[id]`, `/music/[id]`, `/reel/[id]`, `/photo/[id]` | Post detail | `4) HomePage/*Card.swift` |
 | `/project/[id]`, `/event/[id]` | Post detail | `5) DiscoverPage/*Card.swift` |
-| `/u/[userRecordName]` | Profile + portfolio, honoring `portfolioOrder` | `E) PortfolioView.swift` |
+| `/u/[userRecordName]` | Profile + portfolio, honoring `portfolioOrder`, with the base-profile section (actor sheet / filmography / discography) | `E) PortfolioView.swift`, `13) Profile Styles/StyledProfileSection.swift` |
 | `/studios`, `/studios/[id]` | Organizations | `Collective Studios.swift`, `E3) StudioPageView.swift` |
+| `/now` | The viewer's current projects and openings for their base profile | `13) Profile Styles/NowView.swift` |
+| `/actors`, `/filmmakers`, `/musicians` | Moderator-approved profiles by base profile | `13) Profile Styles/CreativeDirectoryView.swift` |
 
 Explicitly **out of scope for Phase 1**: Share (uploads), Network (DMs), Moderate.
 

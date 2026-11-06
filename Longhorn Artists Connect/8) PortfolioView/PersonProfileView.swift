@@ -20,6 +20,11 @@ struct PersonProfileView: View {
     @State private var selectedProject: Submission?
     @State private var liked = false
     @State private var showEnlargedPhoto = false
+    /// Where the header photo sits on screen, so the zoom overlay can start from it.
+    @State private var profileImageFrame: CGRect = .zero
+    /// Whether posts show as the thumbnail-only Grid (the default when viewing someone
+    /// else's profile) or the List. Not persisted: every profile opens on the Grid.
+    @State private var showsGrid = true
 
     // Check if this is a created profile
     private var isCreatedProfile: Bool {
@@ -147,6 +152,15 @@ struct PersonProfileView: View {
         return portfolioSorted(subs, order: directoryUser?.portfolioOrder ?? [])
     }
 
+    /// Grid arrangement for this person's posts. Their own Custom Grid layout lives only
+    /// on their device, so viewers get the default tile size in the person's portfolio
+    /// order. The grid is read-only here, so this is never written back.
+    private var personGridLayoutRaw: String {
+        PortfolioGridStorage.encode(personSubmissions.map {
+            PortfolioGridTile(id: $0.id.uuidString, widthFraction: PortfolioGridStorage.defaultFraction)
+        })
+    }
+
     // Get person's roles in a specific submission (same rules as the user's own portfolio)
     private func personRolesInSubmission(_ submission: Submission) -> String? {
         // List every role the person played across cast and crew, so someone who both
@@ -176,7 +190,11 @@ struct PersonProfileView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     profileHeaderView
                     bioView
-                    Divider()
+                    // Actor resume / filmmaker filmography / musician discography.
+                    StyledProfileSection(name: name, profileID: directoryUser?.id)
+                    CurrentWorkSection(source: store.visibleApprovedSubmissions) { $0.name == name }
+                    SeeYouAtSection(userID: directoryUser?.id, source: store.visibleApprovedSubmissions)
+                    postsSeparator
                     submissionsView
                     if isModeratorMode && isCreatedProfile {
                         Divider()
@@ -192,15 +210,19 @@ struct PersonProfileView: View {
             .sheet(item: $selectedProject) { project in
                 ProjectDetailView(post: project, liked: $liked)
             }
-            .fullScreenCover(isPresented: $showEnlargedPhoto) {
-                if let profileImage {
-                    ProfilePhotoViewer(image: profileImage)
-                }
-            }
             .task {
                 // Make sure the directory is loaded so this person's synced
                 // bio/photo/roles appear (throttled internally if already fresh).
                 await profileManager.fetchAllUsers()
+            }
+        }
+        // Instagram-style zoom: the circular photo flies from the header to the
+        // center while the sheet dims; tap anywhere to send it back.
+        .overlay {
+            if showEnlargedPhoto, let profileImage {
+                ProfilePhotoZoomOverlay(isPresented: $showEnlargedPhoto, sourceFrame: profileImageFrame) { diameter in
+                    circularProfileImage(profileImage, diameter: diameter)
+                }
             }
         }
         // No grabber; this profile is a sheet, so it is dismissed by swiping
@@ -219,45 +241,92 @@ struct PersonProfileView: View {
     // MARK: - View Components
 
     private var profileHeaderView: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 16) {
+        // Instagram-style header, matching the user's own portfolio: a large photo
+        // on the left; beside it the name and class/major sit on top with the stats
+        // row (posts, unique collaborators, total collaborations) underneath.
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 20) {
                 profileImageView
+                    // Track where the photo sits so the zoom can lift off from it, and
+                    // hide the original while its enlarged twin is on screen.
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                        profileImageFrame = $0
+                    }
+                    .opacity(showEnlargedPhoto ? 0 : 1)
                     // Tap the photo to see it enlarged and centered (only when set).
                     .onTapGesture {
                         if profileImage != nil { showEnlargedPhoto = true }
                     }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(name)
-                        .font(.largeTitle)
-                        .bold()
-                    academicInfoView
+
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(name)
+                                .font(.title)
+                                .bold()
+                            // School-colored seal once this person's email is verified.
+                            UserVerifiedBadge(userID: directoryUser?.id)
+                                .font(.title3)
+                        }
+                        academicInfoView
+                    }
+
+                    // Experience from being on set: collaborations across every
+                    // credited post. Tapping Unique Collaborators lists everyone
+                    // they've worked with.
+                    CollaborationStatsView(
+                        stats: collaborationStats,
+                        postCount: personSubmissions.count,
+                        personName: name
+                    )
                 }
-                Spacer(minLength: 0)
             }
 
             if !resolvedUserType.isEmpty {
                 userTypeBubbles(resolvedUserType)
             }
+
+            // Connect with / message this person (hidden for guests, yourself,
+            // blocked people, and names without a Nexus account).
+            ProfileActionButtons(user: directoryUser)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Collaboration totals for this person across every approved post (all types,
+    /// including events and projects) they're credited on. They're excluded from
+    /// their own counts.
+    private var collaborationStats: CollaborationStats {
+        CollaborationStats.compute(
+            forPersonNamed: name,
+            profileID: directoryUser?.id,
+            in: store.visibleApprovedSubmissions,
+            directory: profileManager.allUsers
+        )
+    }
+
+    /// The person's photo cropped to a circle of the given diameter. Shared by the
+    /// header thumbnail and the zoom overlay so both show the identical crop.
+    private func circularProfileImage(_ image: UIImage, diameter: CGFloat) -> some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: diameter, height: diameter)
+            .clipShape(Circle())
     }
 
     private var profileImageView: some View {
         Group {
             if let profileImage {
-                Image(uiImage: profileImage)
-                    .resizable()
-                    .scaledToFill()
-                    // ====== UI CONTROLS!!!!! ======
-                    .frame(width: 72, height: 72)
-                    // ==============================
-                    .clipShape(Circle())
+                // ====== UI CONTROLS!!!!! ======
+                circularProfileImage(profileImage, diameter: 96)
+                // ==============================
             } else {
                 Image(systemName: "person.crop.circle")
                     .resizable()
                     .scaledToFit()
                     // ====== UI CONTROLS!!!!! ======
-                    .frame(width: 72, height: 72)
+                    .frame(width: 96, height: 96)
                     // ==============================
                     .foregroundStyle(.secondary)
             }
@@ -289,21 +358,20 @@ struct PersonProfileView: View {
         }
     }
 
+    /// This person's school colors for their tags. Locally-created profiles with
+    /// no directory entry get the app's own brand pair.
+    private var roleTagTheme: SchoolTheme {
+        directoryUser.map { SchoolTheme.forSchool($0.school) } ?? .nexusDefault
+    }
+
     private func userTypeBubbles(_ userType: String) -> some View {
         // Use the portfolio's shared FlowLayout (which centers each wrapped row) so
         // the role tags sit in a full-width band below the photo and academic text,
         // matching the user's own portfolio page instead of drifting up beside them.
-        RoleTagFlowLayout(spacing: 6) {
+        let theme = roleTagTheme
+        return RoleTagFlowLayout(spacing: 6) {
             ForEach(userType.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }, id: \.self) { role in
-                Text(role)
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-                    // ====== UI CONTROLS!!!!! ======
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.utBrandOrange)
-                    .cornerRadius(8)
-                    // ==============================
+                RoleTagBubble(tag: role, theme: theme)
             }
         }
         .frame(maxWidth: .infinity)
@@ -316,11 +384,49 @@ struct PersonProfileView: View {
             .italic(bio.isEmpty)
     }
 
+    /// Separator line between the bio and the posts, with the Grid ↔ List toggle on its
+    /// leading edge, matching the user's own portfolio page. Hidden when there are no
+    /// posts to lay out.
+    private var postsSeparator: some View {
+        HStack(spacing: 8) {
+            if !personSubmissions.isEmpty {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showsGrid.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.left.arrow.right")
+                        Text(showsGrid ? "Grid" : "List")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange)
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+            }
+
+            Rectangle()
+                .fill(Color(UIColor.separator))
+                .frame(height: 1)
+        }
+    }
+
     private var submissionsView: some View {
         Group {
             if personSubmissions.isEmpty {
                 Text("No projects yet.")
                     .foregroundStyle(.secondary)
+            } else if showsGrid {
+                // Read-only grid: tiles bleed past the page's 16pt padding to run edge
+                // to edge, like the user's own Custom Grid.
+                PortfolioCustomGridView(
+                    submissions: personSubmissions,
+                    layoutRaw: .constant(personGridLayoutRaw),
+                    isEditing: false,
+                    edgeBleed: 16,
+                    onOpen: { selectedProject = $0 }
+                )
             } else {
                 VStack(spacing: 12) {
                     ForEach(personSubmissions) { submission in
@@ -438,5 +544,218 @@ struct PersonProfileView: View {
         UserDefaults.standard.set(createdProfiles, forKey: "createdUserProfiles")
 
         dismiss()
+    }
+}
+
+// MARK: - Current Work Section
+
+/// "Current Work" on a profile: the person's in-progress projects as a single
+/// horizontally scrolling row of thumbnails, each with their role underneath. Shared by
+/// the user's own portfolio and every view of someone else's profile.
+///
+/// Working on a project means being in its assembled Cast or Crew — posting the project
+/// alone doesn't count. The section (including its leading divider) is hidden when the
+/// person has no current projects.
+struct CurrentWorkSection: View {
+    /// Submissions to search; only `.project` posts are considered.
+    let source: [Submission]
+    /// Whether a cast/crew entry is this person (by name, and/or linked profile ID).
+    let isPerson: (OrderedEntry) -> Bool
+
+    @State private var selectedProject: Submission?
+
+    private var projects: [Submission] {
+        source
+            .filter { submission in
+                submission.type == .project &&
+                (submission.orderedCast.contains(where: isPerson) ||
+                 submission.orderedCrew.contains(where: isPerson))
+            }
+            .sorted { $0.createdDate > $1.createdDate }
+    }
+
+    var body: some View {
+        if !projects.isEmpty {
+            VStack(alignment: .leading, spacing: 16) {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Current Work")
+                        .font(.title3)
+                        .bold()
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(projects) { project in
+                                Button {
+                                    selectedProject = project
+                                } label: {
+                                    item(for: project)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+            .sheet(item: $selectedProject) { project in
+                UpcomingProjectDetailView(submission: project)
+            }
+        }
+    }
+
+    private func item(for project: Submission) -> some View {
+        let thumbnail = project.thumbnailData.flatMap { UIImage(data: $0) }
+        // Every thumbnail shares the row height; its width follows the image's own
+        // aspect ratio so posters, squares, and landscape stills aren't cropped.
+        // Projects without a thumbnail fall back to the 2:3 poster placeholder.
+        // ====== UI CONTROLS!!!!! ======
+        let height: CGFloat = 150
+        // ==============================
+        let aspectRatio: CGFloat = {
+            guard let thumbnail, thumbnail.size.height > 0 else { return 2.0 / 3.0 }
+            return thumbnail.size.width / thumbnail.size.height
+        }()
+        let width = (height * aspectRatio).rounded()
+
+        return VStack(spacing: 6) {
+            Group {
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    ZStack {
+                        Color.secondary.opacity(0.1)
+                        Image(systemName: "photo")
+                            .imageScale(.large)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(width: width, height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Text(role(in: project))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(width: width)
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// The person's role(s) on a project: "Actor" for a cast spot plus each crew role,
+    /// e.g. "Actor, Director".
+    private func role(in project: Submission) -> String {
+        var roles: [String] = []
+        if project.orderedCast.contains(where: isPerson) {
+            roles.append("Actor")
+        }
+        for crewEntry in project.orderedCrew where isPerson(crewEntry) {
+            roles.append(crewEntry.role)
+        }
+        return roles.joined(separator: ", ")
+    }
+}
+
+// MARK: - See You At Section
+
+/// "See You At" on a profile: the upcoming events the person tapped "I'm Going" on, as a
+/// single horizontally scrolling row of flyers with each event's date underneath. Past
+/// events are left out. Hidden (with its leading divider) when there's nothing upcoming,
+/// or when the person has no CloudKit account to look RSVPs up by.
+struct SeeYouAtSection: View {
+    /// The person's CloudKit user ID (raw record name or `UserProfile_` record name).
+    /// Nil for locally-created profiles, which can't RSVP.
+    let userID: String?
+    /// Submissions to search; only `.event` posts are considered.
+    let source: [Submission]
+
+    @State private var attendedEventIDs: Set<UUID> = []
+    @State private var selectedEvent: Submission?
+
+    private var events: [Submission] {
+        source
+            .filter { $0.type == .event && attendedEventIDs.contains($0.id) && !$0.eventHasEnded }
+            .sorted { (nextDate(for: $0) ?? .distantFuture) < (nextDate(for: $1) ?? .distantFuture) }
+    }
+
+    var body: some View {
+        Group {
+            if !events.isEmpty {
+                VStack(alignment: .leading, spacing: 16) {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("See You At")
+                            .font(.title3)
+                            .bold()
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(alignment: .top, spacing: 12) {
+                                ForEach(events) { event in
+                                    Button {
+                                        selectedEvent = event
+                                    } label: {
+                                        item(for: event)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: userID) {
+            guard let userID,
+                  let ids = try? await CloudKitManager.shared.fetchEventIDsAttended(byUserID: userID)
+            else { return }
+            attendedEventIDs = ids
+        }
+        .sheet(item: $selectedEvent) { event in
+            EventDetailView(event: event)
+        }
+    }
+
+    private func item(for event: Submission) -> some View {
+        VStack(spacing: 6) {
+            Group {
+                if let thumbnailData = event.thumbnailData,
+                   let uiImage = UIImage(data: thumbnailData) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        Color.secondary.opacity(0.1)
+                        Image(systemName: "calendar")
+                            .imageScale(.large)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            // ====== UI CONTROLS!!!!! ======
+            .frame(width: 100, height: 150)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            // ==============================
+
+            if let date = nextDate(for: event) {
+                Text(date, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day())
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 100)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// When the person will next be at the event: the next showing still to start for
+    /// multi-showing events, otherwise the event's start date.
+    private func nextDate(for event: Submission) -> Date? {
+        let now = Date()
+        if let upcoming = (event.eventShowings ?? []).map(\.start).filter({ $0 >= now }).min() {
+            return upcoming
+        }
+        return event.eventStartDate
     }
 }

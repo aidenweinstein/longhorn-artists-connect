@@ -47,46 +47,146 @@ struct EditProfileView: View {
     @State private var showMinorPicker = false
     @State private var showCertificatePicker = false
     @State private var showTagsPicker = false
-    @State private var showEmailVerification = false
+    // School email verification (inline in Basic Information).
+    @State private var verificationEmail = ""
+    @State private var verificationCode = ""
+    @State private var pendingVerification: StudentVerificationManager.PendingVerification?
+    @State private var verificationError: String?
+    @State private var isSendingCode = false
+    @State private var isConfirmingCode = false
 
     private let availableYears = Array(2016...2036).map { String($0) }
 
-    /// School email verification status, matching the academic rows' look.
+    private var verification: StudentVerificationManager { .shared }
+
+    private var canSendVerificationCode: Bool {
+        let trimmed = verificationEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.contains("@") && trimmed.contains(".") && !verification.isBusy
+    }
+
+    private var canSubmitVerificationCode: Bool {
+        pendingVerification != nil && verificationCode.count == 6 && !verification.isBusy
+    }
+
+    /// School email + 6-digit code rows.
     ///
     /// Verified is terminal and read-only: the authoritative flag lives in the
     /// `Verification` CloudKit record, which only the verification service can
-    /// write, so there's nothing here for the user to edit or undo.
+    /// write, so once verified the email locks and the code row disappears.
     @ViewBuilder
-    private var schoolEmailRow: some View {
-        if case .verified(let schoolName) = StudentVerificationManager.shared.status {
+    private var schoolEmailRows: some View {
+        if case .verified(let schoolName) = verification.status {
             HStack {
-                Text("School Email")
-                    .foregroundStyle(.primary)
-                Spacer()
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.utBrandOrange)
-                Text(schoolName.isEmpty ? "Verified" : schoolName)
+                // The record only stores an email hash, so an account verified
+                // on another device shows the school instead of the address.
+                Text(verification.verifiedEmail ?? (schoolName.isEmpty ? "School email verified" : schoolName))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    .truncationMode(.middle)
+                Spacer()
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(Color.utBrandOrange)
+                    .accessibilityLabel("Verified")
             }
         } else {
-            Button {
-                showEmailVerification = true
-            } label: {
-                HStack {
-                    Text("School Email")
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Text("Verify")
-                        .foregroundStyle(Color.utBrandOrange)
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(Color.utBrandOrange)
+            // `axis: .vertical` keeps iOS from drawing its autofill box behind
+            // single-line fields (same workaround as the Name field).
+            HStack {
+                TextField("School Email", text: $verificationEmail, axis: .vertical)
+                    .lineLimit(1)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.emailAddress)
+                    .textContentType(.emailAddress)
+                    .onChange(of: verificationEmail) { _, _ in
+                        // A code is tied to the address it was sent to.
+                        pendingVerification = nil
+                        verificationCode = ""
+                    }
+
+                Button {
+                    Task { await sendVerificationCode() }
+                } label: {
+                    if isSendingCode {
+                        ProgressView()
+                    } else {
+                        Text(pendingVerification == nil ? "Send" : "Resend")
+                            .fontWeight(.semibold)
+                    }
                 }
+                // Borderless so only the button is tappable, not the whole row.
+                .buttonStyle(.borderless)
+                .foregroundStyle(canSendVerificationCode ? Color.utBrandOrange : Color.secondary)
+                .disabled(!canSendVerificationCode)
             }
-            .buttonStyle(.plain)
+
+            HStack {
+                TextField("6-Digit Code", text: $verificationCode, axis: .vertical)
+                    .lineLimit(1)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .monospacedDigit()
+                    .onChange(of: verificationCode) { _, newValue in
+                        // Digits only, max six, so pasted junk can't enable Submit.
+                        let digits = String(newValue.filter(\.isNumber).prefix(6))
+                        if digits != newValue { verificationCode = digits }
+                    }
+
+                Button {
+                    Task { await submitVerificationCode() }
+                } label: {
+                    if isConfirmingCode {
+                        ProgressView()
+                    } else {
+                        Text("Submit")
+                            .fontWeight(.semibold)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(canSubmitVerificationCode ? Color.utBrandOrange : Color.secondary)
+                .disabled(!canSubmitVerificationCode)
+            }
+
+            if let verificationError {
+                Text(verificationError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let pendingVerification {
+                Text("Code sent to \(pendingVerification.email). It expires in 10 minutes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func sendVerificationCode() async {
+        verificationError = nil
+        isSendingCode = true
+        defer { isSendingCode = false }
+        do {
+            let pending = try await verification.requestCode(
+                email: verificationEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            pendingVerification = pending
+            verificationCode = ""
+        } catch {
+            verificationError = error.localizedDescription
+        }
+    }
+
+    private func submitVerificationCode() async {
+        guard let pendingVerification else { return }
+        verificationError = nil
+        isConfirmingCode = true
+        defer { isConfirmingCode = false }
+        do {
+            try await verification.confirmCode(verificationCode, for: pendingVerification)
+            self.pendingVerification = nil
+            verificationCode = ""
+        } catch {
+            verificationError = error.localizedDescription
         }
     }
 
@@ -291,7 +391,7 @@ struct EditProfileView: View {
             // verification existed are never forced through it, so this
             // is how they opt in. Industry pros have no school email.
             if !isIndustryProfessional, StudentVerificationManager.isUIAvailable {
-                schoolEmailRow
+                schoolEmailRows
             }
         }
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -447,14 +547,6 @@ struct EditProfileView: View {
                     offsetX: $tempImageOffsetX,
                     offsetY: $tempImageOffsetY,
                     scale: $tempImageScale
-                )
-            }
-        }
-        .sheet(isPresented: $showEmailVerification) {
-            NavigationStack {
-                SchoolEmailVerificationView(
-                    onFinished: { showEmailVerification = false },
-                    dismissTitle: "Cancel"
                 )
             }
         }

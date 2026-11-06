@@ -101,25 +101,40 @@ enum ContentRecommender {
         seenIDs: Set<UUID>,
         seed: UInt64
     ) -> [Item] {
-        // Shuffle first so equal-like-count items have a random baseline order, then use
-        // the shuffled position as a total tiebreak. A plain `sorted` isn't guaranteed
-        // stable, so folding the shuffle index into the comparator is what preserves the
-        // random tie order deterministically.
-        var rng = SeededGenerator(seed: seed)
-        let shuffled = items.shuffled(using: &rng).enumerated()
+        // Give every item its own seeded random key (see `randomKey`) and use that as the
+        // tiebreak. Unlike a Fisher-Yates shuffle, the key depends only on the item's ID
+        // and the seed — not on the input array's count or order — so a background sync
+        // that re-sorts the store, or a new post landing, no longer re-rolls the whole feed.
+        let keyed = items.map { item -> (element: Item, id: UUID, key: UInt64) in
+            let itemID = id(item)
+            return (item, itemID, randomKey(id: itemID, seed: seed))
+        }
 
-        return shuffled.sorted { a, b in
-            let seenA = seenIDs.contains(id(a.element))
-            let seenB = seenIDs.contains(id(b.element))
+        return keyed.sorted { a, b in
+            let seenA = seenIDs.contains(a.id)
+            let seenB = seenIDs.contains(b.id)
             if seenA != seenB { return !seenA }          // unseen before seen
 
             let likesA = likeCount(a.element)
             let likesB = likeCount(b.element)
             if likesA != likesB { return likesA > likesB } // more likes first
 
-            return a.offset < b.offset                     // random, stable tiebreak
+            if a.key != b.key { return a.key < b.key }     // random, stable tiebreak
+            return a.id.uuidString < b.id.uuidString       // total order on key collision
         }
         .map(\.element)
+    }
+
+    /// A pseudo-random sort key for `id` under `seed`. Mixing the UUID's bits into the
+    /// seed and running one step of the generator gives each post a fixed position in a
+    /// given load's random order, independent of every other post.
+    static func randomKey(id: UUID, seed: UInt64) -> UInt64 {
+        let (hi, lo): (UInt64, UInt64) = withUnsafeBytes(of: id.uuid) { bytes in
+            (bytes.loadUnaligned(fromByteOffset: 0, as: UInt64.self),
+             bytes.loadUnaligned(fromByteOffset: 8, as: UInt64.self))
+        }
+        var rng = SeededGenerator(seed: seed ^ hi ^ (lo &* 0x9E3779B97F4A7C15))
+        return rng.next()
     }
 
     /// How many refreshes a feed serves the ranked order before switching to a completely
@@ -129,10 +144,19 @@ enum ContentRecommender {
 
     /// A completely random ordering — no like counts, no seen-state sinking. Stable for a
     /// given `seed` so SwiftUI body re-evaluations don't reshuffle under the user; pass a
-    /// fresh seed on each reload to re-randomize.
-    static func shuffle<Item>(_ items: [Item], seed: UInt64) -> [Item] {
-        var rng = SeededGenerator(seed: seed)
-        return items.shuffled(using: &rng)
+    /// fresh seed on each reload to re-randomize. Ordered by per-item `randomKey`, so (as
+    /// with `rank`) the order survives the store re-sorting or new posts arriving.
+    static func shuffle<Item>(_ items: [Item], id: (Item) -> UUID, seed: UInt64) -> [Item] {
+        items
+            .map { item -> (element: Item, id: UUID, key: UInt64) in
+                let itemID = id(item)
+                return (item, itemID, randomKey(id: itemID, seed: seed))
+            }
+            .sorted { a, b in
+                if a.key != b.key { return a.key < b.key }
+                return a.id.uuidString < b.id.uuidString
+            }
+            .map(\.element)
     }
 
     /// A fresh seed for a feed reload. Callers hold this in view state and regenerate it

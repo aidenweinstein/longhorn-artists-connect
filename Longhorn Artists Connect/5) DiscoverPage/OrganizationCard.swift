@@ -681,10 +681,7 @@ struct OrganizationPageView: View {
                             .font(.title2.weight(.bold))
                             .foregroundStyle(theme.text)
                         ForEach(creditedEvents) { event in
-                            Button { selectedEvent = event } label: {
-                                OrgEventRow(event: event, theme: theme)
-                            }
-                            .buttonStyle(.plain)
+                            eventButton(event)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -756,10 +753,7 @@ struct OrganizationPageView: View {
                 emptyNote(theme: theme)
             } else {
                 ForEach(creditedEvents) { event in
-                    Button { selectedEvent = event } label: {
-                        OrgEventRow(event: event, theme: theme)
-                    }
-                    .buttonStyle(.plain)
+                    eventButton(event)
                 }
             }
         } else if OrgProjectCatalog.isCatalogued(orgSlug: organization.id, section: section) {
@@ -795,6 +789,18 @@ struct OrganizationPageView: View {
                 }
             }
         }
+    }
+
+    /// One tappable event, rendered with the same `EventCard` as the Discover events feed
+    /// (marks it seen and opens its detail sheet, matching Discover).
+    private func eventButton(_ event: Submission) -> some View {
+        Button {
+            SeenContentTracker.shared.markSeen(event.id)
+            selectedEvent = event
+        } label: {
+            EventCard(event: event)
+        }
+        .buttonStyle(.plain)
     }
 
     private func emptyNote(theme: OrgTheme) -> some View {
@@ -909,55 +915,6 @@ struct OrgProjectRow: View {
                 .fill(theme.text.opacity(submission == nil ? 0.06 : 0.12))
         )
         .opacity(submission == nil ? 0.6 : 1)
-    }
-}
-
-/// A themed row for an event crediting the org, shown in the org page's Events section.
-struct OrgEventRow: View {
-    let event: Submission
-    let theme: OrgTheme
-
-    /// "Wed, Oct 5" — abbreviated weekday, month, day.
-    private var dateText: String? {
-        guard let start = event.eventStartDate else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE, MMM d"
-        return formatter.string(from: start)
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Group {
-                if let data = event.thumbnailData, let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFill()
-                } else {
-                    Image(systemName: "calendar")
-                        .foregroundStyle(theme.text.opacity(0.7))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .frame(width: 96, height: 58)
-            .background(theme.text.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(event.title)
-                    .font(.headline)
-                    .foregroundStyle(theme.text)
-                    .lineLimit(2)
-                if let dateText {
-                    Text(dateText)
-                        .font(.subheadline)
-                        .foregroundStyle(theme.text.opacity(0.75))
-                }
-            }
-            Spacer(minLength: 8)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(theme.text.opacity(0.12))
-        )
     }
 }
 

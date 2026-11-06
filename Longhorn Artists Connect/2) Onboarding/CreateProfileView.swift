@@ -479,3 +479,41 @@ struct OnboardingProfilePicturePicker: View {
         }
     }
 }
+
+#Preview("Create Profile (UT Student)") {
+    @Previewable @State var fullName = ""
+    @Previewable @State var currentPage = 1
+    @Previewable @State var existingUserMatch: ExistingUserMatch?
+    @Previewable @State var showImageAdjustment = false
+    NavigationStack {
+        CreateProfileView(
+            profileModel: UserProfileModel(),
+            fullName: $fullName,
+            currentPage: $currentPage,
+            existingUserMatch: $existingUserMatch,
+            showImageAdjustment: $showImageAdjustment
+        )
+    }
+}
+
+#Preview("Industry Details") {
+    @Previewable @State var fullName = ""
+    @Previewable @State var showImageAdjustment = false
+    NavigationStack {
+        IndustryDetailsView(
+            profileModel: UserProfileModel(),
+            fullName: $fullName,
+            showImageAdjustment: $showImageAdjustment,
+            onComplete: {}
+        )
+    }
+}
+
+#Preview("Profile Picture Picker") {
+    @Previewable @State var showImageAdjustment = false
+    OnboardingProfilePicturePicker(
+        profileModel: UserProfileModel(),
+        showImageAdjustment: $showImageAdjustment
+    )
+    .padding()
+}

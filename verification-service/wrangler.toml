@@ -9,7 +9,7 @@ crons = ["0 7 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "lac-verification"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "20b8afae-3a35-4265-8ca2-fc8db84a0295"
 
 [vars]
 CK_CONTAINER = "iCloud.LAA.Longhorn-Artists-Connect"
@@ -17,7 +17,7 @@ CK_ENVIRONMENT = "production"
 # The domain has no MX record, so replies to this address bounce. Keep it
 # no-reply until a forwarding mailbox exists (the email body says not to reply).
 MAIL_FROM = "no-reply@collegeartistsconnect.org"
-MAIL_FROM_NAME = "Longhorn Artists Connect"
+MAIL_FROM_NAME = "Nexus by LAC"
 # Sweep action: "report" writes findings to the Quarantine record type and logs them.
 # "delete" actually removes offending records. Start on "report".
 SWEEP_ACTION = "report"

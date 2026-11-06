@@ -22,6 +22,12 @@ struct NetworkDirectoryView: View {
     /// tags, and the rest fall under "Everyone Else".
     @State private var selectedFilterTags: Set<String> = []
     @AppStorage("isModeratorMode") private var isModeratorMode: Bool = false
+    /// Private connections, so they can be listed in their own sections (Requests
+    /// waiting on me, then my Connections) ahead of the general directory.
+    @ObservedObject private var connections = ConnectionsManager.shared
+    /// Profile styles and moderator listings, for the Actors / Filmmakers / Musicians
+    /// pages and their counts.
+    @ObservedObject private var creative = CreativeProfileStore.shared
 
     // The signed-in user's locally-stored profile. Used to synthesize their own
     // directory entry so they can always find and view their own profile — even
@@ -134,7 +140,9 @@ struct NetworkDirectoryView: View {
     var allCreditedPeople: Set<String> {
         var people = Set<String>()
         
-        for submission in store.approvedSubmissions {
+        // Only credits on posts from the schools this user sees.
+        let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
+        for submission in store.approvedSubmissions where SchoolScope.isVisible(schoolID: submission.schoolID, in: visibleSchoolIDs) {
             // Add cast members
             for entry in submission.orderedCast {
                 people.insert(entry.name)
@@ -225,10 +233,29 @@ struct NetworkDirectoryView: View {
         }
     }
 
-    // Only UT students appear in the directory. Guest (non-UT) accounts are
-    // hidden — moderators can move users to/from Guest in Moderator Mode.
+    /// People who asked to connect with me and are waiting on an answer, narrowed by
+    /// the search text. Listed first so a request is never missed.
+    var requestUsers: [DirectoryUser] {
+        sortUsers(connections.pendingRequesters(in: filteredCloudKitUsers))
+    }
+
+    /// My connections (both sides agreed), narrowed by the search text. They get their
+    /// own section and are left out of the general lists below so the two never overlap.
+    var connectionUsers: [DirectoryUser] {
+        sortUsers(connections.connectedUsers(in: filteredCloudKitUsers))
+    }
+
+    // Only students appear in the directory, and only from the schools this user
+    // sees (`SchoolScope`). Guest accounts are hidden — moderators can move users
+    // to/from Guest in Moderator Mode. Connections are listed in their own section.
     var filteredUTStudents: [DirectoryUser] {
-        sortUsers(filteredCloudKitUsers.filter { $0.isUTStudent })
+        let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
+        let connectedIDs = connections.connectedIDs
+        return sortUsers(filteredCloudKitUsers.filter {
+            $0.isUTStudent
+                && SchoolScope.isVisible(schoolName: $0.school, in: visibleSchoolIDs)
+                && !connectedIDs.contains($0.messagingUserID)
+        })
     }
 
     /// Industry Professionals, listed on their own pushed page.
@@ -347,6 +374,45 @@ struct NetworkDirectoryView: View {
                 
                 // User list
                 List {
+                    // Connection requests waiting on me, with an inline Accept.
+                    if !requestUsers.isEmpty {
+                        Section("Requests") {
+                            ForEach(requestUsers) { user in
+                                requestRow(user)
+                            }
+                        }
+                    }
+
+                    // My connections, kept apart from the general directory below.
+                    if !connectionUsers.isEmpty {
+                        Section("Connections") {
+                            ForEach(connectionUsers) { user in
+                                directoryUserRow(user)
+                            }
+                        }
+                    }
+
+                    // The public Actors / Filmmakers / Musicians pages: one entry per
+                    // base profile, each pushing that page (with a segmented control
+                    // to hop between the three). Only moderator-approved profiles are
+                    // listed. Hidden while searching, since the search is by person.
+                    if searchText.isEmpty {
+                        Section("Pages") {
+                            ForEach(ProfileStyle.allCases) { style in
+                                NavigationLink {
+                                    CreativeDirectoryPage(style: style)
+                                } label: {
+                                    directoryFieldRow(
+                                        icon: style.symbol,
+                                        title: style.plural,
+                                        subtitle: pageSubtitle(for: style),
+                                        count: creative.listedPeople(for: style, in: userProfileManager.allUsers).count
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // ✅ SECTION 1: UT students registered on the app.
                     if selectedFilterTags.isEmpty {
                         // No filter — everyone under "On Nexus".
@@ -487,7 +553,11 @@ struct NetworkDirectoryView: View {
                 .listStyle(.insetGrouped)
                 .refreshable {
                     await userProfileManager.fetchAllUsers(forceRefresh: true)
+                    await creative.refresh(force: true)
                 }
+                // Load styles and listings so the Pages counts are right (throttled
+                // internally when already fresh).
+                .task { await creative.refresh() }
             }
             .navigationTitle("Directory")
             .navigationBarTitleDisplayMode(.inline)
@@ -546,9 +616,13 @@ struct NetworkDirectoryView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(user.fullName)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(user.fullName)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        UserVerifiedBadge(userID: user.id)
+                            .font(.system(size: 13))
+                    }
 
                     // Industry pros show role/company; students show their role tags.
                     if user.isIndustryProfessional {
@@ -579,8 +653,40 @@ struct NetworkDirectoryView: View {
                 }
             }
             .padding(.vertical, 4)
+            // Fill the row and hit-test the whole rectangle so taps on the empty
+            // space between the name and the year chip still open the profile.
+            // `.plain` buttons otherwise only respond on opaque content.
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+    }
+
+    /// A directory row for someone whose connection request is waiting on me: the
+    /// usual tappable row plus an inline Accept, so answering doesn't require opening
+    /// their profile. Declining isn't a separate action — ignoring a request leaves it
+    /// here, and the sender can withdraw it from their side.
+    @ViewBuilder
+    private func requestRow(_ user: DirectoryUser) -> some View {
+        HStack(spacing: 8) {
+            directoryUserRow(user)
+
+            Button {
+                Task { await connections.connect(with: user) }
+            } label: {
+                Text("Accept")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.brandOrange)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(connections.isBusy(user.messagingUserID))
+            .accessibilityLabel("Accept \(user.fullName)'s connection request")
+        }
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
     }
 
@@ -615,6 +721,15 @@ struct NetworkDirectoryView: View {
         }
         .padding(.vertical, 4)
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+    }
+
+    /// What each public page holds, for the Pages rows.
+    private func pageSubtitle(for style: ProfileStyle) -> String {
+        switch style {
+        case .actor: return "Headshots, reels & resumes"
+        case .filmmaker: return "Filmographies & stills"
+        case .musician: return "Discographies & shows"
+        }
     }
 
     /// Pushed page listing everyone credited on projects but not registered on Nexus.
@@ -665,9 +780,57 @@ struct NetworkDirectoryView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    /// Titles of the approved posts (from the schools this user sees) that credit
+    /// `name` — as cast, crew, music recording/production, or a photography post's
+    /// photographer. Deduplicated, in feed order, so the invite can list them.
+    private func creditedTitles(for name: String) -> [String] {
+        let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
+        var seen = Set<String>()
+        var titles: [String] = []
+        for submission in store.approvedSubmissions
+        where SchoolScope.isVisible(schoolID: submission.schoolID, in: visibleSchoolIDs) {
+            let isCredited =
+                submission.orderedCast.contains(where: { $0.name == name }) ||
+                submission.orderedCrew.contains(where: { $0.name == name }) ||
+                submission.orderedRecording.contains(where: { $0.name == name }) ||
+                submission.orderedProduction.contains(where: { $0.name == name }) ||
+                submission.isPhotographer(named: name)
+            let title = submission.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isCredited, !title.isEmpty, seen.insert(title).inserted else { continue }
+            titles.append(title)
+        }
+        return titles
+    }
+
+    /// Builds the invite text for someone credited on posts but not yet on Nexus,
+    /// e.g. `Johnny Test, you've been credited on two projects: "Worms" and
+    /// "Graphite" on Nexus by LAC! …`. Falls back to a generic invite when no
+    /// credited titles can be found.
+    private func inviteMessage(for name: String) -> String {
+        let callToAction = "Download the app to connect with college creators, share your work, and stay informed about opportunities. (Website and Android versions coming soon.)"
+        let titles = creditedTitles(for: name)
+        guard !titles.isEmpty else {
+            return "\(name), join Nexus by LAC! \(callToAction)"
+        }
+
+        // "two projects" / "one project", spelled out for small counts.
+        let countFormatter = NumberFormatter()
+        countFormatter.numberStyle = .spellOut
+        let countWord = titles.count <= 10
+            ? (countFormatter.string(from: NSNumber(value: titles.count)) ?? "\(titles.count)")
+            : "\(titles.count)"
+        let noun = titles.count == 1 ? "project" : "projects"
+
+        // "Worms" and "Graphite" / "A", "B", and "C"
+        let quoted = titles.map { "\"\($0)\"" }
+        let titleList = ListFormatter.localizedString(byJoining: quoted)
+
+        return "\(name), you've been credited on \(countWord) \(noun): \(titleList) on Nexus by LAC! \(callToAction)"
+    }
+
     private func shareInviteLink(for name: String) {
-        // Create invite message
-        let inviteText = "Join me on Nexus from Longhorn Artists Connect! Download the app to connect with UT creators, share your work, and learn about upcoming projects."
+        // Create invite message naming the person and the posts they're credited on
+        let inviteText = inviteMessage(for: name)
         let appURL = "https://apps.apple.com/app/id6758110788"
         
         let activityVC = UIActivityViewController(

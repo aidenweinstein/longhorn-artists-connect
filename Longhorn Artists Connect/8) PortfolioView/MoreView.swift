@@ -63,6 +63,13 @@ struct MoreView: View {
     @ObservedObject private var moderatorSession = ModeratorSession.shared
     @State private var moderatorPasswordInput = ""
     @State private var moderatorPasswordError = false
+
+    /// Inbox the moderator's test verification code is sent to.
+    private static let testVerificationEmail = "arw4336@my.utexas.edu"
+    @State private var isSendingTestVerificationEmail = false
+    /// Outcome of the last test send. Stays on screen until the next send so
+    /// it can be read against the inbox at leisure.
+    @State private var testVerificationEmailResult: String?
     
     enum AppearanceOption: String, CaseIterable, Identifiable {
         case light = "Light"
@@ -194,6 +201,42 @@ struct MoreView: View {
                                 .font(.caption)
                                 .foregroundStyle(.red)
                         }
+
+                        // Deliverability check: emails a real verification code
+                        // to the moderator's test inbox through the live service.
+                        // Only once the mode is actually on, so it can't be
+                        // tapped from a locked sheet.
+                        if isModeratorMode {
+                            Button {
+                                Task { await sendTestVerificationEmail() }
+                            } label: {
+                                HStack {
+                                    if isSendingTestVerificationEmail {
+                                        ProgressView()
+                                            .padding(.trailing, 4)
+                                    } else {
+                                        Image(systemName: "envelope.badge")
+                                            .foregroundStyle(Color.utBrandOrange)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Send Test Verification Email")
+                                            .foregroundStyle(.primary)
+                                        Text(Self.testVerificationEmail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSendingTestVerificationEmail)
+
+                            if let testVerificationEmailResult {
+                                Text(testVerificationEmailResult)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
                     } header: {
                         Text("Moderation")
                     }
@@ -315,6 +358,28 @@ struct MoreView: View {
         // Animate the transition
         UIView.transition(with: window, duration: 0.3, options: .transitionCrossDissolve) {
             window.overrideUserInterfaceStyle = newStyle
+        }
+    }
+
+    /// Sends a real verification code to the moderator's test inbox. Same
+    /// endpoint, template and sender as a student would get, so what lands in
+    /// the inbox is exactly what users see. The code is never confirmed, so no
+    /// `Verification` record is written and the account is unchanged.
+    private func sendTestVerificationEmail() async {
+        isSendingTestVerificationEmail = true
+        testVerificationEmailResult = nil
+        defer { isSendingTestVerificationEmail = false }
+
+        let sentAt = Date.now.formatted(date: .omitted, time: .shortened)
+        do {
+            let pending = try await StudentVerificationManager.shared.sendTestCode(
+                email: Self.testVerificationEmail
+            )
+            let expires = pending.expiresAt.formatted(date: .omitted, time: .shortened)
+            testVerificationEmailResult =
+                "Sent at \(sentAt) for \(pending.schoolName). The code in it is valid until \(expires)."
+        } catch {
+            testVerificationEmailResult = "Send failed at \(sentAt): \(error.localizedDescription)"
         }
     }
 

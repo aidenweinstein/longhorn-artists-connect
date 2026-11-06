@@ -100,6 +100,60 @@ enum UserType: String, CaseIterable, Identifiable, Codable {
     var id: String { self.rawValue }
 }
 
+// MARK: - Account Kind
+
+/// What a student picks on `UserTypePage`, and what it unlocks:
+/// - **Artist** — the normal student account.
+/// - **Enthusiast** — the Guest experience (no sharing or messaging), but only
+///   seeing their own school's work.
+///
+/// Separate from the `UserType` role tags: a student tagged "Agent" on the Tags
+/// page is still whatever kind they picked here. Empty/unknown (every account
+/// created before this page existed) behaves as Artist.
+enum AccountKind: String, CaseIterable, Identifiable {
+    case artist = "Artist"
+    case enthusiast = "Enthusiast"
+
+    var id: String { rawValue }
+
+    /// Art palette and popcorn bucket.
+    var icon: String {
+        switch self {
+        case .artist: return "🎨"
+        case .enthusiast: return "🍿"
+        }
+    }
+
+    /// UserDefaults / `@AppStorage` key for the signed-in account's kind.
+    static let storageKey = "accountKind"
+
+    /// The signed-in account's kind, or nil for accounts that never picked one.
+    static var current: AccountKind? {
+        AccountKind(storedValue: UserDefaults.standard.string(forKey: storageKey) ?? "")
+    }
+
+    // MARK: - Removed Agent kind
+
+    /// The raw value of the Agent kind, which was removed on 2026-10-16. Any
+    /// account still carrying it (locally or in its CloudKit `UserProfile`) is
+    /// a normal Artist now — see `init(storedValue:)` and
+    /// `UserProfileModel.loadFromStorage()`.
+    static let legacyAgentRawValue = "Agent"
+
+    /// UserDefaults keys the removed Agent approval flow left behind.
+    static let legacyAgentDefaultsKeys = ["agentApprovalStatus", "agentContractAcceptedAt"]
+
+    /// Like `init(rawValue:)`, but maps the removed Agent kind to Artist so
+    /// stored values written before its removal keep working.
+    init?(storedValue: String) {
+        if storedValue == Self.legacyAgentRawValue {
+            self = .artist
+        } else {
+            self.init(rawValue: storedValue)
+        }
+    }
+}
+
 // MARK: - User Profile Model
 
 @MainActor
@@ -132,6 +186,13 @@ class UserProfileModel: ObservableObject {
     /// These accounts are restricted like guests (no sharing) but keep a real profile
     /// and portfolio. Distinct from the tag-based `isIndustryPro` computed property.
     @Published var isIndustryProfessional: Bool = false
+    /// Artist / Enthusiast, picked on `UserTypePage`. Nil for accounts that
+    /// predate that page (treated as Artist) and for non-student accounts.
+    @Published var accountKind: AccountKind?
+    /// Base profile — Filmmaker, Actor or Musician — picked on `ProfileStylePage`
+    /// (required for artists). Owned by `CreativeProfileStore`, which also keeps the
+    /// style's details and headshot and syncs them; this is a mirror for onboarding.
+    @Published var profileStyle: ProfileStyle?
     @Published var bio: String = ""
     @Published var instagramHandle: String = ""
     @Published var websiteURL: String = ""
@@ -159,11 +220,14 @@ class UserProfileModel: ObservableObject {
     @AppStorage("userCompanyRole") var storedCompanyRole: String = ""
     /// True when the account was created via the Industry Professional flow.
     @AppStorage("isIndustryProfessional") var isIndustryProfessionalStored: Bool = false
+    @AppStorage(AccountKind.storageKey) var storedAccountKind: String = ""
 
     // MARK: - Schools
 
     /// The canonical UT school name used as the default.
     static let utSchoolName = "The University of Texas at Austin"
+    /// The canonical UC Berkeley school name — the second school offered in onboarding.
+    static let berkeleySchoolName = "University of California, Berkeley"
     /// Selectable schools for the "I'm from another school" onboarding path.
     /// "Other" is the generic bucket chosen via "Add School".
     ///
@@ -240,6 +304,15 @@ class UserProfileModel: ObservableObject {
         storedCompany = company
         storedCompanyRole = companyRole
         isIndustryProfessionalStored = isIndustryProfessional
+        storedAccountKind = accountKind?.rawValue ?? ""
+
+        // Base profile style. `CreativeProfileStore` is the owner: it persists the
+        // choice, keeps whatever details were already typed for it, and uploads the
+        // `CreativeProfile` record (which also queues it for the moderator).
+        if let profileStyle, CreativeProfileStore.shared.myStyle != profileStyle {
+            let creative = CreativeProfileStore.shared
+            creative.update(style: profileStyle, details: creative.myDetails, headshot: creative.myHeadshot)
+        }
 
         // Save profile image to documents directory
         if let profileImage {
@@ -280,6 +353,9 @@ class UserProfileModel: ObservableObject {
         company = storedCompany
         companyRole = storedCompanyRole
         isIndustryProfessional = isIndustryProfessionalStored
+        accountKind = AccountKind(storedValue: storedAccountKind)
+        profileStyle = ProfileStyle.current
+        migrateLegacyAgentAccount()
 
         // Parse stored user types
         let types = storedUserType.split(separator: ",")
@@ -291,7 +367,24 @@ class UserProfileModel: ObservableObject {
         
         print("📥 User profile loaded: \(fullName)")
     }
-    
+
+    /// Agent accounts were removed on 2026-10-16. If this device still has one
+    /// (whether the moderator had approved it or not), turn it back into a
+    /// normal Artist account: rewrite the stored kind, drop the approval and
+    /// contract state the old flow kept, and push the change to CloudKit so
+    /// the public `UserProfile` stops saying "Agent" too. Runs once — the
+    /// rewrite happens first, so later loads find nothing to migrate.
+    private func migrateLegacyAgentAccount() {
+        guard storedAccountKind == AccountKind.legacyAgentRawValue else { return }
+        storedAccountKind = AccountKind.artist.rawValue
+        accountKind = .artist
+        for key in AccountKind.legacyAgentDefaultsKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        print("ℹ️ Agent account migrated back to Artist")
+        Task { await saveToCloudKit() }
+    }
+
     /// Clear all user data (for logout/reset)
     func clearAll() {
         // Clear published properties
@@ -311,6 +404,7 @@ class UserProfileModel: ObservableObject {
         company = ""
         companyRole = ""
         isIndustryProfessional = false
+        accountKind = nil
         bio = ""
         instagramHandle = ""
         websiteURL = ""
@@ -334,6 +428,10 @@ class UserProfileModel: ObservableObject {
         storedCompany = ""
         storedCompanyRole = ""
         isIndustryProfessionalStored = false
+        storedAccountKind = ""
+        for key in AccountKind.legacyAgentDefaultsKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         hasCompletedOnboarding = false
         
         // Delete profile image file
@@ -615,6 +713,7 @@ class UserProfileModel: ObservableObject {
             existingRecord["company"] = company as CKRecordValue
             existingRecord["companyRole"] = companyRole as CKRecordValue
             existingRecord["isIndustryProfessional"] = (isIndustryProfessional ? 1 : 0) as CKRecordValue
+            writeAccountKindFields(to: existingRecord)
 
             // Update profile image if exists
             if let profileImage = profileImage,
@@ -717,6 +816,7 @@ class UserProfileModel: ObservableObject {
         record["company"] = company as CKRecordValue
         record["companyRole"] = companyRole as CKRecordValue
         record["isIndustryProfessional"] = (isIndustryProfessional ? 1 : 0) as CKRecordValue
+        writeAccountKindFields(to: record)
 
         // Profile image
         if let profileImage = profileImage,
@@ -730,7 +830,24 @@ class UserProfileModel: ObservableObject {
         
         return record
     }
-    
+
+    /// `accountKind` (STRING). Written on every profile save because the save
+    /// overwrites the whole record.
+    ///
+    /// ⚠️ The field must exist on `UserProfile` in BOTH CloudKit environments.
+    /// Until then Production rejects it and the save's drop-and-retry uploads
+    /// the profile without it.
+    private func writeAccountKindFields(to record: CKRecord) {
+        if let accountKind {
+            record["accountKind"] = accountKind.rawValue as CKRecordValue
+        }
+        // Left over from the removed Agent flow: it uploaded the agent's email
+        // and contract date onto the public profile. Clear both so former
+        // agents' records go back to normal.
+        record["agentContractAcceptedAt"] = nil
+        record["userEmail"] = nil
+    }
+
     private func fromCloudKitRecord(_ record: CKRecord) async {
         await MainActor.run {
             firstName = (record["firstName"] as? String) ?? ""
@@ -748,6 +865,13 @@ class UserProfileModel: ObservableObject {
             company = (record["company"] as? String) ?? ""
             companyRole = (record["companyRole"] as? String) ?? ""
             isIndustryProfessional = ((record["isIndustryProfessional"] as? Int) ?? 0) == 1
+            // Keep the local kind when the record has none (e.g. Production
+            // dropped the field before it was added to the schema). A record
+            // still saying "Agent" reads as Artist; the `save()` below then
+            // rewrites it on the server.
+            if let kind = AccountKind(storedValue: (record["accountKind"] as? String) ?? "") {
+                accountKind = kind
+            }
 
             // Parse user types
             let types = (record["userTypes"] as? String ?? "").split(separator: ",")

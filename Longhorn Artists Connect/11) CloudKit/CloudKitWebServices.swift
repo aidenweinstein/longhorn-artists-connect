@@ -80,28 +80,15 @@ enum CloudKitWebServices {
     /// Must match the app's iCloud container identifier (see the entitlements file).
     static let containerID = "iCloud.LAA.Longhorn-Artists-Connect"
 
-    /// UserDefaults key to override the streaming environment at runtime ("production" or
-    /// "development"), without recompiling. Absent → the default below.
-    static let environmentOverrideKey = "CKWSEnvironmentOverride"
-
     /// Which CloudKit environment the **web-services (streaming) layer** talks to.
     ///
-    /// This is deliberately independent of the native `CKContainer` (which follows the
-    /// build's provisioning: a Debug build points at the near-empty *development*
-    /// environment). All real content — and every real post shown in the feed — lives in
-    /// **production**, so streaming defaults to production regardless of build config; the
-    /// lookups are read-only, so this is safe. Previously this was `#if DEBUG →
-    /// development`, which made Debug builds look up production feed posts in development
-    /// and get `NOT_FOUND` for every one.
-    ///
-    /// Set the `CKWSEnvironmentOverride` UserDefault to "development" to stream dev-only
-    /// uploads instead.
+    /// Always the same environment as the native `CKContainer` (which follows the build's
+    /// provisioning: run from Xcode → development; TestFlight/App Store → production), so
+    /// a post is streamed from the environment it was uploaded to and fetched from. The
+    /// two environments are kept fully separate — a Debug build never sees production
+    /// posts, and a release build never sees development ones.
     static var environment: String {
-        if let override = UserDefaults.standard.string(forKey: environmentOverrideKey),
-           override == "development" || override == "production" {
-            return override
-        }
-        return "production"
+        CloudKitEnvironmentDetector.isDevelopment ? "development" : "production"
     }
 
     /// Whether a usable API token has been configured for the current environment. When
@@ -166,7 +153,7 @@ enum CloudKitWebServices {
     private static func defaultExtension(for field: String) -> String {
         switch field {
         case "filmVideo", "reelVideo", "filmTrailer": return "mov"
-        case "musicAudio":                            return "m4a"
+        case "musicAudio", "musicTracks":             return "m4a"
         default:                                      return "bin"
         }
     }
@@ -175,7 +162,7 @@ enum CloudKitWebServices {
     /// Only audio does: video uploads are always the app's own `.mov` exports, and the
     /// video path already streams correctly, so it's left untouched.
     private static func sniffsContainer(_ field: String) -> Bool {
-        field == "musicAudio"
+        field == "musicAudio" || field == "musicTracks"
     }
 
     /// Identifies a media container from the first bytes of the streamed file. Nil when
@@ -281,6 +268,52 @@ enum CloudKitWebServices {
             guard let url else { return (.noDownloadURL, debug + " badURL") }
             return (.streaming(url), debug + " " + detail)
         }
+    }
+
+    /// Range-streamable URLs for every file in an asset-list field, in list order — used
+    /// for an EP/Album's extra tracks (`musicTracks`, with container extensions in the
+    /// parallel `extensionListField`). The feed never fetches that list, so this is the
+    /// only way a viewer's device learns the tracks exist. Returns an empty array when
+    /// streaming isn't configured, the lookup fails, or the record has no list (singles,
+    /// performances, and every record from before the field existed).
+    static func streamURLs(recordName: String, listField: String, extensionListField: String?) async -> [URL] {
+        guard isConfigured, let endpoint = URL(string:
+            "https://api.apple-cloudkit.com/database/1/\(containerID)/\(environment)/public/records/lookup?ckAPIToken=\(apiToken)"
+        ) else { return [] }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "records": [["recordName": recordName]],
+            "desiredKeys": [listField] + (extensionListField.map { [$0] } ?? [])
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        guard
+            let (data, response) = try? await URLSession.shared.data(for: request),
+            (response as? HTTPURLResponse)?.statusCode == 200,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let record = (json["records"] as? [[String: Any]])?.first,
+            let fields = record["fields"] as? [String: Any],
+            // An ASSET_LIST arrives as `{"value": [assetValue, …], "type": "ASSET_LIST"}`.
+            let assets = (fields[listField] as? [String: Any])?["value"] as? [[String: Any]]
+        else { return [] }
+
+        let exts = extensionListField
+            .flatMap { (fields[$0] as? [String: Any])?["value"] as? [String] } ?? []
+
+        var urls: [URL] = []
+        for (index, asset) in assets.enumerated() {
+            guard let template = asset["downloadURL"] as? String else { continue }
+            let (url, _) = await Self.streamURL(
+                template: template,
+                field: listField,
+                storedExtension: index < exts.count ? exts[index] : nil
+            )
+            if let url { urls.append(url) }
+        }
+        return urls
     }
 
     /// Outcome of a single asset-field lookup, before it's interpreted for streaming vs.

@@ -14,6 +14,9 @@
 //    - page 2 → TagsView.swift             (TagsView)
 //    - page 3 → CreateProfileView.swift    (IndustryDetailsView)
 //    - page 4 → SchoolEmailVerificationView.swift
+//    - page 5 → SchoolSelectionView.swift
+//    - page 6 → UserTypePage.swift          (Artist / Enthusiast)
+//    - page 7 → ProfileStylePage.swift      (Filmmaker / Actor / Musician — required)
 //
 
 import SwiftUI
@@ -82,6 +85,13 @@ struct OnboardingView: View {
                     } else if currentPage == 2 {
                         TagsView(
                             profileModel: profileModel,
+                            currentPage: $currentPage
+                        )
+                    } else if currentPage == 7 {
+                        // Required for every artist account: the base profile that
+                        // shapes recommendations, the Now page and the profile layout.
+                        ProfileStylePage(
+                            profileModel: profileModel,
                             onComplete: completeOnboarding
                         )
                     } else if currentPage == 3 {
@@ -93,10 +103,25 @@ struct OnboardingView: View {
                         )
                     } else if currentPage == 4 {
                         page5VerificationView
+                    } else if currentPage == 5 {
+                        SchoolSelectionView(
+                            profileModel: profileModel,
+                            currentPage: $currentPage
+                        )
+                    } else if currentPage == 6 {
+                        UserTypePage(
+                            profileModel: profileModel,
+                            currentPage: $currentPage,
+                            onComplete: completeOnboarding
+                        )
                     }
                 }
                 .animation(.easeInOut, value: currentPage)
             }
+            // Tapping anywhere outside a text field drops the keyboard. The account
+            // pages are fixed (scrollDisabled), so without this the keyboard can sit
+            // over the Next / Create Account button with no way to reach it.
+            .endEditingOnTap()
             .navigationBarTitleDisplayMode(.inline)
             .alert("Error", isPresented: $showingError) {
                 Button("OK", role: .cancel) { }
@@ -147,11 +172,14 @@ struct OnboardingView: View {
     /// Skipping is allowed and lands on account details all the same; posting
     /// stays gated until they verify (see `VerificationGate`).
     private var page5VerificationView: some View {
-        SchoolEmailVerificationView {
-            withAnimation {
-                currentPage = 1
-            }
-        }
+        SchoolEmailVerificationView(
+            onFinished: {
+                withAnimation {
+                    currentPage = 1
+                }
+            },
+            school: profileModel.school
+        )
     }
 
     // MARK: - Helper Views
@@ -329,6 +357,17 @@ struct ExistingUserConfirmationView: View {
     }
 }
 
-#Preview {
+#Preview("Onboarding") {
     OnboardingView()
+}
+
+#Preview("Existing User Confirmation") {
+    ExistingUserConfirmationView(
+        fullName: "Jane Doe",
+        projects: ["Sample Film", "Sample Track", "Sample Reel"].map {
+            Submission(id: UUID(), type: .film, title: $0, details: "", isApproved: true, submittedBy: "Jane Doe")
+        },
+        onConfirm: {},
+        onCancel: {}
+    )
 }

@@ -23,6 +23,9 @@ func portfolioSorted(_ submissions: [Submission], order: [String]) -> [Submissio
 
 struct Portfolio_5: View {
     @ObservedObject var store: SubmissionStore_3_2 = .shared
+    /// Observed so the header's Collaborators/Collabs numbers, which only count people in
+    /// the directory, refresh once the directory loads.
+    @ObservedObject private var profileManager = UserProfileManager.shared
     
     // Onboarding data
     @AppStorage("userFirstName") private var userFirstName: String = ""
@@ -47,7 +50,12 @@ struct Portfolio_5: View {
     /// Persisted locally for instant/offline effect and mirrored to CloudKit so other
     /// viewers see the same order.
     @AppStorage("portfolioOrder") private var portfolioOrderRaw: String = ""
-    
+    /// Whether posts show as the List or the thumbnail-only Custom Grid.
+    @AppStorage("portfolioShowsCustomGrid") private var showsCustomGrid: Bool = false
+    /// The Custom Grid's own order and tile sizes (JSON of `[PortfolioGridTile]`),
+    /// kept separate from the List order. Stored locally on this device.
+    @AppStorage("portfolioGridLayout") private var portfolioGridLayoutRaw: String = ""
+
     // Legacy storage (kept for backward compatibility)
     @AppStorage("profileName") private var profileName: String = ""
     @AppStorage("graduationYear") private var graduationYear: Int = 0
@@ -81,6 +89,8 @@ struct Portfolio_5: View {
     @State private var selectedProject: Submission?
     @State private var liked = false
     @State private var showEnlargedPhoto = false
+    /// Where the header photo sits on screen, so the zoom overlay can start from it.
+    @State private var profileImageFrame: CGRect = .zero
 
     // MARK: - Drag-to-reorder state
     /// True while the user is in "Reorder Posts" mode. Posts are only draggable in this
@@ -146,23 +156,24 @@ struct Portfolio_5: View {
         UserProfileManager.shared.getCurrentUser()?.id
     }
 
+    /// Whether a credit entry is the current user — by name, or by linked profile ID so
+    /// a credit picked from the directory resolves even if the name differs.
+    private func isSelf(_ entry: OrderedEntry) -> Bool {
+        let name = displayName
+        if !name.isEmpty && entry.name == name { return true }
+        if let profileID = currentUserProfileID, entry.profileID == profileID { return true }
+        return false
+    }
+
     /// Whether the current user is credited on a submission — as cast, crew, or
     /// (for music) recording/production. Matches by name, and also by linked profile
     /// ID so a credit picked from the directory resolves even if the name differs.
     private func isSelfCredited(_ submission: Submission) -> Bool {
         let name = displayName
-        let profileID = currentUserProfileID
-
-        func matches(_ entry: OrderedEntry) -> Bool {
-            if !name.isEmpty && entry.name == name { return true }
-            if let profileID, entry.profileID == profileID { return true }
-            return false
-        }
-
-        return submission.orderedCast.contains(where: matches)
-            || submission.orderedCrew.contains(where: matches)
-            || submission.orderedRecording.contains(where: matches)
-            || submission.orderedProduction.contains(where: matches)
+        return submission.orderedCast.contains(where: isSelf)
+            || submission.orderedCrew.contains(where: isSelf)
+            || submission.orderedRecording.contains(where: isSelf)
+            || submission.orderedProduction.contains(where: isSelf)
             // A photography post's photographer isn't in the ordered credit lists.
             || submission.isPhotographer(named: name)
     }
@@ -440,6 +451,13 @@ struct Portfolio_5: View {
                         VStack(alignment: .leading, spacing: feedFormat.sectionSpacing) {
                             profileHeaderView
                             bioView
+                            // Actor resume / filmmaker filmography / musician discography.
+                            StyledProfileSection(name: displayName, profileID: currentUserProfileID, isOwn: true)
+                            CurrentWorkSection(source: store.visibleApprovedSubmissions, isPerson: isSelf)
+                            SeeYouAtSection(
+                                userID: CloudKitManager.shared.currentAttendeeID ?? currentUserProfileID,
+                                source: store.visibleApprovedSubmissions
+                            )
                             postsSeparator
                             submissionsView
                         }
@@ -469,13 +487,17 @@ struct Portfolio_5: View {
                     isModeratorMode: $isModeratorMode
                 )
             }
-            .fullScreenCover(isPresented: $showEnlargedPhoto) {
-                if let profileImage {
-                    ProfilePhotoViewer(image: profileImage)
-                }
-            }
             .onAppear {
                 applyAppearanceMode()
+            }
+        }
+        // Instagram-style zoom: the circular photo flies from the header to the
+        // center while the page dims; tap anywhere to send it back.
+        .overlay {
+            if showEnlargedPhoto, let profileImage {
+                ProfilePhotoZoomOverlay(isPresented: $showEnlargedPhoto, sourceFrame: profileImageFrame) { diameter in
+                    adjustedProfileImage(profileImage, diameter: diameter)
+                }
             }
         }
     }
@@ -508,20 +530,45 @@ struct Portfolio_5: View {
     }
 
     private var profileHeaderView: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 16) {
+        // Instagram-style header: a large photo on the left; beside it the name and
+        // class/major sit on top with the stats row (posts, unique collaborators,
+        // total collaborations) underneath.
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 20) {
                 profileImageView
+                    // Track where the photo sits so the zoom can lift off from it, and
+                    // hide the original while its enlarged twin is on screen.
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                        profileImageFrame = $0
+                    }
+                    .opacity(showEnlargedPhoto ? 0 : 1)
                     // Tap the photo to see it enlarged and centered (only when set).
                     .onTapGesture {
                         if profileImage != nil { showEnlargedPhoto = true }
                     }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayName)
-                        .font(.largeTitle)
-                        .bold()
-                    academicInfoView
+
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(displayName)
+                                .font(.title)
+                                .bold()
+                            // School-colored seal once this account's email is verified.
+                            CurrentUserVerifiedBadge()
+                                .font(.title3)
+                        }
+                        academicInfoView
+                    }
+
+                    // Experience from being on set: collaborations across every
+                    // credited post. Tapping Unique Collaborators lists everyone
+                    // you've worked with.
+                    CollaborationStatsView(
+                        stats: collaborationStats,
+                        postCount: userSubmissions.count,
+                        personName: displayName
+                    )
                 }
-                Spacer(minLength: 0)
             }
 
             if !userType.isEmpty {
@@ -531,25 +578,39 @@ struct Portfolio_5: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Collaboration totals for the current user across every approved post (all types,
+    /// including events and projects) they're credited on, matched by name and linked
+    /// profile ID. The user is excluded from their own counts.
+    private var collaborationStats: CollaborationStats {
+        CollaborationStats.compute(
+            forPersonNamed: displayName,
+            profileID: currentUserProfileID,
+            in: store.visibleApprovedSubmissions,
+            directory: profileManager.allUsers
+        )
+    }
+
+    /// The user's photo with their saved scale/offset adjustments, cropped to a circle
+    /// of the given diameter. Shared by the header thumbnail and the zoom overlay so
+    /// the enlarged photo shows the identical crop.
+    private func adjustedProfileImage(_ image: UIImage, diameter: CGFloat) -> some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .scaleEffect(profileImageScale)
+            // Offsets are saved in the adjuster's 300pt preview space, so scale them
+            // to this frame to match exactly at any size.
+            .offset(x: CGFloat(profileImageOffsetX) * diameter / ImageAdjustmentView.previewSize,
+                    y: CGFloat(profileImageOffsetY) * diameter / ImageAdjustmentView.previewSize)
+            .frame(width: diameter, height: diameter)
+            .clipShape(Circle())
+    }
+
     private var profileImageView: some View {
         Group {
             if let profileImage {
-                GeometryReader { geometry in
-                    Image(uiImage: profileImage)
-                        .resizable()
-                        .scaledToFill()
-                        .scaleEffect(profileImageScale)
-                        // Offsets are saved in the adjuster's 300pt preview space,
-                        // so scale them to this (smaller) frame to match exactly.
-                        .offset(x: CGFloat(profileImageOffsetX) * feedFormat.profileImageSize / ImageAdjustmentView.previewSize,
-                                y: CGFloat(profileImageOffsetY) * feedFormat.profileImageSize / ImageAdjustmentView.previewSize)
-                        // ====== UI CONTROLS!!!!! ======
-                        .frame(width: feedFormat.profileImageSize, height: feedFormat.profileImageSize)
-                        // ==============================
-                        .clipShape(Circle())
-                }
                 // ====== UI CONTROLS!!!!! ======
-                .frame(width: feedFormat.profileImageSize, height: feedFormat.profileImageSize)
+                adjustedProfileImage(profileImage, diameter: feedFormat.profileImageSize)
                 // ==============================
             } else {
                 Image(systemName: "person.crop.circle")
@@ -584,17 +645,10 @@ struct Portfolio_5: View {
     }
     
     private var userTypeBubbles: some View {
-        RoleTagFlowLayout(spacing: 6) {
+        let theme = AppTheme.current
+        return RoleTagFlowLayout(spacing: 6) {
             ForEach(userType.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }, id: \.self) { role in
-                Text(role)
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-                    // ====== UI CONTROLS!!!!! ======
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.utBrandOrange)
-                    .cornerRadius(8)
-                    // ==============================
+                RoleTagBubble(tag: role, theme: theme)
             }
         }
         .frame(maxWidth: .infinity)
@@ -611,6 +665,27 @@ struct Portfolio_5: View {
     /// Tapping enters reorder mode (posts become draggable); "Done" locks the order in.
     private var postsSeparator: some View {
         HStack(spacing: 8) {
+            // List ↔ Custom Grid toggle on the leading edge. Switching layouts also
+            // leaves reorder/edit mode so each layout starts out locked.
+            if !userSubmissions.isEmpty {
+                Button {
+                    if draggingID != nil { endReorder() }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isReordering = false
+                        showsCustomGrid.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.left.arrow.right")
+                        Text(showsCustomGrid ? "Grid" : "List")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.brandOrange)
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+            }
+
             Rectangle()
                 .fill(Color(UIColor.separator))
                 .frame(height: 1)
@@ -620,7 +695,7 @@ struct Portfolio_5: View {
                     if isReordering, draggingID != nil { endReorder() }
                     withAnimation(.easeInOut(duration: 0.2)) { isReordering.toggle() }
                 } label: {
-                    Text(isReordering ? "Done" : "Reorder Posts")
+                    Text(isReordering ? "Done" : (showsCustomGrid ? "Reorder Grid" : "Reorder List"))
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.brandOrange)
                         .fixedSize()
@@ -635,6 +710,15 @@ struct Portfolio_5: View {
             if userSubmissions.isEmpty {
                 Text(isGuestUser ? "Guest account. Enjoy exploring the Nexus!" : "No projects yet. Create something amazing!")
                     .foregroundStyle(.secondary)
+            } else if showsCustomGrid {
+                PortfolioCustomGridView(
+                    submissions: userSubmissions,
+                    layoutRaw: $portfolioGridLayoutRaw,
+                    isEditing: isReordering,
+                    edgeBleed: feedFormat.contentPadding,
+                    roles: getUserRolesInSubmission,
+                    onOpen: { selectedProject = $0 }
+                )
             } else {
                 let display = displayedSubmissions
                 VStack(spacing: feedFormat.rowSpacing) {
@@ -793,7 +877,10 @@ struct Portfolio_5: View {
         var editFontSize: CGFloat
         var settingsWidth: CGFloat
         var settingsFontSize: CGFloat
-        var pillHeight: CGFloat
+        /// On-screen height of both pills, shared with the other pages (see
+        /// `ScreenSizeFormat.toolbarPillHeight`). Buttons divide it by their own
+        /// `scaleEffect` so the rendered height matches Home's exactly.
+        var pillHeight: CGFloat = ScreenSizeFormat.toolbarPillHeight
         var pillOffsetX: CGFloat
         var pillOffsetY: CGFloat
         var logoHeight: CGFloat
@@ -840,6 +927,10 @@ struct Portfolio_5: View {
     private var editMoreOffsetY: CGFloat { -4 }
     private var editMorePadding: CGFloat { 0 }    // space reserved around each
 
+    /// Pre-scale button height: the shared pill height divided by the buttons'
+    /// `scaleEffect`, so both pills render at exactly the Home pill's height.
+    private var editMorePillHeight: CGFloat { toolbarFormat.pillHeight / editMoreSize }
+
     /// The per-device format, universally scaled by `toolbarSizeMultiplier`, with the
     /// Portfolio asset additionally scaled by `portfolioSize`.
     private var toolbarFormat: ToolbarFormat {
@@ -852,17 +943,19 @@ struct Portfolio_5: View {
     private var baseToolbarFormat: ToolbarFormat {
         switch ScreenSizeFormat.current {
         case .size393x852: // iPhone 14 Pro, 15, 15 Pro, 16
-            return ToolbarFormat(editWidth: 45, editFontSize: 14, settingsWidth: 43, settingsFontSize: 18, pillHeight: 40, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 29, barHeight: 50)
+            return ToolbarFormat(editWidth: 45, editFontSize: 14, settingsWidth: 43, settingsFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 29, barHeight: 50)
         case .size402x874: // iPhone 16 Pro, 17
-            return ToolbarFormat(editWidth: 46, editFontSize: 14, settingsWidth: 44, settingsFontSize: 18, pillHeight: 41, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
+            return ToolbarFormat(editWidth: 46, editFontSize: 14, settingsWidth: 44, settingsFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
         case .size430x932: // iPhone 14 Pro Max, 15 Plus, 15 Pro Max, 16 Plus
-            return ToolbarFormat(editWidth: 49, editFontSize: 15, settingsWidth: 47, settingsFontSize: 20, pillHeight: 44, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 32, barHeight: 52)
+            return ToolbarFormat(editWidth: 49, editFontSize: 15, settingsWidth: 47, settingsFontSize: 20, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 32, barHeight: 52)
         case .size440x956: // iPhone 16 Pro Max, 17 Pro Max
-            return ToolbarFormat(editWidth: 50, editFontSize: 16, settingsWidth: 48, settingsFontSize: 20, pillHeight: 45, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 32, barHeight: 53)
+            return ToolbarFormat(editWidth: 50, editFontSize: 16, settingsWidth: 48, settingsFontSize: 20, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 32, barHeight: 53)
+        // iPad: the orange bar spans the screen, but its contents stay iPhone-sized and
+        // centered (see `ScreenSizeFormat.toolbarContentMaxWidth`), so these match the phone.
         case .iPad11: // iPad Pro 11", iPad Air 11"
-            return ToolbarFormat(editWidth: 64, editFontSize: 20, settingsWidth: 62, settingsFontSize: 26, pillHeight: 56, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 42, logoOffsetX: 0, logoOffsetY: 0, pillLength: nil, barHeight: 66)
+            return ToolbarFormat(editWidth: 46, editFontSize: 14, settingsWidth: 44, settingsFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
         case .iPad13: // iPad Pro 13", iPad Air 13"
-            return ToolbarFormat(editWidth: 74, editFontSize: 23, settingsWidth: 72, settingsFontSize: 30, pillHeight: 64, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 49, logoOffsetX: 0, logoOffsetY: 0, pillLength: nil, barHeight: 72)
+            return ToolbarFormat(editWidth: 46, editFontSize: 14, settingsWidth: 44, settingsFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
         }
     }
 
@@ -885,25 +978,25 @@ struct Portfolio_5: View {
     private var feedFormat: FeedFormat {
         switch ScreenSizeFormat.current {
         case .size393x852: // iPhone 14 Pro, 15, 15 Pro, 16
-            return FeedFormat(contentPadding: 16, sectionSpacing: 16, rowSpacing: 12, profileImageSize: 72, thumbnailWidth: 100)
+            return FeedFormat(contentPadding: 16, sectionSpacing: 16, rowSpacing: 12, profileImageSize: 96, thumbnailWidth: 100)
         case .size402x874: // iPhone 16 Pro, 17
-            return FeedFormat(contentPadding: 16, sectionSpacing: 16, rowSpacing: 12, profileImageSize: 74, thumbnailWidth: 102)
+            return FeedFormat(contentPadding: 16, sectionSpacing: 16, rowSpacing: 12, profileImageSize: 98, thumbnailWidth: 102)
         case .size430x932: // iPhone 14 Pro Max, 15 Plus, 15 Pro Max, 16 Plus
-            return FeedFormat(contentPadding: 17, sectionSpacing: 17, rowSpacing: 13, profileImageSize: 78, thumbnailWidth: 109)
+            return FeedFormat(contentPadding: 17, sectionSpacing: 17, rowSpacing: 13, profileImageSize: 104, thumbnailWidth: 109)
         case .size440x956: // iPhone 16 Pro Max, 17 Pro Max
-            return FeedFormat(contentPadding: 18, sectionSpacing: 18, rowSpacing: 13, profileImageSize: 81, thumbnailWidth: 112)
+            return FeedFormat(contentPadding: 18, sectionSpacing: 18, rowSpacing: 13, profileImageSize: 108, thumbnailWidth: 112)
+        // iPad keeps the iPhone layout and sizes for this page.
         case .iPad11: // iPad Pro 11", iPad Air 11"
-            return FeedFormat(contentPadding: 40, sectionSpacing: 24, rowSpacing: 18, profileImageSize: 110, thumbnailWidth: 150)
+            return FeedFormat(contentPadding: 16, sectionSpacing: 16, rowSpacing: 12, profileImageSize: 98, thumbnailWidth: 102)
         case .iPad13: // iPad Pro 13", iPad Air 13"
-            return FeedFormat(contentPadding: 80, sectionSpacing: 28, rowSpacing: 20, profileImageSize: 128, thumbnailWidth: 175)
+            return FeedFormat(contentPadding: 16, sectionSpacing: 16, rowSpacing: 12, profileImageSize: 98, thumbnailWidth: 102)
         }
     }
 
     // ORANGE HEADER
     private var topBar: some View {
         HStack(spacing: 0) {
-            Image("Portfolio")
-                .resizable()
+            SchoolAssetImage("Portfolio")
                 .scaledToFill()
                 .frame(height: toolbarFormat.logoHeight)
                 .offset(x: toolbarFormat.logoOffsetX, y: toolbarFormat.logoOffsetY)
@@ -913,6 +1006,9 @@ struct Portfolio_5: View {
         }
         .frame(height: 44)
         .padding(.horizontal, 12)
+        // iPad: keep the wordmark and pills iPhone-sized and centered while the orange
+        // bar behind them still runs edge to edge. `nil` (no limit) on iPhone.
+        .frame(maxWidth: ScreenSizeFormat.toolbarContentMaxWidth)
         .padding(.vertical, 6)
         // Orange fills the bar and bleeds up behind the status bar / Dynamic Island.
         .frame(maxWidth: .infinity, minHeight: toolbarFormat.barHeight, maxHeight: toolbarFormat.barHeight)
@@ -936,7 +1032,7 @@ struct Portfolio_5: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                    .frame(width: toolbarFormat.pillLength ?? toolbarFormat.editWidth, height: toolbarFormat.pillHeight)
+                    .frame(width: toolbarFormat.pillLength ?? toolbarFormat.editWidth, height: editMorePillHeight)
                     .padding(.horizontal, 12)
                     .contentShape(Rectangle())
             }
@@ -953,7 +1049,7 @@ struct Portfolio_5: View {
                 Image(systemName: "line.3.horizontal")
                     .font(.system(size: toolbarFormat.settingsFontSize, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: toolbarFormat.settingsWidth, height: toolbarFormat.pillHeight)
+                    .frame(width: toolbarFormat.settingsWidth, height: editMorePillHeight)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -2428,42 +2524,61 @@ struct PortfolioLikeControl: View {
     }
 }
 
-/// Full-screen, centered viewer for a profile photo so people can get a better look
-/// at someone's face. Tap anywhere or the close button to dismiss.
-struct ProfilePhotoViewer: View {
-    let image: UIImage
-    @Environment(\.dismiss) private var dismiss
+/// Instagram-style profile photo zoom. The circular photo lifts out of its spot in
+/// the header, slides to the center of the screen and grows while the background
+/// dims; tapping anywhere sends it back and then removes the overlay.
+///
+/// `sourceFrame` is the header thumbnail's frame in the `.global` coordinate space;
+/// `photo` renders the circular photo at a given diameter so the caller's own
+/// crop/scale/offset adjustments carry over to the enlarged version.
+struct ProfilePhotoZoomOverlay<Photo: View>: View {
+    @Binding var isPresented: Bool
+    let sourceFrame: CGRect
+    @ViewBuilder let photo: (CGFloat) -> Photo
+
+    /// False while the photo is sitting at its source spot (start and end of the
+    /// animation), true once it has flown to the center.
+    @State private var isExpanded = false
+
+    private let animation: Animation = .spring(response: 0.38, dampingFraction: 0.86)
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { proxy in
+            // Convert the thumbnail's global frame into this overlay's local space so the
+            // circle starts exactly on top of the header photo.
+            let origin = proxy.frame(in: .global).origin
+            let container = proxy.size
+            let expandedDiameter = min(container.width, container.height) - 32
+            let diameter = isExpanded ? expandedDiameter : sourceFrame.width
+            let center = isExpanded
+                ? CGPoint(x: container.width / 2, y: container.height / 2)
+                : CGPoint(x: sourceFrame.midX - origin.x, y: sourceFrame.midY - origin.y)
 
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .padding()
+            ZStack {
+                Color.black
+                    .opacity(isExpanded ? 0.9 : 0)
 
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(Circle().fill(.black.opacity(0.5)))
-                            .contentShape(Circle())
-                    }
-                    .padding()
-                }
-                Spacer()
+                photo(diameter)
+                    .frame(width: diameter, height: diameter)
+                    .position(center)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { collapse() }
         }
-        .contentShape(Rectangle())
-        .onTapGesture { dismiss() }
-        .presentationDragIndicator(.hidden)
+        .ignoresSafeArea()
+        .onAppear {
+            withAnimation(animation) { isExpanded = true }
+        }
+    }
+
+    /// Fly the photo back to the header, then drop the overlay once it has landed.
+    private func collapse() {
+        guard isExpanded else { return }
+        withAnimation(animation) {
+            isExpanded = false
+        } completion: {
+            isPresented = false
+        }
     }
 }
 
@@ -2483,10 +2598,16 @@ struct WhoLikedSheet: View {
 
     /// One row in the sheet. `id` is the raw iCloud user record name (unique per liker);
     /// `profile` is the resolved directory entry, or nil if we couldn't match one.
+    /// Every unresolved liker is collapsed into a single "Guest User" row, with
+    /// `guestCount` holding how many it stands for.
     private struct Liker: Identifiable {
         let id: String
         let profile: DirectoryUser?
-        var displayName: String { profile?.displayName ?? "Guest User" }
+        var guestCount: Int = 1
+        var displayName: String {
+            if let profile { return profile.displayName }
+            return guestCount > 1 ? "Guest User x\(guestCount)" : "Guest User"
+        }
     }
 
     var body: some View {
@@ -2547,7 +2668,13 @@ struct WhoLikedSheet: View {
     /// resolves each to a directory profile for its name and photo.
     private func loadLikers() async {
         let ids = (try? await CloudKitManager.shared.fetchLikers(postID: submission.id)) ?? []
-        likers = ids.map { Liker(id: $0, profile: profiles.findUser(byID: $0)) }
+        let resolved = ids.map { Liker(id: $0, profile: profiles.findUser(byID: $0)) }
+        var rows = resolved.filter { $0.profile != nil }
+        let guestCount = resolved.count - rows.count
+        if guestCount > 0 {
+            rows.append(Liker(id: "guest-likers", profile: nil, guestCount: guestCount))
+        }
+        likers = rows
         isLoading = false
     }
 }
@@ -2562,7 +2689,9 @@ struct WhoLikedSheet: View {
     defaults.set("Alex", forKey: "userFirstName")
     defaults.set("Rivera", forKey: "userLastName")
     defaults.set("2025", forKey: "userGraduationYear")
-    defaults.set("Director, Screenwriter, Editor, Actor", forKey: "userType")
+    // Five tags chosen so every tier shows at once:
+    // Director ×10 Platinum · Screenwriter ×5 Gold · Editor ×3 Silver · Actor ×1 Bronze · Composer ×0 untiered
+    defaults.set("Director, Screenwriter, Editor, Actor, Composer", forKey: "userType")
     defaults.set("Senior RTF student focused on character-driven short films and scoring. I love collaborating across departments and telling first-generation stories.", forKey: "userBio")
     defaults.set("Radio-Television-Film", forKey: "userMajor")
     defaults.set("Business", forKey: "userMinor")
@@ -2570,44 +2699,51 @@ struct WhoLikedSheet: View {
     defaults.set("Austin, TX", forKey: "userHometown")
 
     let name = "Alex Rivera"
+    let sam = "Sam Carter", priya = "Priya Patel", maya = "Maya Rodriguez"
+    let jordan = "Jordan Lee", chris = "Chris Nguyen", dana = "Dana Okafor"
 
-    // Seed a batch of credited projects on the shared store.
-    SubmissionStore_3_2.shared.approvedSubmissions = [
+    /// Builds one approved post with free-typed (role, name) credits, dated `daysAgo`.
+    func post(_ title: String, _ type: MediaType = .film, daysAgo: Int,
+              crew: [(String, String)] = [], cast: [(String, String)] = []) -> Submission {
         Submission(
-            id: UUID(), type: .film, title: "Between the Lines", details: "",
+            id: UUID(), type: type, title: title, details: "",
             isApproved: true, submittedBy: name,
-            orderedCrew: [OrderedEntry(role: "Director", name: name),
-                          OrderedEntry(role: "Editor", name: name)]
-        ),
-        Submission(
-            id: UUID(), type: .film, title: "Last Call", details: "",
-            isApproved: true, submittedBy: name,
-            orderedCast: [OrderedEntry(role: "Lead", name: name)]
-        ),
-        Submission(
-            id: UUID(), type: .film, title: "The Waiting Room", details: "",
-            isApproved: true, submittedBy: name,
-            orderedCrew: [OrderedEntry(role: "Screenwriter", name: name)]
-        ),
-        Submission(
-            id: UUID(), type: .music, title: "Neon Skyline (Original Score)", details: "",
-            isApproved: true, submittedBy: name,
-            orderedCrew: [OrderedEntry(role: "Composer", name: name)]
-        ),
-        Submission(
-            id: UUID(), type: .music, title: "Golden Hour", details: "",
-            isApproved: true, submittedBy: name, artist: name
-        ),
-        Submission(
-            id: UUID(), type: .reel, title: "Acting Reel 2025", details: "",
-            isApproved: true, submittedBy: name
-        ),
-        Submission(
-            id: UUID(), type: .film, title: "After the Credits", details: "",
-            isApproved: true, submittedBy: name,
-            orderedCrew: [OrderedEntry(role: "Director", name: name),
-                          OrderedEntry(role: "Producer", name: name)]
+            createdDate: Calendar.current.date(byAdding: .day, value: -daysAgo, to: .now) ?? .now,
+            orderedCast: cast.map { OrderedEntry(role: $0.0, name: $0.1) },
+            orderedCrew: crew.map { OrderedEntry(role: $0.0, name: $0.1) }
         )
+    }
+
+    // Eleven credited posts shared with six other people:
+    // 19 total collaborations, 6 unique collaborators.
+    SubmissionStore_3_2.shared.approvedSubmissions = [
+        post("Between the Lines", daysAgo: 3,
+             crew: [("Director", name), ("Editor", name), ("Director of Photography", sam), ("Producer", priya)],
+             cast: [("Lead", maya)]),
+        post("Last Call", daysAgo: 10,
+             crew: [("Director", jordan), ("Editor", sam)],
+             cast: [("Lead", name)]),
+        post("The Waiting Room", daysAgo: 24,
+             crew: [("Director", name), ("Screenwriter", name), ("Director of Photography", sam), ("Sound Mixer", chris)]),
+        post("Neon Skyline", daysAgo: 41,
+             crew: [("Director", name), ("Writer", name), ("Composer", jordan), ("Editor", priya)]),
+        post("Golden Hour", daysAgo: 58,
+             crew: [("Director", name), ("Editor", name), ("Cinematographer", dana)]),
+        post("After the Credits", daysAgo: 77,
+             crew: [("Director", name), ("Producer", name), ("Screenwriter", name), ("Director of Photography", sam)],
+             cast: [("Lead", maya)]),
+        post("Static", .reel, daysAgo: 95,
+             crew: [("Director", name), ("Editor", name), ("Camera", dana)]),
+        post("Paper Boats", daysAgo: 120,
+             crew: [("Director", name), ("Screenwriter", name)],
+             cast: [("Lead", priya)]),
+        post("Signal Lost", daysAgo: 150,
+             crew: [("Director", name), ("Composer", jordan)]),
+        post("Night Market", daysAgo: 188,
+             crew: [("Director", name), ("Screenwriter", name), ("Director of Photography", sam), ("Sound Mixer", chris)]),
+        post("Second Draft", daysAgo: 230,
+             crew: [("Director", name), ("Editor", priya)],
+             cast: [("Lead", maya)])
     ]
 
     return Portfolio_5()
@@ -2622,6 +2758,9 @@ struct WhoLikedSheet: View {
 struct UserPortfolioView: View {
     let user: UserProfile
     @ObservedObject var store: SubmissionStore_3_2 = .shared
+    /// Observed so the header's Collaborators/Collabs numbers, which only count people in
+    /// the directory, refresh once the directory loads.
+    @ObservedObject private var profileManager = UserProfileManager.shared
 
     /// Optional injected submissions for previews/testing. When provided these are
     /// used as the source (still filtered by credit) instead of the shared store.
@@ -2678,6 +2817,15 @@ struct UserPortfolioView: View {
             VStack(alignment: .leading, spacing: 16) {
                 profileHeaderView
                 bioView
+                StyledProfileSection(
+                    name: user.fullName,
+                    profileID: UserProfileManager.shared.findUser(byName: user.fullName)?.id
+                )
+                CurrentWorkSection(source: sourceSubmissions) { $0.name == user.fullName }
+                SeeYouAtSection(
+                    userID: UserProfileManager.shared.findUser(byName: user.fullName)?.id,
+                    source: sourceSubmissions
+                )
                 Divider()
                 submissionsView
             }
@@ -2693,20 +2841,49 @@ struct UserPortfolioView: View {
     // MARK: View Components
 
     private var profileHeaderView: some View {
-        // Match the user's own portfolio (Portfolio_5): photo + name on one row, with
-        // the role tags in a full-width band BELOW them rather than beside the photo.
-        VStack(spacing: 12) {
-            HStack(spacing: 16) {
+        // Match the user's own portfolio (Portfolio_5): Instagram-style, with the
+        // large photo on the left; beside it the name and class/major on top with the
+        // stats row (posts, unique collaborators, total collaborations) underneath,
+        // and the role tags in a full-width band under those.
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 20) {
                 profileImageView
-                profileInfoView
-                Spacer(minLength: 0)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    profileInfoView
+
+                    // Experience from being on set: collaborations across every
+                    // credited post. Tapping Unique Collaborators lists everyone
+                    // they've worked with.
+                    CollaborationStatsView(
+                        stats: collaborationStats,
+                        postCount: creditedSubmissions.count,
+                        personName: user.fullName
+                    )
+                }
             }
 
             if !user.tags.isEmpty {
                 userTypeBubbles
             }
+
+            // Connect with / message this person (hidden for guests, yourself,
+            // blocked people, and profiles without a Nexus account).
+            ProfileActionButtons(user: UserProfileManager.shared.findUser(byName: user.fullName))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Collaboration totals for this user across every post in `sourceSubmissions`
+    /// (all types, including events and projects) they're credited on. They're
+    /// excluded from their own counts.
+    private var collaborationStats: CollaborationStats {
+        CollaborationStats.compute(
+            forPersonNamed: user.fullName,
+            profileID: profileManager.findUser(byName: user.fullName)?.id,
+            in: sourceSubmissions,
+            directory: profileManager.allUsers
+        )
     }
 
     private var profileImageView: some View {
@@ -2715,13 +2892,13 @@ struct UserPortfolioView: View {
                 Image(uiImage: profileImage)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 72, height: 72)
+                    .frame(width: 96, height: 96)
                     .clipShape(Circle())
             } else {
                 Image(systemName: "person.crop.circle")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 72, height: 72)
+                    .frame(width: 96, height: 96)
                     .foregroundStyle(.secondary)
             }
         }
@@ -2730,7 +2907,7 @@ struct UserPortfolioView: View {
     private var profileInfoView: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(user.fullName)
-                .font(.largeTitle)
+                .font(.title)
                 .bold()
 
             if !academicLine.isEmpty {
@@ -2742,16 +2919,17 @@ struct UserPortfolioView: View {
         }
     }
 
+    /// This user's school colors for their tags; the app brand when unknown.
+    private var roleTagTheme: SchoolTheme {
+        UserProfileManager.shared.findUser(byName: user.fullName)
+            .map { SchoolTheme.forSchool($0.school) } ?? .nexusDefault
+    }
+
     private var userTypeBubbles: some View {
-        RoleTagFlowLayout(spacing: 6) {
+        let theme = roleTagTheme
+        return RoleTagFlowLayout(spacing: 6) {
             ForEach(user.tags, id: \.self) { role in
-                Text(role)
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.utBrandOrange)
-                    .cornerRadius(8)
+                RoleTagBubble(tag: role, theme: theme)
             }
         }
         .frame(maxWidth: .infinity)

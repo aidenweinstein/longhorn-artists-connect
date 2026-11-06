@@ -15,6 +15,10 @@ import Combine
 /// The live state of a submission's media upload, as surfaced in the submission forms.
 /// The absence of a phase (i.e. `nil`) means "not uploading" — the normal pick-a-file UI.
 enum MediaUploadPhase: Equatable {
+    /// Re-encoding the video into its ≤1080p playback rendition before the upload
+    /// starts, with a 0...1 fraction of the encode. A long 4K film takes minutes here,
+    /// so it's shown distinctly from the transfer rather than as a stuck "0%".
+    case preparing(Double)
     /// Uploading, with a 0...1 fraction of how much has transferred.
     case uploading(Double)
     /// Finished successfully.
@@ -60,8 +64,26 @@ final class UploadProgressCenter: ObservableObject {
     /// finished/failed upload back to "uploading".
     func report(recordName: String, fraction: Double) {
         guard let id = UUID(uuidString: recordName), let item = items[id] else { return }
-        guard case .uploading = item.phase else { return }
+        // The first transfer packet moves a post from "preparing" to "uploading".
+        switch item.phase {
+        case .uploading, .preparing: break
+        default: return
+        }
         items[id]?.phase = .uploading(min(max(fraction, 0), 1))
+    }
+
+    /// Updates the encode fraction while a video is being re-encoded into its playback
+    /// rendition, before the CloudKit transfer begins. Ignored once the transfer has
+    /// actually started (or the upload finished/failed), so it can never wind the
+    /// status backwards.
+    func reportPreparing(recordName: String, fraction: Double) {
+        guard let id = UUID(uuidString: recordName), let item = items[id] else { return }
+        switch item.phase {
+        case .preparing: break
+        case .uploading(let transferred) where transferred <= 0: break
+        default: return
+        }
+        items[id]?.phase = .preparing(min(max(fraction, 0), 1))
     }
 
     func finish(_ id: UUID) {
@@ -237,6 +259,20 @@ struct MediaUploadStatusView: View {
 
     var body: some View {
         switch phase {
+        case .preparing(let fraction):
+            HStack(spacing: 12) {
+                CircularUploadProgress(fraction: fraction)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Preparing video…")
+                        .foregroundStyle(.primary)
+                    Text("Optimizing for streaming · \(Int(min(max(fraction, 0), 1) * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 4)
+
         case .uploading(let fraction):
             HStack(spacing: 12) {
                 CircularUploadProgress(fraction: fraction)
@@ -343,6 +379,19 @@ private struct HomeUploadRow: View {
                 .frame(width: 24)
 
             switch item.phase {
+            case .preparing(let fraction):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Preparing \(item.type.rawValue.lowercased()) · \(displayTitle)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    ProgressView(value: min(max(fraction, 0), 1))
+                        .tint(Color.brandOrange)
+                }
+                Text("\(Int(min(max(fraction, 0), 1) * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+
             case .uploading(let fraction):
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Uploading \(item.type.rawValue.lowercased()) · \(displayTitle)")

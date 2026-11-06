@@ -56,6 +56,23 @@ struct MusicDetailView: View {
     /// Streaming", …) instead of collapsing every failure into "Audio unavailable".
     /// Nil while resolving, and once a playable URL is found.
     @State private var streamStatus: VideoStreamStatus?
+    /// EP/Album only: playable URLs for tracks 2..n, in running order. Track 1 is
+    /// `resolvedAudioURL`. Empty for singles, performances, and until resolved.
+    @State private var additionalTrackURLs: [URL] = []
+    @State private var isLoadingTracks = false
+    /// Index into `trackURLs` of the song loaded in the player.
+    @State private var currentTrackIndex = 0
+
+    /// Whether the post can carry tracks beyond the first. Every release can now, so only
+    /// the single-track categories older posts were filed under rule it out.
+    private var isMultiTrackRelease: Bool {
+        music.musicCategory != "Song" && music.musicCategory != "Performance"
+    }
+
+    /// Every playable track in running order: track 1, then the EP/Album extras.
+    private var trackURLs: [URL] {
+        (resolvedAudioURL.map { [$0] } ?? []) + additionalTrackURLs
+    }
 
     /// The track's length as synced with the record. For music posts the audio length
     /// rides in the shared `videoDuration` field (see `CloudKitTransitionAdapter`), so the
@@ -106,6 +123,39 @@ struct MusicDetailView: View {
             streamStatus = .notConfigured
         }
         isLoadingAudio = false
+    }
+
+    /// Resolves tracks 2..n of an EP/Album. The uploader's local copies are used only if
+    /// every one is on disk; otherwise the whole list streams, since the feed never
+    /// fetches the `musicTracks` asset list.
+    private func resolveAdditionalTracks() async {
+        guard isMultiTrackRelease, additionalTrackURLs.isEmpty, !isLoadingTracks else { return }
+        let names = music.musicTrackFileNames ?? []
+        let local = names.compactMap { FileManager.default.mediaFileURL(named: $0) }
+        if !names.isEmpty, local.count == names.count {
+            additionalTrackURLs = local
+            return
+        }
+        isLoadingTracks = true
+        additionalTrackURLs = await CloudKitManager.shared.musicTrackStreamURLs(submissionID: music.id)
+        isLoadingTracks = false
+    }
+
+    /// Loads the track at `index` into the player and starts it.
+    private func playTrack(at index: Int) {
+        guard trackURLs.indices.contains(index) else { return }
+        currentTrackIndex = index
+        // Only track 1's length is synced with the record; the rest report their own.
+        model.setupAudioPlayer(url: trackURLs[index], knownDuration: index == 0 ? syncedAudioDuration : nil)
+    }
+
+    /// Advances to the next track when one finishes; the last track rewinds and stops.
+    private func handleTrackFinished() {
+        if trackURLs.indices.contains(currentTrackIndex + 1) {
+            playTrack(at: currentTrackIndex + 1)
+        } else {
+            model.seek(to: 0)
+        }
     }
 
     /// Whether a file actually has a playable audio track (not just a file that exists).
@@ -183,10 +233,13 @@ struct MusicDetailView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(alignment: .top, spacing: 12) {
                                     VStack(alignment: .leading, spacing: 6) {
+                                        // Up to three lines, shrinking rather than truncating so
+                                        // every word of the title is always visible.
                                         Text(music.title)
                                             .font(.system(size: 28, weight: .bold))
-                                            .minimumScaleFactor(0.6)
-                                            .lineLimit(2)
+                                            .minimumScaleFactor(0.5)
+                                            .lineLimit(3)
+                                            .fixedSize(horizontal: false, vertical: true)
 
                                         // Artist name
                                         if !music.artist.isEmpty {
@@ -263,7 +316,7 @@ struct MusicDetailView: View {
                             .padding(.bottom, 8)
                             
                             // Audio Player Controls
-                            if let audioURL = resolvedAudioURL {
+                            if resolvedAudioURL != nil {
                                 VStack(spacing: 8) {
                                     HStack(spacing: 12) {
                                         // Play/Pause button — shows a spinner while the
@@ -347,17 +400,34 @@ struct MusicDetailView: View {
                                             .foregroundStyle(.secondary)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
+
+                                    // EP/Album tracklist — tap a song to play it.
+                                    if trackURLs.count > 1 {
+                                        trackList
+                                    } else if isLoadingTracks {
+                                        HStack(spacing: 8) {
+                                            ProgressView()
+                                            Text("Loading tracks…")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                 }
                                 .padding(.horizontal)
                                 .padding(.bottom, 8)
                                 // `setupAudioPlayer` is idempotent per URL, so a re-appear
                                 // reuses the existing player instead of stacking another.
                                 .onAppear {
-                                    model.setupAudioPlayer(url: audioURL, knownDuration: syncedAudioDuration)
+                                    model.onTrackFinished = { handleTrackFinished() }
+                                    playTrack(at: currentTrackIndex)
                                 }
                                 .onDisappear {
                                     model.cleanupAudioPlayer()
                                 }
+                                // Lives on the controls (not the loading row, which is torn
+                                // down — cancelling its task — once track 1 resolves).
+                                .task { await resolveAdditionalTracks() }
                             } else {
                                 // The feed skips heavy audio assets, so the track resolves
                                 // on demand when the post is opened.
@@ -527,15 +597,18 @@ struct MusicDetailView: View {
         }
         .presentationDragIndicator(.hidden)
         .onAppear {
+            PostAnalytics.shared.record(.open, for: music)
             Task {
                 await model.simulateLoading()
             }
         }
         .sheet(item: $selectedPortfolioName) { person in
             PersonProfileView(name: person.name)
+                .onAppear { PostAnalytics.shared.record(.profileVisit, for: music) }
         }
         .sheet(isPresented: $showSendMessage) {
             SendPostMessageView(post: music)
+                .onAppear { PostAnalytics.shared.record(.message, for: music) }
         }
         .sheet(isPresented: $showReportSheet) {
             ReportContentView(post: music)
@@ -548,6 +621,8 @@ struct MusicDetailView: View {
                 model.cleanupAudioPlayer()
                 resolvedAudioURL = nil
                 streamStatus = nil
+                additionalTrackURLs = []
+                currentTrackIndex = 0
             }
         }
         .sheet(isPresented: $showCollectionPicker) {
@@ -562,6 +637,53 @@ struct MusicDetailView: View {
         } message: {
             Text("This action cannot be undone.")
         }
+    }
+
+    /// Numbered EP/Album tracklist; the loaded track is highlighted and tapping any row
+    /// plays that song.
+    private var trackList: some View {
+        VStack(spacing: 0) {
+            ForEach(trackURLs.indices, id: \.self) { index in
+                let isCurrent = index == currentTrackIndex
+                Button {
+                    if isCurrent {
+                        model.togglePlayPause()
+                    } else {
+                        playTrack(at: index)
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Group {
+                            if isCurrent && model.isAudioPlaying {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.caption)
+                            } else {
+                                Text("\(index + 1)")
+                                    .font(.subheadline)
+                                    .monospacedDigit()
+                            }
+                        }
+                        .frame(width: 24)
+                        .foregroundStyle(isCurrent ? Color.brandOrange : .secondary)
+
+                        Text("Track \(index + 1)")
+                            .font(.body)
+                            .fontWeight(isCurrent ? .semibold : .regular)
+                            .foregroundStyle(isCurrent ? Color.brandOrange : .primary)
+
+                        Spacer()
+                    }
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if index < trackURLs.count - 1 {
+                    Divider()
+                }
+            }
+        }
+        .padding(.top, 4)
     }
 
 }

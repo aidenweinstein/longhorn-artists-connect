@@ -9,6 +9,18 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AVFoundation
 
+// MARK: - Default Form Times
+
+extension Date {
+    /// This date rounded to the nearest hour, with minutes and seconds dropped
+    /// (2:29 → 2:00, 2:30 → 3:00). The submission forms seed their time pickers with
+    /// this so a new post opens on a round hour instead of the exact current minute.
+    func roundedToNearestHour(calendar: Calendar = .current) -> Date {
+        guard let hour = calendar.dateInterval(of: .hour, for: self) else { return self }
+        return timeIntervalSince(hour.start) >= hour.duration / 2 ? hour.end : hour.start
+    }
+}
+
 // MARK: - Manual Featured Work
 
 /// A "Featured Work" entry typed in by hand — a project title plus its director —
@@ -476,6 +488,39 @@ struct ManualFeaturedWorkRow: View {
     }
 }
 
+// MARK: - Gallery Page Dots
+
+/// The row of page dots shown directly beneath a multi-image post's gallery: one dot per
+/// image, with the one currently on screen filled in. Lives below the media (rather than
+/// the system `.page` overlay on top of it) so it never disappears against a light or
+/// busy photo, and it never covers any of the image. Renders nothing for a single image.
+struct GalleryPageDots: View {
+    let count: Int
+    let currentIndex: Int
+
+    // ====== UI CONTROLS!!!!! ======
+    private let dotSize: CGFloat = 6
+    private let dotSpacing: CGFloat = 6
+    // ==============================
+
+    var body: some View {
+        if count > 1 {
+            HStack(spacing: dotSpacing) {
+                ForEach(0..<count, id: \.self) { index in
+                    Circle()
+                        .fill(index == currentIndex ? Color.primary : Color.primary.opacity(0.25))
+                        .frame(width: dotSize, height: dotSize)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .animation(.default, value: currentIndex)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Image \(currentIndex + 1) of \(count)")
+        }
+    }
+}
+
 // MARK: - Genre / Release Year Row
 
 /// The line under a post's title that carries its genres on the left and its release
@@ -675,20 +720,6 @@ enum AgeRating: String, CaseIterable, Identifiable, Codable {
     var id: String { rawValue }
 }
 
-// MARK: - Film Category
-
-/// How a film was produced. Drives which "studio" field the form shows: an org's studio
-/// list, a production class, or nothing (independent). The chosen studio/class is stored
-/// in `Submission.studio`, so the category is derived back from that value when re-opening
-/// a draft or editing an existing film.
-enum FilmCategory: String, CaseIterable, Identifiable {
-    case org = "Org Project"
-    case classProject = "Class Project"
-    case independent = "Independent Project"
-
-    var id: String { rawValue }
-}
-
 // MARK: - Production Classes
 
 /// One of the production classes a film can be submitted under. `fullName` (course code
@@ -775,7 +806,7 @@ struct CastEntry: Codable, Equatable, Identifiable {
 
 /// Photography equipment used for a shoot. Each field is a freeform, optional
 /// description. Stored on `Submission`/`Photography` and round-tripped through CloudKit
-/// as a single JSON string (`photographyEquipment`).
+/// as a String List of "Label: value" entries (`photographyGear`, see `listEntries`).
 struct EquipmentInfo: Codable, Equatable {
     /// Camera body (e.g., "Canon EOS R5").
     var camera: String = ""
@@ -817,6 +848,31 @@ struct EquipmentInfo: Codable, Equatable {
               let data = try? JSONEncoder().encode(self),
               let string = String(data: data, encoding: .utf8) else { return "" }
         return string
+    }
+
+    /// CloudKit's `photographyGear` String List: one `"Label: value"` entry per
+    /// filled-in piece of gear, labels as in `labeledEntries`. Empty when nothing is set.
+    var listEntries: [String] {
+        labeledEntries.map { "\($0.label): \($0.value)" }
+    }
+
+    /// Rebuilds from `listEntries`. The split is on the first ": ", so a value may
+    /// contain colons; entries with an unknown label are ignored.
+    init(listEntries: [String]) {
+        self.init()
+        for entry in listEntries {
+            guard let separator = entry.range(of: ": ") else { continue }
+            let value = String(entry[separator.upperBound...])
+            switch entry[..<separator.lowerBound] {
+            case "Camera":   camera = value
+            case "Lens":     lens = value
+            case "Lighting": lighting = value
+            case "Filters":  filters = value
+            case "Support":  support = value
+            case "Other":    accessories = value
+            default:         continue
+            }
+        }
     }
 
     init(camera: String = "", lens: String = "", lighting: String = "",
@@ -1315,6 +1371,38 @@ struct ProjectCrewNeededFormView: View {
     }
 }
 
+/// Who to reach out to about a project — one free-form line per person, mirroring the
+/// Crew Needed page. Emails, phone numbers and links become tappable on the post.
+struct ProjectContactsFormView: View {
+    @Binding var contacts: [String]
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(contacts.indices, id: \.self) { index in
+                    // Sentence capitalization (the default) rather than `.words`, which
+                    // would capitalize the email address too.
+                    TextField("Name — email or phone", text: $contacts[index], axis: .vertical)
+                        .autocorrectionDisabled()
+                }
+                .onDelete { indexSet in
+                    contacts.remove(atOffsets: indexSet)
+                }
+
+                Button("Add Contact") {
+                    contacts.append("")
+                }
+            } header: {
+                Text("Contacts")
+            } footer: {
+                Text("e.g. Jamie Martinez — jamie@utexas.edu")
+            }
+        }
+        .navigationTitle("Contacts")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 struct VideoPickerView: View {
     let completion: (Result<URL, Error>) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -1352,21 +1440,28 @@ struct DocumentPicker: UIViewControllerRepresentable {
     let onSelect: (URL) -> Void
     let onCancel: () -> Void
     
+    /// Whether this picker fills an image field (every requested type is an image).
+    private var isImagePick: Bool {
+        !contentTypes.isEmpty && contentTypes.allSatisfy { $0.conforms(to: .image) }
+    }
+
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes)
+        // Image fields accept every image format plus PDFs; the coordinator converts
+        // whatever is picked into a JPEG/PNG before handing it back.
+        let types = isImagePick ? PickedImageFile.pickableTypes : contentTypes
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
         picker.delegate = context.coordinator
         return picker
     }
-    
+
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-    
+
     func makeCoordinator() -> Coordinator {
         // Route the "loading" indicator to the field that's actually being filled:
         // image picks drive the image spinner (album cover / thumbnail / poster /
         // flyer rows), everything else drives the video/file download ring. This keeps
         // the indicator scoped to the right row instead of the whole upload section.
-        let isImagePick = !contentTypes.isEmpty && contentTypes.allSatisfy { $0.conforms(to: .image) }
-        return Coordinator(onSelect: onSelect, onCancel: onCancel, isImagePick: isImagePick)
+        Coordinator(onSelect: onSelect, onCancel: onCancel, isImagePick: isImagePick)
     }
 
     class Coordinator: NSObject, UIDocumentPickerDelegate {
@@ -1434,10 +1529,17 @@ struct DocumentPicker: UIViewControllerRepresentable {
                 }
                 if didAccess { url.stopAccessingSecurityScopedResource() }
 
+                // Image fields get a file every caller can decode: PDFs become their
+                // first page, uncommon formats (TIFF, WebP, RAW, BMP…) become JPEG/PNG.
+                var resultURL: URL? = materialized ? tempURL : nil
+                if let pickedURL = resultURL, self.isImagePick {
+                    resultURL = PickedImageFile.normalizedImageURL(for: pickedURL)
+                }
+
                 DispatchQueue.main.async {
                     self.endLoadingIndicator()
-                    if materialized {
-                        self.onSelect(tempURL)
+                    if let resultURL {
+                        self.onSelect(resultURL)
                     } else {
                         // Couldn't get the real bytes — treat as a cancel so we never
                         // create a post backed by missing/placeholder media.
@@ -1453,6 +1555,178 @@ struct DocumentPicker: UIViewControllerRepresentable {
     }
 }
 
+// MARK: - Picked Image Conversion
+
+/// Turns any file picked for an image field into something `UIImage` and the upload
+/// pipeline handle: PDF pages are rasterized, and formats outside JPEG/PNG/HEIC (TIFF,
+/// WebP, BMP, camera RAW, GIF…) are re-encoded so every client can show them.
+enum PickedImageFile {
+    /// Everything an image field accepts from Files. `.image` already covers JPEG, PNG,
+    /// HEIC/HEIF, GIF, TIFF, WebP, BMP, ICO, and camera RAW (DNG, CR2, NEF, ARW…).
+    static let pickableTypes: [UTType] = [.image, .pdf]
+
+    /// Long edge, in pixels, of a rasterized PDF page.
+    private static let pdfPageMaxPixels: CGFloat = 2400
+    /// Most pages taken from a single PDF in multi-image pickers.
+    private static let maxPDFPages = 30
+    /// Formats passed through untouched.
+    private static let passthroughTypes: [UTType] = [.jpeg, .png, .heic, .heif]
+
+    /// A JPEG/PNG/HEIC file for `url` (a PDF becomes its first page), or nil if the
+    /// file can't be read as an image.
+    static func normalizedImageURL(for url: URL) -> URL? {
+        let type = UTType(filenameExtension: url.pathExtension)
+        if let type, passthroughTypes.contains(where: { type.conforms(to: $0) }),
+           let data = try? Data(contentsOf: url), UIImage(data: data) != nil {
+            return url
+        }
+        guard let image = images(from: url, pageLimit: 1).first,
+              let (data, ext) = encoded(image) else { return nil }
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(ext)
+        do {
+            try data.write(to: outputURL)
+            return outputURL
+        } catch {
+            print("❌ PickedImageFile: failed to write converted image: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Every image in `url`: one per PDF page (up to `pageLimit`), or the single image.
+    static func images(from url: URL, pageLimit: Int = maxPDFPages) -> [UIImage] {
+        if UTType(filenameExtension: url.pathExtension)?.conforms(to: .pdf) == true {
+            return pdfPageImages(at: url, pageLimit: pageLimit)
+        }
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { return [] }
+        return [image]
+    }
+
+    /// PNG when the image has transparency, otherwise JPEG.
+    private static func encoded(_ image: UIImage) -> (Data, String)? {
+        let alpha = image.cgImage?.alphaInfo ?? .none
+        let hasAlpha = ![.none, .noneSkipFirst, .noneSkipLast].contains(alpha)
+        if hasAlpha, let png = image.pngData() { return (png, "png") }
+        return image.jpegData(compressionQuality: 0.9).map { ($0, "jpg") }
+    }
+
+    private static func pdfPageImages(at url: URL, pageLimit: Int) -> [UIImage] {
+        guard let document = CGPDFDocument(url as CFURL) else { return [] }
+        let pageCount = min(document.numberOfPages, pageLimit)
+        guard pageCount > 0 else { return [] }
+        return (1...pageCount).compactMap { index in
+            // Round-trip through JPEG so a many-page PDF isn't held as full bitmaps.
+            guard let page = document.page(at: index),
+                  let data = render(page).jpegData(compressionQuality: 0.9) else { return nil }
+            return UIImage(data: data)
+        }
+    }
+
+    /// Draws a PDF page (honoring its rotation) on white at `pdfPageMaxPixels`.
+    private static func render(_ page: CGPDFPage) -> UIImage {
+        let box = page.getBoxRect(.cropBox)
+        let isQuarterTurn = abs(page.rotationAngle) % 180 == 90
+        let pageSize = isQuarterTurn ? CGSize(width: box.height, height: box.width) : box.size
+        let scale = pdfPageMaxPixels / max(pageSize.width, pageSize.height, 1)
+        let outputSize = CGSize(width: (pageSize.width * scale).rounded(),
+                                height: (pageSize.height * scale).rounded())
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: outputSize, format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(origin: .zero, size: outputSize))
+            let cgContext = context.cgContext
+            // PDF space has a bottom-left origin; flip into UIKit's top-left space, then
+            // scale up ourselves since getDrawingTransform only ever shrinks.
+            cgContext.translateBy(x: 0, y: outputSize.height)
+            cgContext.scaleBy(x: scale, y: -scale)
+            cgContext.concatenate(page.getDrawingTransform(.cropBox,
+                                                           rect: CGRect(origin: .zero, size: pageSize),
+                                                           rotate: 0,
+                                                           preserveAspectRatio: true))
+            cgContext.drawPDFPage(page)
+        }
+    }
+}
+
+// MARK: - Multi-Image Upload Row
+
+/// Upload-form row for a set of images (film BTS photos / stills, showcase reel stills): a
+/// header (icon, label, count, Photos + Files add buttons) plus a horizontal strip of
+/// tap-to-remove thumbnails.
+struct MultiImageUploadRow: View {
+    let title: String
+    let placeholderSystemName: String
+    @Binding var images: [UIImage]
+    @Binding var showPhotoPicker: Bool
+    @Binding var showFilePicker: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: images.isEmpty ? 0 : 10) {
+            HStack {
+                UploadRowThumbnail(image: images.first, placeholderSystemName: placeholderSystemName)
+                Text(title)
+                    .foregroundStyle(.primary)
+                if !images.isEmpty {
+                    Text("\(images.count)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.brandOrange)
+                }
+                Spacer()
+                HStack(spacing: 12) {
+                    Button {
+                        showPhotoPicker = true
+                    } label: {
+                        Label("Photos", systemImage: "photo.stack")
+                            .labelStyle(.iconOnly)
+                            .symbolRenderingMode(.multicolor)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.primary)
+
+                    Button {
+                        showFilePicker = true
+                    } label: {
+                        Label("Files", systemImage: "folder")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.primary)
+                }
+            }
+
+            if !images.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(images.enumerated()), id: \.offset) { index, image in
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(alignment: .topTrailing) {
+                                    Button {
+                                        images.remove(at: index)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 18))
+                                            .foregroundStyle(.white, .black.opacity(0.6))
+                                            .padding(2)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Multi-Image Document Picker
 
 /// Files-app picker that allows selecting MULTIPLE images at once, materializing each
@@ -1463,7 +1737,7 @@ struct MultiImageDocumentPicker: UIViewControllerRepresentable {
     let onCancel: () -> Void
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image])
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: PickedImageFile.pickableTypes)
         picker.allowsMultipleSelection = true
         picker.delegate = context.coordinator
         return picker
@@ -1497,10 +1771,9 @@ struct MultiImageDocumentPicker: UIViewControllerRepresentable {
                     var coordinatorError: NSError?
                     // Coordinate the read so an iCloud-Drive placeholder is downloaded to
                     // real bytes before we decode it (see the single-file DocumentPicker).
+                    // A PDF contributes one image per page, in page order.
                     NSFileCoordinator().coordinate(readingItemAt: url, options: [.forUploading], error: &coordinatorError) { readURL in
-                        if let data = try? Data(contentsOf: readURL), let image = UIImage(data: data) {
-                            images.append(image)
-                        }
+                        images.append(contentsOf: PickedImageFile.images(from: readURL))
                     }
                     if didAccess { url.stopAccessingSecurityScopedResource() }
                 }

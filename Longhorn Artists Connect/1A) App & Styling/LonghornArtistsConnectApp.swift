@@ -32,6 +32,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         // contextually via `PushAuthorization.request()`.
         UNUserNotificationCenter.current().delegate = self
 
+        // Start the connections manager now so its request/accept push subscriptions
+        // exist from launch, not just once a profile or the Directory is opened.
+        _ = ConnectionsManager.shared
+
         // Use the .playback category so audio/video sound plays even when the
         // device's ringer/silent switch is set to silent.
         do {
@@ -62,6 +66,10 @@ class AppDelegate: NSObject, UIApplicationDelegate {
             switch subscriptionID {
             case "MessageSubscription", "ConversationSubscription":
                 await MessageStore.shared.handleRemoteNotification(userInfo)
+            case let id? where ConnectionsManager.subscriptionIDs.contains(id):
+                // Someone sent or accepted a connection request: reload the edge sets so
+                // their profile button and the Directory sections update.
+                await ConnectionsManager.shared.refresh()
             default:
                 await SubmissionStore_3_2.shared.handleCloudKitNotification()
             }
@@ -107,6 +115,26 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
+        // Go-live notifications (LiveStreams.swift) open the show's stream.
+        if let link = userInfo[LiveStreamNotifications.streamURLKey] as? String,
+           let url = URL(string: link) {
+            Task { @MainActor in
+                await UIApplication.shared.open(url)
+                completionHandler()
+            }
+            return
+        }
+        // Connection request / acceptance banners: refresh the edge sets so the
+        // Directory's Requests section is current when the user lands there.
+        if let ck = CKQueryNotification(fromRemoteNotificationDictionary: userInfo),
+           let id = ck.subscriptionID,
+           ConnectionsManager.subscriptionIDs.contains(id) {
+            Task { @MainActor in
+                await ConnectionsManager.shared.refresh()
+                completionHandler()
+            }
+            return
+        }
         Task { @MainActor in
             await MessageStore.shared.handleRemoteNotification(userInfo)
             completionHandler()
@@ -117,7 +145,12 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 @main
 struct AppView: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
+
+    // Observed so the home screen icon follows the user's school (see `SchoolAppIcon`).
+    @AppStorage("userSchool") private var userSchool = ""
+    @AppStorage("isGuestUser") private var isGuestUser = false
+    @AppStorage(SchoolScope.moderatorSchoolKey) private var moderatorSchool = ""
+
     init() {
         // Moderator mode is a per-session privilege: it always starts OFF and stays
         // locked until the password is entered in More → Moderation this run. Clearing
@@ -185,11 +218,36 @@ struct AppView: App {
     var body: some Scene {
         WindowGroup {
             LaunchScreenView()
+                // Runs at launch and again whenever the school, guest status or a
+                // moderator's school pick changes; a no-op when the icon already matches.
+                .task(id: "\(userSchool)|\(isGuestUser)|\(moderatorSchool)") {
+                    await SchoolAppIcon.apply(AppTheme.theme(school: userSchool, isGuest: isGuestUser))
+                }
         }
     }
 }
 
 #Preview {
+    ContentView()
+}
+
+#Preview("UC Berkeley Colors") {
+    let _ = AppTheme.usePreviewSchool("University of California, Berkeley")
+    ContentView()
+}
+
+#Preview("Michigan Colors") {
+    let _ = AppTheme.usePreviewSchool("University of Michigan")
+    ContentView()
+}
+
+#Preview("USC Colors") {
+    let _ = AppTheme.usePreviewSchool("USC")
+    ContentView()
+}
+
+#Preview("Cal Poly SLO Colors") {
+    let _ = AppTheme.usePreviewSchool("Cal Poly SLO")
     ContentView()
 }
 

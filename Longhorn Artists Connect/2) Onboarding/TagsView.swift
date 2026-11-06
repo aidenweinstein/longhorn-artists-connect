@@ -2,8 +2,8 @@
 //  TagsView.swift
 //  Longhorn Artists Connect
 //
-//  Onboarding's final step for UT students: "Choose Your Tags", where the user
-//  picks the roles that describe them before entering the app.
+//  Onboarding's "Choose Your Tags" step for students: the user picks the roles that
+//  describe them, then moves on to choose a base profile (see ProfileStylePage).
 //  Extracted from OnboardingView.swift.
 //
 
@@ -12,8 +12,9 @@ import SwiftUI
 struct TagsView: View {
     @ObservedObject var profileModel: UserProfileModel
 
-    /// Saves the profile and finishes onboarding.
-    let onComplete: () -> Void
+    /// The onboarding page index, owned by `OnboardingView`. Next goes to the
+    /// base-profile page (7).
+    @Binding var currentPage: Int
 
     // MARK: - Validation
 
@@ -61,11 +62,13 @@ struct TagsView: View {
                 .padding(.horizontal, 24)
             }
 
-            // Bottom button
+            // Bottom button — on to the base profile choice.
             Button {
-                onComplete()
+                withAnimation {
+                    currentPage = 7
+                }
             } label: {
-                Text("Explore the Nexus!")
+                Text("Next")
                     .font(.headline)
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
@@ -126,4 +129,19 @@ struct UserTypeButton: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+#Preview("Tags") {
+    @Previewable @State var currentPage = 2
+    NavigationStack {
+        TagsView(profileModel: UserProfileModel(), currentPage: $currentPage)
+    }
+}
+
+#Preview("User Type Button") {
+    VStack {
+        UserTypeButton(type: .actor, isSelected: false, onTap: {})
+        UserTypeButton(type: .director, isSelected: true, onTap: {})
+    }
+    .padding()
 }

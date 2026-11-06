@@ -11,6 +11,17 @@ import SwiftUI
 
 // MARK: - Event Card Component (for Discover Feed)
 
+extension Submission {
+    /// Whether an event is over: once its last showing, its end, or (with no end) its
+    /// start has passed. Shared by the event detail (which stops taking RSVPs) and the
+    /// profile "See You At" row (which only lists upcoming events).
+    var eventHasEnded: Bool {
+        let lastShowingEnd = eventShowings?.map(\.end).max()
+        guard let last = lastShowingEnd ?? eventEndDate ?? eventStartDate else { return false }
+        return last < Date()
+    }
+}
+
 struct EventCard: View {
     let event: Submission
 
@@ -121,12 +132,13 @@ struct EventCard: View {
     /// the event's category, e.g.
     ///
     ///     🎤  (category icon)
+    ///     Wed
     ///     Sep
     ///     10
     ///     7:30pm
     ///
-    /// with the day number largest. Only the start time is shown. Recruitment Schedule
-    /// (a date range with no times) omits the time line.
+    /// with the day number largest. Only the start time is shown. Events from a previous
+    /// year show that year in place of the time.
     @ViewBuilder private var dateBox: some View {
         if let startDate = event.eventStartDate {
             VStack(spacing: 8) {
@@ -138,6 +150,11 @@ struct EventCard: View {
                 }
 
                 VStack(spacing: 2) {
+                    Text(startDate, format: .dateTime.weekday(.abbreviated))
+                        .font(.caption.weight(.semibold))
+                        .textCase(.uppercase)
+                        .foregroundStyle(.secondary)
+
                     Text(startDate, format: .dateTime.month(.abbreviated))
                         .font(.subheadline.weight(.semibold))
                         .textCase(.uppercase)
@@ -165,11 +182,15 @@ struct EventCard: View {
         }
     }
 
-    /// The event's start time, e.g. "7:30pm". Recruitment Schedule (date range, no times)
-    /// shows nothing here.
+    /// The event's start time, e.g. "7:30pm" — or its year, e.g. "2025", when the event
+    /// is from a previous year.
     private var startTimeText: String? {
-        guard categoryKind?.usesDateRange != true,
-              let start = event.eventStartDate else { return nil }
+        guard let start = event.eventStartDate else { return nil }
+        let calendar = Calendar.current
+        let startYear = calendar.component(.year, from: start)
+        if startYear < calendar.component(.year, from: Date()) {
+            return String(startYear)
+        }
         return timeString(start, includeMeridiem: true)
     }
 
@@ -185,10 +206,22 @@ struct EventCard: View {
 // MARK: - Event Detail View
 
 struct EventDetailView: View {
-    let event: Submission
+    /// The post as it was when the detail opened. Read it through `event` instead, which
+    /// resolves the store's current copy — so an edit shows immediately, and a second
+    /// edit starts from the first one's result instead of silently reverting it.
+    private let passedEvent: Submission
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: SubmissionStore_3_2 = .shared
-    
+
+    init(event: Submission) {
+        self.passedEvent = event
+    }
+
+    /// The live version of this event from the store (see `passedEvent`).
+    private var event: Submission {
+        store.currentCopy(of: passedEvent)
+    }
+
     @State private var isLoading = true
     @State private var contentLoaded = false
     /// Shown only once loading has run for over 1.5s (first-launch content download).
@@ -200,6 +233,22 @@ struct EventDetailView: View {
     @ObservedObject private var orgStore = OrganizationStore.shared
     /// The org whose page is presented when the host is tapped (nil = none).
     @State private var selectedOrg: Organization?
+
+    /// Everyone going to this event (iCloud user record names, oldest RSVP first),
+    /// loaded from the `EventAttendance` records when the detail opens.
+    @State private var attendeeIDs: [String] = []
+    /// The current user's own answer (Going / Maybe / Can't Go), nil if unanswered.
+    @State private var myRSVP: EventRSVPStatus?
+    /// True while an RSVP save/delete is in flight, so taps can't stack up.
+    @State private var isUpdatingGoing = false
+    @State private var showAttendees = false
+    /// Set when an RSVP couldn't be saved; drives the alert.
+    @State private var goingErrorMessage: String?
+    @ObservedObject private var profiles = UserProfileManager.shared
+
+    /// Past events keep their "who went" list but no longer take new RSVPs. An event
+    /// is over once its last showing, its end, or (with no end) its start has passed.
+    private var isEventOver: Bool { event.eventHasEnded }
 
     /// The organization the host links to, when the host names a known org.
     private var hostOrganization: Organization? {
@@ -244,6 +293,11 @@ struct EventDetailView: View {
         return colors[hash % colors.count]
     }
 
+    /// Height of the poster band at the top of the page — about 40% of an iPhone
+    /// screen, so the title, date, description, and location all fit beneath it on
+    /// the first screen regardless of the flyer's aspect ratio.
+    private var posterBandHeight: CGFloat { 340.scaledToScreen }
+
     // MARK: - Date/Time Formatting
 
     /// "Mon, Oct 5" — abbreviated weekday, abbreviated month, day.
@@ -260,11 +314,10 @@ struct EventDetailView: View {
         return formatter.string(from: date).lowercased()
     }
 
-    /// Theatre Performance: the run's showings in order. Empty for every other category,
-    /// and for a theatre post whose showings haven't synced.
+    /// The event's showings in order. Empty for a single-date post, and for a post whose
+    /// showings haven't synced.
     private var showings: [EventShowing] {
-        guard categoryKind?.usesShowings == true else { return [] }
-        return (event.eventShowings ?? []).sorted { $0.start < $1.start }
+        (event.eventShowings ?? []).sorted { $0.start < $1.start }
     }
 
     /// One showing: "Fri, Oct 10 • 7:30pm - 9:30pm".
@@ -273,8 +326,7 @@ struct EventDetailView: View {
     }
 
     /// The large date line shown under the title:
-    /// "Monday, Oct 5 • 7:00pm - 11:00pm" for timed events, a date range for
-    /// Recruitment Schedule (which has no times), or the span of the run for a
+    /// "Monday, Oct 5 • 7:00pm - 11:00pm" for timed events, or the span of the run for a
     /// multi-showing event (each showing is then listed below). `nil` when the event has
     /// no date.
     private var eventDateText: String? {
@@ -286,13 +338,6 @@ struct EventDetailView: View {
         }
 
         guard let start = event.eventStartDate else { return nil }
-
-        if categoryKind?.usesDateRange == true {
-            if let end = event.eventEndDate {
-                return "\(longDateString(start)) - \(longDateString(end))"
-            }
-            return longDateString(start)
-        }
 
         var line = longDateString(start)
         if let end = event.eventEndDate,
@@ -352,16 +397,31 @@ struct EventDetailView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     // Poster alone at the top, title/info stacked below (like projects)
                     VStack(alignment: .leading, spacing: 12) {
-                        // Flyer spans the full width, edge to edge (aspect ratio preserved).
+                        // Flyer in a fixed-height, edge-to-edge band so the title, date,
+                        // and location stay on the first screen whatever shape the flyer
+                        // is. The whole flyer is shown (aspect ratio preserved), centered
+                        // over a blurred copy of itself that fills the gutters a portrait
+                        // or landscape flyer leaves. Tap for the full-size poster.
                         Button {
                             showFullScreenPoster = true
                         } label: {
                             if let thumbnailData = event.thumbnailData,
                                let uiImage = UIImage(data: thumbnailData) {
-                                Image(uiImage: uiImage)
-                                    .resizable()
-                                    .scaledToFit()
+                                Color.clear
+                                    .overlay {
+                                        Image(uiImage: uiImage)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .blur(radius: 40)
+                                    }
+                                    .overlay(Color.black.opacity(0.3))
+                                    .overlay {
+                                        Image(uiImage: uiImage)
+                                            .resizable()
+                                            .scaledToFit()
+                                    }
                                     .frame(maxWidth: .infinity)
+                                    .frame(height: posterBandHeight)
                                     .clipped() // Edge-to-edge, no rounded corners
                             } else {
                                 ZStack {
@@ -373,13 +433,27 @@ struct EventDetailView: View {
                                         .foregroundStyle(.white.opacity(0.8))
                                 }
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 353)
+                                .frame(height: posterBandHeight)
                                 .clipped() // No rounded corners
                             }
                         }
                         .buttonStyle(.plain)
 
-                        // Title, large date/time, and location — the event's
+                        // Going / Maybe / Can't Go buttons and the row of who's going sit
+                        // directly under the poster so RSVPing is the first thing you see.
+                        if !isEventOver || !attendeeIDs.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if !isEventOver {
+                                    rsvpButtons
+                                }
+                                if !attendeeIDs.isEmpty {
+                                    whosGoingRow
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+
+                        // Title, large date/time, description, and location — the event's
                         // at-a-glance header, left-aligned below the poster.
                         VStack(alignment: .leading, spacing: 8) {
                             Text(event.title)
@@ -412,6 +486,14 @@ struct EventDetailView: View {
                                 .padding(.top, 4)
                             }
 
+                            if !event.logline.isEmpty {
+                                Text(event.logline)
+                                    .font(.body)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                            }
+
                             // Location — a clickable orange link to Apple Maps.
                             if let location = event.eventLocation, !location.isEmpty {
                                 Button {
@@ -428,14 +510,6 @@ struct EventDetailView: View {
                                     .foregroundStyle(Color.brandOrange)
                                 }
                                 .buttonStyle(.plain)
-                            }
-
-                            if !event.logline.isEmpty {
-                                Text(event.logline)
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 4)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -484,10 +558,10 @@ struct EventDetailView: View {
                                     }
                                 }
 
-                                // Lineup — Artists / Actors / Films for the category.
-                                if let label = categoryKind?.lineupLabel,
-                                   let lineup = event.eventLineup, !lineup.isEmpty {
-                                    detailRow(label) {
+                                // Lineup — labelled Artists / Actors / Films on posts that
+                                // still carry a category, plain "Artists" otherwise.
+                                if let lineup = event.eventLineup, !lineup.isEmpty {
+                                    detailRow(categoryKind?.lineupLabel ?? "Artists") {
                                         Text(lineup)
                                             .foregroundStyle(.secondary)
                                     }
@@ -506,41 +580,13 @@ struct EventDetailView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 16) {
-                        // Buy Ticket button — only when a real tickets link is provided.
-                        // Trim first so a whitespace-only value (e.g. an empty string
-                        // round-tripped through CloudKit) doesn't surface the button.
-                        if let ticketsURL = event.eventTicketsURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-                           !ticketsURL.isEmpty,
-                           let url = URL(string: ticketsURL) {
-                            Link(destination: url) {
-                                HStack {
-                                    Image(systemName: "ticket")
-                                    Text("Buy Ticket")
-                                }
-                                .font(.headline)
-                                .foregroundStyle(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.brandOrange)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }
-                        } else if let applyURL = event.eventApplicationURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-                                  !applyURL.isEmpty,
-                                  let url = URL(string: applyURL) {
-                            Link(destination: url) {
-                                HStack {
-                                    Image(systemName: "square.and.pencil")
-                                    Text("Apply")
-                                }
-                                .font(.headline)
-                                .foregroundStyle(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.brandOrange)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }
-                        }
-                        
+                        // One button per link the poster filled in, each with its own
+                        // icon. Links left blank produce no button.
+                        linkButton(event.eventApplicationURL, title: "Apply", icon: "square.and.pencil")
+                        linkButton(event.eventTicketsURL, title: "Buy Tickets", icon: "ticket")
+                        linkButton(event.eventRSVPURL, title: "RSVP", icon: "envelope.open")
+                        linkButton(event.eventWebsiteURL, title: "Visit Website", icon: "globe")
+
                         // Edit and Delete buttons for creator or moderator
                         if canEditOrDelete {
                             OwnerActionButtons(
@@ -570,7 +616,20 @@ struct EventDetailView: View {
             NavigationStack { OrganizationPageView(organization: org) }
                 .presentationDragIndicator(.hidden)
         }
+        .sheet(isPresented: $showAttendees) {
+            EventAttendeesSheet(attendeeIDs: attendeeIDs, isEventOver: isEventOver)
+        }
+        .task { await loadAttendees() }
+        .alert(
+            "Couldn't RSVP",
+            isPresented: Binding(get: { goingErrorMessage != nil }, set: { if !$0 { goingErrorMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(goingErrorMessage ?? "")
+        }
         .onAppear {
+            PostAnalytics.shared.record(.open, for: event)
             // Simulate loading delay using Swift Concurrency
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(300))
@@ -582,6 +641,175 @@ struct EventDetailView: View {
         }
     }
     
+    // MARK: - RSVP (Going / Maybe / Can't Go)
+
+    /// Whether the current user answered Going.
+    private var isGoing: Bool { myRSVP == .going }
+
+    /// Three equal-width buttons. The chosen one turns solid orange; tapping it again
+    /// clears the answer.
+    private var rsvpButtons: some View {
+        HStack(spacing: 10) {
+            rsvpButton(.going, title: "Going") {
+                Image(systemName: "hand.raised.fill")
+            }
+            rsvpButton(.maybe, title: "Maybe") {
+                // SF Symbols has no thinking face, so this uses the emoji.
+                Text("🤔")
+            }
+            rsvpButton(.notGoing, title: "Can't Go") {
+                Text("😞")
+            }
+        }
+        .disabled(isUpdatingGoing)
+        .sensoryFeedback(.selection, trigger: myRSVP)
+    }
+
+    private func rsvpButton(
+        _ status: EventRSVPStatus,
+        title: String,
+        @ViewBuilder icon: () -> some View
+    ) -> some View {
+        let isSelected = myRSVP == status
+        return Button {
+            setRSVP(status)
+        } label: {
+            VStack(spacing: 4) {
+                icon()
+                Text(title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .font(.headline)
+            .foregroundStyle(isSelected ? .white : Color.brandOrange)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(isSelected ? Color.brandOrange : Color.brandOrange.opacity(0.12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.brandOrange, lineWidth: isSelected ? 0 : 1.5)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// Overlapping profile photos of the first few attendees plus a count; tap to see
+    /// the full list.
+    private var whosGoingRow: some View {
+        Button {
+            showAttendees = true
+        } label: {
+            HStack(spacing: 12) {
+                HStack(spacing: -10) {
+                    ForEach(Array(attendeeIDs.prefix(5)), id: \.self) { id in
+                        EventAttendeeAvatar(profile: profiles.findUser(byID: id), size: 32)
+                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                    }
+                }
+
+                Text(goingSummary)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "You and 3 others are going", "Maya Chen is going", "12 went", …
+    private var goingSummary: String {
+        let verb = isEventOver ? "went" : (attendeeIDs.count == 1 && !isGoing ? "is going" : "are going")
+        let others = attendeeIDs.filter { $0 != CloudKitManager.shared.currentAttendeeID }
+        if isGoing {
+            if others.isEmpty { return isEventOver ? "You went" : "You're going" }
+            return "You and \(others.count) \(others.count == 1 ? "other" : "others") \(verb)"
+        }
+        if attendeeIDs.count == 1, let name = profiles.findUser(byID: attendeeIDs[0])?.displayName {
+            return "\(name) \(verb)"
+        }
+        return "\(attendeeIDs.count) \(isEventOver ? "went" : "going")"
+    }
+
+    /// Loads who's going and the current user's own answer.
+    private func loadAttendees() async {
+        guard let rsvps = try? await CloudKitManager.shared.fetchEventRSVPs(eventID: event.id) else { return }
+        attendeeIDs = rsvps.filter { $0.status == .going }.map(\.userID)
+        if let me = CloudKitManager.shared.currentAttendeeID {
+            myRSVP = rsvps.first { $0.userID == me }?.status
+        }
+    }
+
+    /// Sets the current user's RSVP to `status`, or clears it if that was already their
+    /// answer. Updates the UI immediately, then rolls back if the CloudKit write fails
+    /// (e.g. not signed in to iCloud, or offline).
+    private func setRSVP(_ status: EventRSVPStatus) {
+        guard !isUpdatingGoing else { return }
+        guard let me = CloudKitManager.shared.currentAttendeeID else {
+            goingErrorMessage = "Sign in to iCloud in Settings to RSVP to events."
+            return
+        }
+        let newRSVP: EventRSVPStatus? = myRSVP == status ? nil : status
+        let previousRSVP = myRSVP
+        let previousIDs = attendeeIDs
+
+        withAnimation(.snappy) {
+            myRSVP = newRSVP
+            if newRSVP == .going {
+                if !attendeeIDs.contains(me) { attendeeIDs.append(me) }
+            } else {
+                attendeeIDs.removeAll { $0 == me }
+            }
+        }
+
+        isUpdatingGoing = true
+        Task {
+            defer { isUpdatingGoing = false }
+            do {
+                try await CloudKitManager.shared.setRSVP(newRSVP, eventID: event.id)
+            } catch {
+                print("❌ [Event] Couldn't update RSVP: \(error)")
+                withAnimation(.snappy) {
+                    myRSVP = previousRSVP
+                    attendeeIDs = previousIDs
+                }
+                goingErrorMessage = "Couldn't update your RSVP. Check your connection and try again."
+            }
+        }
+    }
+
+    /// A full-width link button, shown only when `rawURL` holds a real link. Trims first so
+    /// a whitespace-only value (e.g. an empty string round-tripped through CloudKit)
+    /// doesn't surface a button, and assumes https when the poster typed a bare domain
+    /// ("example.com"), which `Link` otherwise can't open.
+    @ViewBuilder
+    private func linkButton(_ rawURL: String?, title: String, icon: String) -> some View {
+        if let trimmed = rawURL?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty,
+           let url = URL(string: trimmed.contains("://") ? trimmed : "https://" + trimmed) {
+            Link(destination: url) {
+                HStack {
+                    Image(systemName: icon)
+                    Text(title)
+                }
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.brandOrange)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
     private func openLocationInMaps(location: String) {
         // Encode the location for URL
         guard let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -601,6 +829,91 @@ struct EventDetailView: View {
     }
 }
 
+// MARK: - Event Attendees
+
+/// A circular profile photo for an attendee, or a person icon when they have none
+/// (or aren't in the directory).
+struct EventAttendeeAvatar: View {
+    let profile: DirectoryUser?
+    var size: CGFloat = 44
+
+    var body: some View {
+        if let data = profile?.profileImageData, let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(Color.utBrandOrange.opacity(0.3))
+                .frame(width: size, height: size)
+                .overlay {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: size * 0.45))
+                        .foregroundStyle(Color.utBrandOrange)
+                }
+        }
+    }
+}
+
+/// Everyone going to an event. Attendees in the directory link to their profile;
+/// the rest are collapsed into one "Guest User" row (same approach as `WhoLikedSheet`).
+struct EventAttendeesSheet: View {
+    let attendeeIDs: [String]
+    let isEventOver: Bool
+    @ObservedObject private var profiles = UserProfileManager.shared
+
+    private var knownAttendees: [DirectoryUser] {
+        attendeeIDs.compactMap { profiles.findUser(byID: $0) }
+    }
+
+    private var guestCount: Int { attendeeIDs.count - knownAttendees.count }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if attendeeIDs.isEmpty {
+                    ContentUnavailableView(
+                        "No One Yet",
+                        systemImage: "person.2",
+                        description: Text("Be the first to say you're going.")
+                    )
+                } else {
+                    List {
+                        ForEach(knownAttendees) { person in
+                            NavigationLink {
+                                PersonProfileView(name: person.fullName)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    EventAttendeeAvatar(profile: person)
+                                    Text(person.displayName)
+                                        .font(.headline)
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+
+                        if guestCount > 0 {
+                            HStack(spacing: 12) {
+                                EventAttendeeAvatar(profile: nil)
+                                Text(guestCount > 1 ? "Guest User x\(guestCount)" : "Guest User")
+                                    .font(.headline)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(isEventOver ? "\(attendeeIDs.count) Went" : "\(attendeeIDs.count) Going")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(Color(.systemBackground))
+    }
+}
+
 // MARK: - Event Full Screen Poster View
 
 struct EventFullScreenPosterView: View {
@@ -617,13 +930,19 @@ struct EventFullScreenPosterView: View {
                let uiImage = UIImage(data: thumbnailData) {
                 // Blurred, filled copy behind the poster so the letterbox space around it
                 // shows a soft version of the art rather than flat black.
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFill()
-                    .ignoresSafeArea()
-                    .blur(radius: 40)
+                // Drawn as an overlay on a screen-sized Color so the filled image's
+                // oversize layout bounds don't inflate the ZStack and push the close
+                // button off screen (which left no way to dismiss the cover).
+                Color.clear
+                    .overlay {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFill()
+                            .blur(radius: 40)
+                    }
                     .overlay(Color.black.opacity(0.35))
                     .clipped()
+                    .ignoresSafeArea()
 
                 Image(uiImage: uiImage)
                     .resizable()
@@ -657,6 +976,9 @@ struct EventFullScreenPosterView: View {
                 Spacer()
             }
         }
+        // Tap anywhere to close, matching ProfilePhotoZoomOverlay, so there's always a way out.
+        .contentShape(Rectangle())
+        .onTapGesture { dismiss() }
         .presentationDragIndicator(.hidden)
     }
 }
@@ -679,17 +1001,13 @@ extension Submission {
         s.logline = "A short description of the event that gives people the gist of what to expect and why they should come."
         s.eventHost = "Longhorn Film Collective"
         s.genres = [kind.rawValue]
+        s.eventRSVPURL = "https://example.com/rsvp"
+        s.eventWebsiteURL = "https://example.com"
 
         let calendar = Calendar.current
         let evening = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: Date()) ?? Date()
 
-        if kind.usesDateRange {
-            // Recruitment: a start/end date range, expectations, application link.
-            s.eventStartDate = Date()
-            s.eventEndDate = calendar.date(byAdding: .day, value: 14, to: Date())
-            s.eventExpectations = "Weekly 3-hour meetings, one weekend shoot per month, and active participation in the group chat."
-            s.eventApplicationURL = "https://example.com/apply"
-        } else if kind.usesShowings {
+        if kind.usesShowings {
             // Theatre: a three-night run, with the post's dates bracketing the showings.
             s.eventShowings = (0..<3).compactMap { offset in
                 guard let start = calendar.date(byAdding: .day, value: offset, to: evening),
@@ -717,6 +1035,8 @@ extension Submission {
             s.eventTicketsURL = "https://example.com/tickets"
         case .filmFestival:
             s.eventLineup = "Sundown, The Long Wait, Static, Bloom"
+        case .screening:
+            s.eventLineup = "Sundown"
         case .speaker:
             s.eventLineup = "Dana Whitfield, Omar Castillo"
         default:
@@ -727,12 +1047,12 @@ extension Submission {
 
     private static func sampleEventTitle(_ kind: EventCategoryKind) -> String {
         switch kind {
-        case .recruitmentSchedule: return "Fall Recruitment"
         case .infoSession:         return "New Member Info Session"
         case .concert:             return "Spring Showcase Concert"
         case .actorShowcase:       return "Actor Showcase Night"
         case .theatrePerformance:  return "Our Town"
         case .filmFestival:        return "Longhorn Film Festival"
+        case .screening:           return "Sundown Premiere Screening"
         case .artistMixer:         return "Artist Mixer"
         case .speaker:             return "Guest Speaker Talk"
         }
@@ -741,9 +1061,6 @@ extension Submission {
 
 // MARK: - Card Previews (one per category, all fields filled)
 
-#Preview("Card • Recruitment") {
-    EventCard(event: .sampleEvent(.recruitmentSchedule)).padding(.horizontal)
-}
 #Preview("Card • Info Session") {
     EventCard(event: .sampleEvent(.infoSession)).padding(.horizontal)
 }
@@ -768,7 +1085,6 @@ extension Submission {
 
 // MARK: - Detail Previews (one per category, all fields filled)
 
-#Preview("Detail • Recruitment") { EventDetailView(event: .sampleEvent(.recruitmentSchedule)) }
 #Preview("Detail • Info Session") { EventDetailView(event: .sampleEvent(.infoSession)) }
 #Preview("Detail • Concert") { EventDetailView(event: .sampleEvent(.concert)) }
 #Preview("Detail • Actor Showcase") { EventDetailView(event: .sampleEvent(.actorShowcase)) }
