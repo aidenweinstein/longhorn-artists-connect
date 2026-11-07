@@ -16,7 +16,6 @@
 //    - page 4 → SchoolEmailVerificationView.swift
 //    - page 5 → SchoolSelectionView.swift
 //    - page 6 → UserTypePage.swift          (Artist / Enthusiast)
-//    - page 7 → ProfileStylePage.swift      (Filmmaker / Actor / Musician — required)
 //
 
 import SwiftUI
@@ -84,13 +83,6 @@ struct OnboardingView: View {
                         )
                     } else if currentPage == 2 {
                         TagsView(
-                            profileModel: profileModel,
-                            currentPage: $currentPage
-                        )
-                    } else if currentPage == 7 {
-                        // Required for every artist account: the base profile that
-                        // shapes recommendations, the Now page and the profile layout.
-                        ProfileStylePage(
                             profileModel: profileModel,
                             onComplete: completeOnboarding
                         )

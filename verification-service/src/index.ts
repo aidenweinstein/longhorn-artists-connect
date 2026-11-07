@@ -6,6 +6,9 @@
 ///   POST /v1/verify/request      { email, userRecordName } -> { pendingID, nonce }
 ///   POST /v1/verify/confirm      { pendingID, code }       -> { verified, school }
 ///   GET  /v1/verify/status?user= has this account been verified
+///   POST /v1/web/session/request website sign-in, see src/webSession.ts
+///   POST /v1/web/session/confirm
+///   POST /v1/web/people/*         People pages, see src/people.ts
 ///   POST /v1/admin/backfill-schools   one-off schoolID migration (ADMIN_TOKEN)
 ///
 /// Codes are generated and compared here and nowhere else. The client never
@@ -30,6 +33,8 @@ import { sendVerificationCode } from "./email";
 import { fetchUserProfile, writeVerificationRecord, clearProfileNonce } from "./cloudkit";
 import { runSweep } from "./sweep";
 import { runBackfill, BackfillCursor } from "./backfill";
+import { handleWebSessionRequest, handleWebSessionConfirm } from "./webSession";
+import { handlePeople } from "./people";
 
 const CODE_TTL_SECONDS = 600; // 10 minutes
 const MAX_CODE_ATTEMPTS = 5;
@@ -53,6 +58,15 @@ export default {
             }
             if (url.pathname === "/v1/verify/status" && request.method === "GET") {
                 return await handleStatus(url, env);
+            }
+            if (url.pathname === "/v1/web/session/request" && request.method === "POST") {
+                return await handleWebSessionRequest(request, env, lookupDomain);
+            }
+            if (url.pathname === "/v1/web/session/confirm" && request.method === "POST") {
+                return await handleWebSessionConfirm(request, env);
+            }
+            if (url.pathname.startsWith("/v1/web/people/") && request.method === "POST") {
+                return await handlePeople(request, env, url.pathname);
             }
             if (url.pathname === "/v1/admin/backfill-schools" && request.method === "POST") {
                 return await handleSchoolBackfill(request, env);

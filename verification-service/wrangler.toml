@@ -38,3 +38,5 @@ BACKFILL_DEFAULT_SCHOOL = "ut-austin"
 #   RESEND_API_KEY     Resend API key
 #   ADMIN_TOKEN        bearer token for /v1/admin/*; leave unset to disable
 #                      those routes entirely (they 404 without it)
+#   WEB_CLIENT_TOKEN   bearer token the Nexus website presents on /v1/web/*;
+#                      leave unset to disable website sign-in (404s)

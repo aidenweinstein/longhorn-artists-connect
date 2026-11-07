@@ -2,18 +2,19 @@
 //  StyledProfileSection.swift
 //  Longhorn Artists Connect
 //
-//  The part of a profile that changes with its style, placed under the bio on the
-//  user's own Portfolio and on everyone else's profile:
+//  The part of a profile that the person's role tags unlock, placed under the bio on
+//  the user's own Portfolio and on everyone else's profile (see CreativeGroup.swift):
 //
-//  • Actor — like Actors Access: headshot beside the stats sheet (age range, gender,
-//    height…), their reel, a resume of every role (Nexus credits plus ones they typed
-//    in), and skills, languages and training.
-//  • Filmmaker — like IMDb: a filmography grouped by job, newest first, with year,
+//  • Actor / Dancer tags — like Actors Access: headshot beside the stats sheet (age
+//    range, gender, height…), their reel, a resume of every role (Nexus credits plus
+//    ones they typed in), and skills, languages and training.
+//  • Film tags — like IMDb: a filmography grouped by job, newest first, with year,
 //    title and type, then a grid of stills from their work.
-//  • Musician — like Spotify: songs, albums & EPs, and upcoming shows.
+//  • Musician / Singer / Composer tags — like Spotify: streaming links, songs, albums
+//    & EPs, and upcoming shows.
 //
-//  Profiles that haven't picked a style show nothing extra (and the owner sees a
-//  prompt to pick one).
+//  Someone with tags in more than one group gets every matching section. People
+//  with none of these tags show nothing extra.
 //
 
 import SwiftUI
@@ -29,16 +30,39 @@ struct StyledProfileSection: View {
 
     @ObservedObject private var store = SubmissionStore_3_2.shared
     @ObservedObject private var creative = CreativeProfileStore.shared
+    @ObservedObject private var people = UserProfileManager.shared
+    @Environment(\.openURL) private var openURL
+
+    @AppStorage("userType") private var myTagsRaw = ""
 
     @State private var showEditor = false
-    @State private var editorStartStyle: ProfileStyle?
     @State private var selectedPost: Submission?
     @State private var selectedProject: Submission?
     @State private var selectedEvent: Submission?
     @State private var liked = false
 
-    private var profile: CreativeProfile? {
-        isOwn ? creative.myProfile : creative.profile(forUserID: profileID)
+    /// The person's directory entry, for their tags.
+    private var directoryUser: DirectoryUser? {
+        if let profileID, let user = people.allUsers.first(where: { $0.id == profileID }) { return user }
+        return people.findUser(byName: name)
+    }
+
+    /// The groups the person's tags put them in, in display order.
+    private var groups: [CreativeGroup] {
+        let set: Set<CreativeGroup>
+        if isOwn {
+            set = CreativeGroup.groups(forStoredTags: myTagsRaw)
+        } else {
+            set = CreativeGroup.groups(forTagNames: directoryUser?.userTypes ?? [])
+        }
+        return CreativeGroup.ordered(set)
+    }
+
+    /// Their saved details; empty defaults when they've never filled anything in, so
+    /// the credit-driven parts (filmography, discography, resume) still show.
+    private var details: CreativeDetails {
+        if isOwn { return creative.myDetails }
+        return creative.profile(forUserID: profileID ?? directoryUser?.id)?.details ?? CreativeDetails()
     }
 
     private var isPerson: (OrderedEntry) -> Bool {
@@ -59,34 +83,30 @@ struct StyledProfileSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Always on screen (zero height), so the styles load even for a profile
-            // that shows nothing extra yet.
+            // Always on screen (zero height), so details load even for a profile that
+            // shows nothing extra yet.
             Color.clear
                 .frame(height: 0)
                 .task { await creative.refresh() }
 
-            if let profile {
-                VStack(alignment: .leading, spacing: 20) {
-                    Divider()
-                    header(profile.style)
-                    switch profile.style {
-                    case .actor: actorLayout(profile)
-                    case .filmmaker: filmmakerLayout(profile)
-                    case .musician: musicianLayout(profile)
-                    }
-                }
-            } else if isOwn {
-                VStack(alignment: .leading, spacing: 16) {
-                    Divider()
-                    StyleChooserCard(suggested: nil) { style in
-                        editorStartStyle = style
-                        showEditor = true
+            if !groups.isEmpty {
+                VStack(alignment: .leading, spacing: 24) {
+                    ForEach(groups) { group in
+                        VStack(alignment: .leading, spacing: 20) {
+                            Divider()
+                            header(group)
+                            switch group {
+                            case .actor: actorLayout(details.actor)
+                            case .filmmaker: filmmakerLayout(details.filmmaker)
+                            case .musician: musicianLayout(details.musician)
+                            }
+                        }
                     }
                 }
             }
         }
         .sheet(isPresented: $showEditor) {
-            ProfileStyleEditorView(startingStyle: editorStartStyle)
+            CreativeDetailsEditorView()
         }
         .sheet(item: $selectedPost) { post in
             PostDetailRouter(post: post, liked: $liked)
@@ -99,18 +119,15 @@ struct StyledProfileSection: View {
         }
     }
 
-    private func header(_ style: ProfileStyle) -> some View {
+    private func header(_ group: CreativeGroup) -> some View {
         HStack {
-            Label(style.rawValue, systemImage: style.symbol)
+            Label(group.rawValue, systemImage: group.symbol)
                 .font(.caption.weight(.semibold))
                 .textCase(.uppercase)
                 .foregroundStyle(.secondary)
             Spacer()
             if isOwn {
-                Button("Edit") {
-                    editorStartStyle = nil
-                    showEditor = true
-                }
+                Button("Edit") { showEditor = true }
                     .font(.subheadline.weight(.semibold))
             }
         }
@@ -125,21 +142,18 @@ struct StyledProfileSection: View {
         }
     }
 
-    private func headshotImage(_ profile: CreativeProfile) -> UIImage? {
-        if isOwn, let mine = creative.myHeadshot { return mine }
-        guard let url = profile.headshotFileURL else { return nil }
-        return UIImage(contentsOfFile: url.path)
+    private var headshotImage: UIImage? {
+        if isOwn { return creative.myHeadshot }
+        return creative.headshot(forUserID: profileID ?? directoryUser?.id)
     }
 
     // MARK: - Actor (Actors Access)
 
     @ViewBuilder
-    private func actorLayout(_ profile: CreativeProfile) -> some View {
-        let details = profile.details.actor
-
+    private func actorLayout(_ details: ActorDetails) -> some View {
         HStack(alignment: .top, spacing: 16) {
             Group {
-                if let headshot = headshotImage(profile) {
+                if let headshot = headshotImage {
                     Image(uiImage: headshot)
                         .resizable()
                         .scaledToFill()
@@ -161,7 +175,7 @@ struct StyledProfileSection: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 if details.statRows.isEmpty {
-                    Text(isOwn ? "Add your age range, height and more with Edit." : "No details yet.")
+                    Text(isOwn ? "Add your headshot, age range, height and more with Edit." : "No details yet.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -378,8 +392,7 @@ struct StyledProfileSection: View {
     }
 
     @ViewBuilder
-    private func filmmakerLayout(_ profile: CreativeProfile) -> some View {
-        let details = profile.details.filmmaker
+    private func filmmakerLayout(_ details: FilmmakerDetails) -> some View {
         let groups = filmographyGroups
 
         if !details.specialties.isEmpty || !details.gear.isEmpty || details.openToCrew {
@@ -467,35 +480,39 @@ struct StyledProfileSection: View {
 
     // MARK: - Musician (Spotify)
 
+    /// Plain loops rather than `filter` closures: `Collaborator.nameKey` is main-actor
+    /// isolated, and a loop body in this (main-actor) view stays isolated where a
+    /// closure wouldn't.
     private func releases(_ details: MusicianDetails) -> [Submission] {
-        let names = Set([name, details.artistName].map(Collaborator.nameKey(for:)).filter { !$0.isEmpty })
-        return store.visibleApprovedSubmissions
-            .filter { post in
-                post.type == .music
-                    && (names.contains(Collaborator.nameKey(for: post.artist)) || !post.credits(where: isPerson).isEmpty)
+        let names = Set([name, details.artistName].map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty })
+        var result: [Submission] = []
+        for post in store.visibleApprovedSubmissions where post.type == .music {
+            if names.contains(Collaborator.nameKey(for: post.artist)) || !post.credits(where: isPerson).isEmpty {
+                result.append(post)
             }
-            .sorted { lhs, rhs in
-                if lhs.creditYear != rhs.creditYear { return lhs.creditYear > rhs.creditYear }
-                return lhs.createdDate > rhs.createdDate
-            }
+        }
+        return result.sorted { lhs, rhs in
+            if lhs.creditYear != rhs.creditYear { return lhs.creditYear > rhs.creditYear }
+            return lhs.createdDate > rhs.createdDate
+        }
     }
 
     private func upcomingShows(_ details: MusicianDetails) -> [Submission] {
-        let names = [name, details.artistName].map(Collaborator.nameKey(for:)).filter { !$0.isEmpty }
-        return store.visibleApprovedSubmissions
-            .filter { event in
-                guard event.isUpcomingEvent else { return false }
-                if !event.credits(where: isPerson).isEmpty { return true }
-                if names.contains(Collaborator.nameKey(for: event.submittedBy)) { return true }
-                let lineup = (event.eventLineup ?? "").lowercased()
-                return names.contains { lineup.contains($0) }
+        let names = [name, details.artistName].map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty }
+        var result: [Submission] = []
+        for event in store.visibleApprovedSubmissions where event.isUpcomingEvent {
+            let lineup = (event.eventLineup ?? "").lowercased()
+            if !event.credits(where: isPerson).isEmpty
+                || names.contains(Collaborator.nameKey(for: event.submittedBy))
+                || names.contains(where: { lineup.contains($0) }) {
+                result.append(event)
             }
-            .sorted { ($0.eventStartDate ?? .distantFuture) < ($1.eventStartDate ?? .distantFuture) }
+        }
+        return result.sorted { ($0.eventStartDate ?? .distantFuture) < ($1.eventStartDate ?? .distantFuture) }
     }
 
     @ViewBuilder
-    private func musicianLayout(_ profile: CreativeProfile) -> some View {
-        let details = profile.details.musician
+    private func musicianLayout(_ details: MusicianDetails) -> some View {
         let all = releases(details)
         let songs = all.filter { !["EP", "Album"].contains($0.musicCategory) }
         let records = all.filter { ["EP", "Album"].contains($0.musicCategory) }
@@ -514,6 +531,32 @@ struct StyledProfileSection: View {
             if !details.availability.isEmpty {
                 ChipRow(chips: details.availability.map { "Available: \($0)" })
             }
+        }
+
+        // Streaming pages — buttons out to Spotify, Apple Music, etc.
+        let links = details.links
+        if !links.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(links, id: \.service) { link in
+                        Button {
+                            openURL(link.url)
+                        } label: {
+                            Label(link.service.rawValue, systemImage: link.service.symbol)
+                                .font(.footnote.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.brandOrange, in: Capsule())
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        } else if isOwn {
+            Text("Add links to your Spotify, Apple Music or other pages with Edit.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
 
         if !shows.isEmpty {

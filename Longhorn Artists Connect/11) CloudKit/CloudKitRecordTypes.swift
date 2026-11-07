@@ -65,14 +65,11 @@ enum CloudKitRecordTypes {
     /// Written by the verification service, never by the app.
     static let verification = "Verification"
 
-    /// A person's profile style (Filmmaker / Actor / Musician), its details JSON and
-    /// an actor's headshot. Written only by its owner. See `CreativeProfileStore`.
-    /// Added 2026-11-04.
+    /// The extra profile details a person's tags unlock (an actor's Actors Access
+    /// sheet and headshot, a musician's streaming links, a filmmaker's specialties)
+    /// as a details JSON plus a headshot asset. Written only by its owner. See
+    /// `CreativeProfileStore`. Added 2026-11-04.
     static let creativeProfile = "CreativeProfile"
-
-    /// Moderator decision putting a profile on (or off) its style's public page.
-    /// Moderator-owned, like `ModerationAction`. Added 2026-11-04.
-    static let directoryListing = "DirectoryListing"
 
     // MARK: - Scripts
 
@@ -126,7 +123,6 @@ enum CloudKitRecordTypes {
         userProfile,
         verification,
         creativeProfile,
-        directoryListing,
     ]
 
     static let organizations = [
@@ -173,8 +169,7 @@ enum CloudKitRecordTypes {
 // | Conversation          | yes         | yes        |                                 |
 // | Message               | yes         | yes        |                                 |
 // | Connection            | NO          | NO         | added 2026-10-23; fields on `ConnectionsManager`. Connect buttons fail silently until created |
-// | CreativeProfile       | NO          | NO         | added 2026-11-04; style, details (STRING), headshot (ASSET), updatedAt (DATE). Needs recordName QUERYABLE |
-// | DirectoryListing      | NO          | NO         | added 2026-11-04; userID, style, status (STRING), modifiedAt (DATE). Needs recordName QUERYABLE |
+// | CreativeProfile       | NO          | NO         | added 2026-11-04; details (STRING), headshot (ASSET), updatedAt (DATE). Needs recordName QUERYABLE. Until created, Edit details saves locally only |
 //
 // Cross-service lists that must stay in step with `liveSubmissions` above:
 //

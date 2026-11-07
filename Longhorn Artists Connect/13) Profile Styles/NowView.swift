@@ -3,15 +3,17 @@
 //  Longhorn Artists Connect
 //
 //  Discover's first page ("Now | Projects | Events"): what you're working on now
-//  and what you could get on next, shaped by your profile style.
+//  and what you could get on next, shaped by your role tags (see CreativeGroup.swift).
 //
-//  • Actor — projects you're cast in, the auditions you've logged, and open cast
-//    roles that fit your age, gender, look and skills.
-//  • Filmmaker — your projects in production, and crews looking for the jobs your
-//    role tags cover.
-//  • Musician — your upcoming shows, composer openings, and gigs, open mics and jams.
+//  • Actor / Dancer tags — projects you're cast in, the auditions you've logged, and
+//    open cast roles that fit your age, gender, look and skills.
+//  • Film tags — your projects in production, and crews looking for the jobs your
+//    tags cover.
+//  • Musician / Singer / Composer tags — your upcoming shows, composer openings, and
+//    gigs, open mics and jam sessions.
 //
-//  Also the way into the public Actors / Filmmakers / Musicians pages.
+//  Someone with tags in more than one group sees every matching section. Also the
+//  way into the directory's Actors / Filmmakers / Musicians tabs.
 //
 
 import SwiftUI
@@ -30,10 +32,9 @@ struct NowView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var showEditor = false
-    @State private var editorStartStyle: ProfileStyle?
     @State private var selectedProject: Submission?
     @State private var selectedEvent: Submission?
-    @State private var directoryStyle: ProfileStyle?
+    @State private var directoryTab: DirectoryTab?
 
     // MARK: - Me
 
@@ -45,6 +46,11 @@ struct NowView: View {
         Set(userTypeRaw.split(separator: ",").compactMap {
             UserType(rawValue: $0.trimmingCharacters(in: .whitespaces))
         })
+    }
+
+    /// The groups my tags put me in, in display order.
+    private var myGroups: [CreativeGroup] {
+        CreativeGroup.ordered(CreativeGroup.groups(for: myTags))
     }
 
     private var isMe: (OrderedEntry) -> Bool {
@@ -81,19 +87,18 @@ struct NowView: View {
                 browseRow
 
                 if isIndustryProfessional {
-                    Text("Browse approved actors, filmmakers and musicians above.")
+                    Text("Browse actors, filmmakers and musicians above.")
                         .foregroundStyle(.secondary)
-                } else if let style = creative.myStyle {
-                    styleHeader(style)
-                    switch style {
-                    case .actor: actorSections
-                    case .filmmaker: filmmakerSections
-                    case .musician: musicianSections
-                    }
+                } else if myGroups.isEmpty {
+                    NowEmpty("Add tags like Actor, Director or Musician to your profile to see your current work and openings here.")
                 } else {
-                    StyleChooserCard(suggested: ProfileStyle.suggested(for: myTags)) { style in
-                        editorStartStyle = style
-                        showEditor = true
+                    header
+                    ForEach(myGroups) { group in
+                        switch group {
+                        case .actor: actorSections
+                        case .filmmaker: filmmakerSections
+                        case .musician: musicianSections
+                        }
                     }
                 }
             }
@@ -109,7 +114,7 @@ struct NowView: View {
             await people.fetchAllUsers()
         }
         .sheet(isPresented: $showEditor) {
-            ProfileStyleEditorView(startingStyle: editorStartStyle)
+            CreativeDetailsEditorView()
         }
         .sheet(item: $selectedProject) { project in
             UpcomingProjectDetailView(submission: project)
@@ -117,8 +122,8 @@ struct NowView: View {
         .sheet(item: $selectedEvent) { event in
             EventDetailView(event: event)
         }
-        .sheet(item: $directoryStyle) { style in
-            CreativeDirectoryView(style: style)
+        .sheet(item: $directoryTab) { tab in
+            NetworkDirectoryView(initialTab: tab)
         }
     }
 
@@ -131,11 +136,11 @@ struct NowView: View {
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
             HStack(spacing: 8) {
-                ForEach(ProfileStyle.allCases) { style in
+                ForEach(CreativeGroup.allCases) { group in
                     Button {
-                        directoryStyle = style
+                        directoryTab = DirectoryTab(group: group)
                     } label: {
-                        Label(style.plural, systemImage: style.symbol)
+                        Label(group.plural, systemImage: group.symbol)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
@@ -150,20 +155,17 @@ struct NowView: View {
         }
     }
 
-    private func styleHeader(_ style: ProfileStyle) -> some View {
+    private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Label("\(style.rawValue) profile", systemImage: style.symbol)
+                Text("Your work")
                     .font(.title3.bold())
-                if let status = creative.myListingStatus {
-                    Text(status)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                Text(myGroups.map(\.rawValue).joined(separator: " · "))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Edit") {
-                editorStartStyle = nil
+            Button("Edit details") {
                 showEditor = true
             }
             .font(.subheadline.weight(.semibold))
@@ -222,7 +224,6 @@ struct NowView: View {
         NowSection(title: "Roles you could audition for", count: matchingRoles.count) {
             if !actor.hasMatchingBasics {
                 Button {
-                    editorStartStyle = nil
                     showEditor = true
                 } label: {
                     Label("Add your age range and gender so these fit you", systemImage: "slider.horizontal.3")
@@ -308,12 +309,7 @@ struct NowView: View {
 
     private var crewOpenings: [(project: Submission, roles: [String])] {
         openCalls.compactMap { project -> (project: Submission, roles: [String])? in
-            let roles: [String]
-            if myTags.isEmpty {
-                roles = project.crewNeeded.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            } else {
-                roles = RoleCallNotifier.matchingOpenRoles(of: project, for: myTags).crew
-            }
+            let roles = RoleCallNotifier.matchingOpenRoles(of: project, for: myTags).crew
             return roles.isEmpty ? nil : (project: project, roles: roles)
         }
     }
@@ -342,9 +338,6 @@ struct NowView: View {
         }
 
         NowSection(title: "Crews you could join", count: crewOpenings.count) {
-            if myTags.isEmpty {
-                NowEmpty("Add role tags to your profile to see only the jobs you do.")
-            }
             if crewOpenings.isEmpty {
                 NowEmpty("No crews are looking for your roles right now.")
             } else {
@@ -635,58 +628,6 @@ struct ProfileStyleFlowLayout: Layout {
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
-        }
-    }
-}
-
-/// Shown on Now (and your own portfolio) until a style is picked.
-struct StyleChooserCard: View {
-    var suggested: ProfileStyle?
-    let onPick: (ProfileStyle) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Choose your profile style")
-                .font(.title3.bold())
-            Text("It decides what Nexus recommends to you and how your profile looks to everyone else.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            ForEach(ProfileStyle.allCases) { style in
-                Button {
-                    onPick(style)
-                } label: {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: style.symbol)
-                            .font(.title2)
-                            .frame(width: 32)
-                            .foregroundStyle(Color.brandOrange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(style.rawValue).font(.headline)
-                                if style == suggested {
-                                    Text("Suggested")
-                                        .font(.caption2.weight(.semibold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.brandOrange.opacity(0.18), in: Capsule())
-                                        .foregroundStyle(Color.brandOrange)
-                                }
-                            }
-                            Text(style.pitch)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.leading)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(12)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 }

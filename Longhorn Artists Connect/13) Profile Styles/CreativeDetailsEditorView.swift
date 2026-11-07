@@ -1,38 +1,38 @@
 //
-//  ProfileStyleEditorView.swift
+//  CreativeDetailsEditorView.swift
 //  Longhorn Artists Connect
 //
-//  Pick a profile style and fill in what that style's page shows: an actor's
-//  headshot, reel, stats, skills and extra resume credits; a musician's artist name,
-//  instruments and availability; a filmmaker's specialties and gear.
+//  The extra profile fields your tags unlock (see CreativeGroup.swift):
+//  • Actor / Dancer tags — headshot, reel, Actors Access stats, skills, extra resume credits.
+//  • Musician / Singer / Composer tags — artist name, instruments, genres, availability,
+//    and links to streaming pages.
+//  • Film tags — specialties, gear, open to crews.
 //
-//  Saving keeps everything on this device immediately and uploads it to the
-//  person's `CreativeProfile` record, which also puts it in the moderator's queue
-//  for the public page.
+//  Only the sections for the user's own groups appear. Saving keeps everything on this
+//  device immediately and uploads it to the person's `CreativeProfile` record.
 //
 
 import SwiftUI
 import PhotosUI
 import UIKit
 
-struct ProfileStyleEditorView: View {
+struct CreativeDetailsEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var creative = CreativeProfileStore.shared
     @ObservedObject private var store = SubmissionStore_3_2.shared
 
     @AppStorage("userFirstName") private var firstName = ""
     @AppStorage("userLastName") private var lastName = ""
+    @AppStorage("userType") private var userTypeRaw = ""
 
-    @State private var style: ProfileStyle?
     @State private var details: CreativeDetails
     @State private var headshot: UIImage?
     @State private var photoItem: PhotosPickerItem?
     @State private var ageMinText: String
     @State private var ageMaxText: String
 
-    init(startingStyle: ProfileStyle?) {
+    init() {
         let shared = CreativeProfileStore.shared
-        _style = State(initialValue: startingStyle ?? shared.myStyle)
         _details = State(initialValue: shared.myDetails)
         _headshot = State(initialValue: shared.myHeadshot)
         _ageMinText = State(initialValue: shared.myDetails.actor.ageMin.map { String($0) } ?? "")
@@ -41,6 +41,11 @@ struct ProfileStyleEditorView: View {
 
     private var myName: String {
         "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The groups the user's tags put them in, in display order.
+    private var groups: [CreativeGroup] {
+        CreativeGroup.ordered(CreativeGroup.groups(forStoredTags: userTypeRaw))
     }
 
     /// Performance and film posts this user is on, for the reel picker.
@@ -58,16 +63,21 @@ struct ProfileStyleEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                styleSection
-                if let style {
-                    switch style {
+                if groups.isEmpty {
+                    Section {
+                        Text("Add tags like Actor, Director or Musician in Edit Profile to unlock more options here.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(groups) { group in
+                    switch group {
                     case .actor: actorSections
                     case .filmmaker: filmmakerSections
                     case .musician: musicianSections
                     }
                 }
             }
-            .navigationTitle("Profile style")
+            .navigationTitle("Profile details")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -76,7 +86,7 @@ struct ProfileStyleEditorView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
                         .fontWeight(.semibold)
-                        .disabled(style == nil)
+                        .disabled(groups.isEmpty)
                 }
             }
             .onChange(of: photoItem) { _, item in
@@ -92,7 +102,6 @@ struct ProfileStyleEditorView: View {
     }
 
     private func save() {
-        guard let style else { return }
         var final = details
         final.actor.ageMin = Int(ageMinText.trimmingCharacters(in: .whitespaces))
         final.actor.ageMax = Int(ageMaxText.trimmingCharacters(in: .whitespaces))
@@ -101,52 +110,15 @@ struct ProfileStyleEditorView: View {
             final.actor.ageMax = low
         }
         final.actor.resume.removeAll { $0.project.trimmingCharacters(in: .whitespaces).isEmpty }
-        creative.update(style: style, details: final, headshot: headshot)
+        creative.update(details: final, headshot: headshot)
         dismiss()
-    }
-
-    // MARK: - Style
-
-    private var styleSection: some View {
-        Section {
-            ForEach(ProfileStyle.allCases) { option in
-                Button {
-                    style = option
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: option.symbol)
-                            .frame(width: 26)
-                            .foregroundStyle(Color.brandOrange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(option.rawValue)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-                            Text(option.pitch)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if style == option {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(Color.brandOrange)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        } header: {
-            Text("Base profile")
-        } footer: {
-            Text("Your style decides what Nexus recommends to you and how your profile looks. A moderator reviews your profile before it's listed on the public \(style?.plural ?? "Actors, Filmmakers or Musicians") page.")
-        }
     }
 
     // MARK: - Actor
 
     @ViewBuilder
     private var actorSections: some View {
-        Section("Headshot") {
+        Section {
             HStack(spacing: 16) {
                 Group {
                     if let headshot {
@@ -174,6 +146,10 @@ struct ProfileStyleEditorView: View {
                     }
                 }
             }
+        } header: {
+            Label("Actor · Headshot", systemImage: CreativeGroup.actor.symbol)
+        } footer: {
+            Text("Unlocked by your \(CreativeGroup.actor.tagList) tag. Shown on your profile and on the Actors page of the directory.")
         }
 
         Section {
@@ -268,9 +244,9 @@ struct ProfileStyleEditorView: View {
             TextField("Gear", text: $details.filmmaker.gear, axis: .vertical)
             Toggle("Open to joining crews", isOn: $details.filmmaker.openToCrew)
         } header: {
-            Text("Filmmaker")
+            Label("Filmmaker", systemImage: CreativeGroup.filmmaker.symbol)
         } footer: {
-            Text("Your filmography and stills come from what you're credited on. Your role tags decide which crew calls show up on Now.")
+            Text("Unlocked by your film tags. Your filmography and stills come from what you're credited on; your tags decide which crew calls show up on Now.")
         }
     }
 
@@ -283,9 +259,27 @@ struct ProfileStyleEditorView: View {
             TextField("Instruments", text: $details.musician.instruments)
             TextField("Genres", text: $details.musician.genres)
         } header: {
-            Text("Musician")
+            Label("Musician", systemImage: CreativeGroup.musician.symbol)
         } footer: {
-            Text("Releases posted under this artist name, or crediting you, make up your discography.")
+            Text("Unlocked by your \(CreativeGroup.musician.tagList) tag. Releases posted under this artist name, or crediting you, make up your discography.")
+        }
+
+        Section {
+            ForEach(StreamingService.allCases) { service in
+                HStack(spacing: 10) {
+                    Image(systemName: service.symbol)
+                        .frame(width: 22)
+                        .foregroundStyle(Color.brandOrange)
+                    TextField(service.rawValue, text: streamingBinding(service), prompt: Text(service.placeholder))
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            }
+        } header: {
+            Text("Streaming pages")
+        } footer: {
+            Text("Paste the link to your page on each service. They appear as buttons on your profile.")
         }
 
         Section("Available for") {
@@ -294,4 +288,15 @@ struct ProfileStyleEditorView: View {
             Toggle("Scoring films", isOn: $details.musician.availableForScoring)
         }
     }
+
+    private func streamingBinding(_ service: StreamingService) -> Binding<String> {
+        Binding(
+            get: { details.musician.link(for: service) },
+            set: { details.musician.setLink($0, for: service) }
+        )
+    }
+}
+
+#Preview {
+    CreativeDetailsEditorView()
 }

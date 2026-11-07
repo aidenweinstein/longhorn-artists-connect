@@ -2,8 +2,9 @@
 //  TagsView.swift
 //  Longhorn Artists Connect
 //
-//  Onboarding's "Choose Your Tags" step for students: the user picks the roles that
-//  describe them, then moves on to choose a base profile (see ProfileStylePage).
+//  Onboarding's final step for students: "Choose Your Tags", where the user picks
+//  the roles that describe them before entering the app. Tags also decide which
+//  extra profile options they get — see CreativeGroup.swift.
 //  Extracted from OnboardingView.swift.
 //
 
@@ -12,9 +13,8 @@ import SwiftUI
 struct TagsView: View {
     @ObservedObject var profileModel: UserProfileModel
 
-    /// The onboarding page index, owned by `OnboardingView`. Next goes to the
-    /// base-profile page (7).
-    @Binding var currentPage: Int
+    /// Saves the profile and finishes onboarding.
+    let onComplete: () -> Void
 
     // MARK: - Validation
 
@@ -38,7 +38,7 @@ struct TagsView: View {
                                 .foregroundStyle(Color.brandOrange)
                         }
 
-                        Text("Describe yourself. Select at least one tag.")
+                        Text("Describe yourself. Select at least one tag. Actor, film and music tags unlock more profile options.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -62,13 +62,11 @@ struct TagsView: View {
                 .padding(.horizontal, 24)
             }
 
-            // Bottom button — on to the base profile choice.
+            // Bottom button
             Button {
-                withAnimation {
-                    currentPage = 7
-                }
+                onComplete()
             } label: {
-                Text("Next")
+                Text("Explore the Nexus!")
                     .font(.headline)
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
@@ -132,9 +130,8 @@ struct UserTypeButton: View {
 }
 
 #Preview("Tags") {
-    @Previewable @State var currentPage = 2
     NavigationStack {
-        TagsView(profileModel: UserProfileModel(), currentPage: $currentPage)
+        TagsView(profileModel: UserProfileModel(), onComplete: {})
     }
 }
 

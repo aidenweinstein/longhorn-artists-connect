@@ -864,10 +864,11 @@ struct HomeView_1: View {
                 seenIDs: seenSnapshot,
                 seed: feedSeed
             )
-            // On All, lead with the kind of work the viewer's profile style is about
-            // (films for filmmakers, performances for actors, music for musicians).
-            if selection == .all, let style = ProfileStyle.current {
-                return style.recommend(ranked)
+            // On All, lead with the kind of work the viewer's tags are about (films
+            // for film tags, performances for actors, music for musicians). No
+            // matching tags leaves the ranking as is.
+            if selection == .all {
+                return CreativeGroup.recommend(ranked, for: CreativeGroup.mine)
             }
             return ranked
         case .fire:

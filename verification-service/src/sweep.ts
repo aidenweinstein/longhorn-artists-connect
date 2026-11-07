@@ -180,6 +180,9 @@ export async function runSweep(env: Env): Promise<void> {
         env.DB.prepare(`DELETE FROM pending_verifications WHERE expires_at < ?`).bind(
             startedAt - 86_400,
         ),
+        env.DB.prepare(`DELETE FROM pending_web_sessions WHERE expires_at < ?`).bind(
+            startedAt - 86_400,
+        ),
         env.DB.prepare(`DELETE FROM rate_limits WHERE window_start < ?`).bind(startedAt - 86_400),
     ]);
 

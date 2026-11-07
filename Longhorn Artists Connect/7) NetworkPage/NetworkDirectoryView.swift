@@ -25,9 +25,15 @@ struct NetworkDirectoryView: View {
     /// Private connections, so they can be listed in their own sections (Requests
     /// waiting on me, then my Connections) ahead of the general directory.
     @ObservedObject private var connections = ConnectionsManager.shared
-    /// Profile styles and moderator listings, for the Actors / Filmmakers / Musicians
-    /// pages and their counts.
+    /// Headshots and details for the people cards (see DirectoryPeopleGrid).
     @ObservedObject private var creative = CreativeProfileStore.shared
+    /// Everyone | Actors | Filmmakers | Musicians. Now's Browse buttons open the sheet
+    /// straight onto a group tab.
+    @State private var tab: DirectoryTab
+
+    init(initialTab: DirectoryTab = .everyone) {
+        _tab = State(initialValue: initialTab)
+    }
 
     // The signed-in user's locally-stored profile. Used to synthesize their own
     // directory entry so they can always find and view their own profile — even
@@ -372,10 +378,21 @@ struct NetworkDirectoryView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
                 
+                // Everyone | Actors | Filmmakers | Musicians. The group tabs list
+                // everyone whose tags fall in that group (see DirectoryTab).
+                Picker("Show", selection: $tab) {
+                    ForEach(DirectoryTab.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+
                 // User list
                 List {
                     // Connection requests waiting on me, with an inline Accept.
-                    if !requestUsers.isEmpty {
+                    // Requests and Connections belong to Everyone; the group tabs are
+                    // purely "who does this work".
+                    if tab == .everyone, !requestUsers.isEmpty {
                         Section("Requests") {
                             ForEach(requestUsers) { user in
                                 requestRow(user)
@@ -384,7 +401,7 @@ struct NetworkDirectoryView: View {
                     }
 
                     // My connections, kept apart from the general directory below.
-                    if !connectionUsers.isEmpty {
+                    if tab == .everyone, !connectionUsers.isEmpty {
                         Section("Connections") {
                             ForEach(connectionUsers) { user in
                                 directoryUserRow(user)
@@ -392,59 +409,50 @@ struct NetworkDirectoryView: View {
                         }
                     }
 
-                    // The public Actors / Filmmakers / Musicians pages: one entry per
-                    // base profile, each pushing that page (with a segmented control
-                    // to hop between the three). Only moderator-approved profiles are
-                    // listed. Hidden while searching, since the search is by person.
-                    if searchText.isEmpty {
-                        Section("Pages") {
-                            ForEach(ProfileStyle.allCases) { style in
-                                NavigationLink {
-                                    CreativeDirectoryPage(style: style)
-                                } label: {
-                                    directoryFieldRow(
-                                        icon: style.symbol,
-                                        title: style.plural,
-                                        subtitle: pageSubtitle(for: style),
-                                        count: creative.listedPeople(for: style, in: userProfileManager.allUsers).count
-                                    )
+                    // ✅ SECTION 1: the people grid — large photo cards, two or three
+                    // across (see DirectoryPeopleGrid). Everyone shows every student,
+                    // split by the tag filter menu when one is set; Actors / Filmmakers /
+                    // Musicians show students whose tags fall in that group.
+                    if tab == .everyone {
+                        if selectedFilterTags.isEmpty {
+                            // No filter — everyone under "On Nexus".
+                            if !filteredUTStudents.isEmpty {
+                                Section("On Nexus") {
+                                    peopleGrid(filteredUTStudents)
                                 }
                             }
-                        }
-                    }
+                        } else {
+                            // Filtered — matched tags first, then "Everyone Else".
+                            if !tagMatchedStudents.isEmpty {
+                                Section(selectedTagsHeader) {
+                                    peopleGrid(tagMatchedStudents)
+                                }
+                            }
 
-                    // ✅ SECTION 1: UT students registered on the app.
-                    if selectedFilterTags.isEmpty {
-                        // No filter — everyone under "On Nexus".
-                        if !filteredUTStudents.isEmpty {
-                            Section("On Nexus") {
-                                ForEach(filteredUTStudents) { user in
-                                    directoryUserRow(user)
+                            if !tagUnmatchedStudents.isEmpty {
+                                Section("Everyone Else") {
+                                    peopleGrid(tagUnmatchedStudents)
                                 }
                             }
                         }
                     } else {
-                        // Filtered — matched tags first, then "Everyone Else".
-                        if !tagMatchedStudents.isEmpty {
-                            Section(selectedTagsHeader) {
-                                ForEach(tagMatchedStudents) { user in
-                                    directoryUserRow(user)
-                                }
-                            }
-                        }
-
-                        if !tagUnmatchedStudents.isEmpty {
-                            Section("Everyone Else") {
-                                ForEach(tagUnmatchedStudents) { user in
-                                    directoryUserRow(user)
-                                }
+                        let people = groupStudents
+                        Section(tab.rawValue) {
+                            if people.isEmpty {
+                                Text(searchText.isEmpty
+                                     ? "No \(tab.rawValue.lowercased()) yet. Anyone with a \(tab.group?.tagList ?? "") tag appears here."
+                                     : "No results found")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                peopleGrid(people)
                             }
                         }
                     }
 
                     // ✅ SECTION 2: Credited but Not Registered — a field that pushes
-                    // a page listing all those names.
-                    if !filteredUsersOffApp.isEmpty {
+                    // a page listing all those names. Everyone tab only.
+                    if tab == .everyone, !filteredUsersOffApp.isEmpty {
                         Section {
                             NavigationLink {
                                 creditedNotOnNexusPage
@@ -461,7 +469,8 @@ struct NetworkDirectoryView: View {
 
                     // ✅ SECTION 3: Industry Professionals — a field that pushes a page
                     // listing only accounts registered as Industry Professionals.
-                    if !filteredIndustryProfessionals.isEmpty {
+                    // Everyone tab only.
+                    if tab == .everyone, !filteredIndustryProfessionals.isEmpty {
                         Section {
                             NavigationLink {
                                 industryProfessionalsPage
@@ -723,13 +732,24 @@ struct NetworkDirectoryView: View {
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
     }
 
-    /// What each public page holds, for the Pages rows.
-    private func pageSubtitle(for style: ProfileStyle) -> String {
-        switch style {
-        case .actor: return "Headshots, reels & resumes"
-        case .filmmaker: return "Filmographies & stills"
-        case .musician: return "Discographies & shows"
-        }
+    /// Students on the selected group tab (Actors / Filmmakers / Musicians): everyone
+    /// in the viewer's school scope whose tags fall in the group, connections included,
+    /// narrowed by the search text and the tag filter menu.
+    var groupStudents: [DirectoryUser] {
+        let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
+        return sortUsers(filteredCloudKitUsers.filter {
+            $0.isUTStudent
+                && SchoolScope.isVisible(schoolName: $0.school, in: visibleSchoolIDs)
+                && tab.includes($0)
+                && matchesTagFilter($0)
+        })
+    }
+
+    /// The large-photo grid as a single list row, edge to edge within the section.
+    private func peopleGrid(_ users: [DirectoryUser]) -> some View {
+        DirectoryPeopleGrid(users: users, tab: tab) { selectedUser = $0 }
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+            .listRowBackground(Color.clear)
     }
 
     /// Pushed page listing everyone credited on projects but not registered on Nexus.

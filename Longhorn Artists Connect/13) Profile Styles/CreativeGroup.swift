@@ -1,37 +1,41 @@
 //
-//  ProfileStyle.swift
+//  CreativeGroup.swift
 //  Longhorn Artists Connect
 //
-//  The base profile style every artist picks: Filmmaker, Actor or Musician.
+//  Your role tags decide what your profile can hold and what Nexus shows you. The
+//  tags fall into three groups:
 //
-//  The style decides three things:
-//  1. What Nexus recommends (`recommend(_:)` leads the Home feed with that kind of work).
-//  2. What the Now page in Discover shows (sets and crew calls, auditions and roles,
-//     or scoring work, gigs, open mics and jams). See NowView.swift.
-//  3. How the profile looks to everyone: an Actors Access style headshot, reel and
-//     resume; an IMDb style filmography with stills; or a Spotify style discography.
-//     See StyledProfileSection.swift.
+//  • Actors     — Actor, Dancer
+//  • Filmmakers — Director, Producer, Writer, Editor, Cinematographer, Sound Mixer,
+//                 Animator, VFX Artist
+//  • Musicians  — Musician, Singer, Composer
 //
-//  A profile only appears on the public Actors / Filmmakers / Musicians pages after a
-//  moderator approves it (see CreativeProfileStore and CreativeDirectoryView).
+//  Someone tagged Actor and Director is in both groups and gets both sets of
+//  options. There is no separate "profile type" to pick. Each group unlocks:
 //
-//  Separate from the `UserType` role tags: someone tagged Director and Composer still
-//  picks one base style here. Their tags keep driving crew-call matching.
+//  1. A section on the profile (StyledProfileSection): an Actors Access style
+//     headshot, stats, reel and resume; an IMDb style filmography with stills; a
+//     Spotify style discography with streaming links.
+//  2. Extra fields in the profile editor (CreativeDetailsEditorView).
+//  3. Sections on the Now page in Discover (NowView).
+//  4. A tab in the Network directory (NetworkDirectoryView): Actors, Filmmakers,
+//     Musicians — everyone with a tag in that group.
+//  5. A lean in the Home feed toward that kind of work (`recommend`).
 //
 
 import SwiftUI
 import Foundation
 
-// MARK: - Profile Style
+// MARK: - Creative Group
 
-enum ProfileStyle: String, CaseIterable, Identifiable, Codable, Hashable {
-    case filmmaker = "Filmmaker"
+enum CreativeGroup: String, CaseIterable, Identifiable, Codable, Hashable {
     case actor = "Actor"
+    case filmmaker = "Filmmaker"
     case musician = "Musician"
 
     var id: String { rawValue }
 
-    /// The public page's name ("Actors").
+    /// The directory tab's name ("Actors").
     var plural: String {
         switch self {
         case .filmmaker: return "Filmmakers"
@@ -40,7 +44,7 @@ enum ProfileStyle: String, CaseIterable, Identifiable, Codable, Hashable {
         }
     }
 
-    /// SF Symbol for the style.
+    /// SF Symbol for the group.
     var symbol: String {
         switch self {
         case .filmmaker: return "film"
@@ -49,39 +53,56 @@ enum ProfileStyle: String, CaseIterable, Identifiable, Codable, Hashable {
         }
     }
 
-    /// One line on what picking this style gets you.
-    var pitch: String {
+    /// The role tags that put someone in this group.
+    var tags: Set<UserType> {
         switch self {
-        case .filmmaker:
-            return "IMDb-style credits and stills. See the sets you're on and the crews you could join."
         case .actor:
-            return "Headshot, reel and resume. Track your auditions and find roles that fit you."
+            return [.actor, .dancer]
         case .musician:
-            return "A discography of your releases. Find scoring work, gigs, open mics and jams."
+            return [.musician, .singer, .composer]
+        case .filmmaker:
+            return [.director, .producer, .writer, .editor, .cinematographer,
+                    .soundMixer, .animator, .vfxArtist]
         }
     }
 
-    /// UserDefaults / `@AppStorage` key for the signed-in account's style.
-    static let storageKey = "profileStyle"
-
-    /// The signed-in account's style, or nil before they pick one.
-    static var current: ProfileStyle? {
-        ProfileStyle(rawValue: UserDefaults.standard.string(forKey: storageKey) ?? "")
+    /// "Actor or Dancer" — for footers explaining what unlocks the group.
+    var tagList: String {
+        let names = UserType.allCases.filter { tags.contains($0) }.map(\.rawValue)
+        if names.count <= 1 { return names.first ?? "" }
+        return names.dropLast().joined(separator: ", ") + " or " + names.last!
     }
 
-    /// A starting suggestion from someone's role tags, used to preselect a style.
-    static func suggested(for tags: Set<UserType>) -> ProfileStyle? {
-        if tags.contains(.actor) || tags.contains(.dancer) { return .actor }
-        if tags.contains(.musician) || tags.contains(.singer) || tags.contains(.composer) { return .musician }
-        let film: Set<UserType> = [.director, .producer, .writer, .editor, .cinematographer,
-                                   .soundMixer, .animator, .vfxArtist]
-        if !tags.isDisjoint(with: film) { return .filmmaker }
-        return nil
+    // MARK: Membership
+
+    /// Every group a set of tags belongs to.
+    static func groups(for tags: Set<UserType>) -> Set<CreativeGroup> {
+        Set(allCases.filter { !$0.tags.isDisjoint(with: tags) })
+    }
+
+    /// Every group a list of tag names (as stored on `DirectoryUser.userTypes`) belongs to.
+    static func groups(forTagNames names: [String]) -> Set<CreativeGroup> {
+        groups(for: Set(names.compactMap { UserType(rawValue: $0.trimmingCharacters(in: .whitespaces)) }))
+    }
+
+    /// Every group a comma-separated tag string (the `userType` default) belongs to.
+    static func groups(forStoredTags raw: String) -> Set<CreativeGroup> {
+        groups(forTagNames: raw.split(separator: ",").map(String.init))
+    }
+
+    /// The signed-in user's groups, from their saved tags.
+    static var mine: Set<CreativeGroup> {
+        groups(forStoredTags: UserDefaults.standard.string(forKey: "userType") ?? "")
+    }
+
+    /// `groups` in declaration order, for stable layout.
+    static func ordered(_ groups: Set<CreativeGroup>) -> [CreativeGroup] {
+        allCases.filter(groups.contains)
     }
 
     // MARK: Recommendations
 
-    /// Whether a feed post is the kind of work this style is about.
+    /// Whether a feed post is the kind of work this group is about.
     func prefers(_ post: Submission) -> Bool {
         let reel = post.reelType.lowercased()
         switch self {
@@ -97,14 +118,16 @@ enum ProfileStyle: String, CaseIterable, Identifiable, Codable, Hashable {
         }
     }
 
-    /// Reorders an already-ranked feed so this style's kind of work leads: up to three
-    /// preferred posts, then one other, repeating. Each group keeps its ranked order, so
-    /// the recommender's like/seen ordering still applies within it and nothing is dropped.
-    func recommend(_ ranked: [Submission]) -> [Submission] {
+    /// Reorders an already-ranked feed so the viewer's groups' kind of work leads: up
+    /// to three preferred posts, then one other, repeating. Each side keeps its ranked
+    /// order, so the recommender's like/seen ordering still applies within it and
+    /// nothing is dropped. No groups → unchanged.
+    static func recommend(_ ranked: [Submission], for groups: Set<CreativeGroup>) -> [Submission] {
+        guard !groups.isEmpty else { return ranked }
         var preferred: [Submission] = []
         var other: [Submission] = []
         for post in ranked {
-            if prefers(post) { preferred.append(post) } else { other.append(post) }
+            if groups.contains(where: { $0.prefers(post) }) { preferred.append(post) } else { other.append(post) }
         }
         var result: [Submission] = []
         result.reserveCapacity(ranked.count)
@@ -130,7 +153,7 @@ enum ProfileStyle: String, CaseIterable, Identifiable, Codable, Hashable {
     }
 }
 
-// MARK: - Style Details
+// MARK: - Group Details
 
 /// One line on an actor's resume that isn't a post on Nexus (a play, a commercial,
 /// a student film from before they joined).
@@ -158,9 +181,9 @@ struct ResumeCredit: Codable, Identifiable, Equatable {
     }
 }
 
-/// What an actor's page shows besides their credits on Nexus — the Actors Access sheet.
-/// Every field is optional; decoding tolerates missing keys so later fields never
-/// break profiles saved by older builds.
+/// What an actor's section shows besides their credits on Nexus — the Actors Access
+/// sheet. Every field is optional; decoding tolerates missing keys so later fields
+/// never break profiles saved by older builds.
 struct ActorDetails: Codable, Equatable {
     /// Playable age range.
     var ageMin: Int?
@@ -226,9 +249,48 @@ struct ActorDetails: Codable, Equatable {
     var hasMatchingBasics: Bool {
         (ageMin != nil || ageMax != nil) && !gender.isEmpty
     }
+
+    /// True when any field has been filled in (so the sheet is worth showing).
+    var isEmpty: Bool {
+        statRows.isEmpty && languages.isEmpty && specialSkills.isEmpty && training.isEmpty
+            && reelPostID == nil && resume.isEmpty
+    }
 }
 
-/// The extra lines on a musician's page.
+/// A streaming service a musician can link to from their profile.
+enum StreamingService: String, CaseIterable, Identifiable, Codable {
+    case spotify = "Spotify"
+    case appleMusic = "Apple Music"
+    case soundcloud = "SoundCloud"
+    case bandcamp = "Bandcamp"
+    case youtube = "YouTube"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .spotify: return "waveform.circle.fill"
+        case .appleMusic: return "music.note.list"
+        case .soundcloud: return "cloud.fill"
+        case .bandcamp: return "tag.fill"
+        case .youtube: return "play.rectangle.fill"
+        }
+    }
+
+    /// Placeholder shown in the editor's field.
+    var placeholder: String {
+        switch self {
+        case .spotify: return "open.spotify.com/artist/…"
+        case .appleMusic: return "music.apple.com/…"
+        case .soundcloud: return "soundcloud.com/…"
+        case .bandcamp: return "yourname.bandcamp.com"
+        case .youtube: return "youtube.com/@…"
+        }
+    }
+}
+
+/// The extra lines on a musician's section: artist name, instruments, genres,
+/// availability, and links to their streaming pages.
 struct MusicianDetails: Codable, Equatable {
     /// Stage or band name, when it differs from their own name.
     var artistName: String = ""
@@ -237,6 +299,9 @@ struct MusicianDetails: Codable, Equatable {
     var availableForSessions: Bool = false
     var availableForGigs: Bool = true
     var availableForScoring: Bool = false
+    /// Streaming page URLs keyed by `StreamingService.rawValue`. Stored as typed, so
+    /// "open.spotify.com/…" without a scheme is fine — see `url(for:)`.
+    var streamingLinks: [String: String] = [:]
 
     init() {}
 
@@ -248,6 +313,7 @@ struct MusicianDetails: Codable, Equatable {
         availableForSessions = try c.decodeIfPresent(Bool.self, forKey: .availableForSessions) ?? false
         availableForGigs = try c.decodeIfPresent(Bool.self, forKey: .availableForGigs) ?? true
         availableForScoring = try c.decodeIfPresent(Bool.self, forKey: .availableForScoring) ?? false
+        streamingLinks = try c.decodeIfPresent([String: String].self, forKey: .streamingLinks) ?? [:]
     }
 
     var availability: [String] {
@@ -257,9 +323,39 @@ struct MusicianDetails: Codable, Equatable {
         if availableForScoring { items.append("Scoring") }
         return items
     }
+
+    /// The typed link for a service, or "".
+    func link(for service: StreamingService) -> String {
+        streamingLinks[service.rawValue] ?? ""
+    }
+
+    mutating func setLink(_ value: String, for service: StreamingService) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            streamingLinks.removeValue(forKey: service.rawValue)
+        } else {
+            streamingLinks[service.rawValue] = trimmed
+        }
+    }
+
+    /// An openable URL for a service's link, adding https:// when the scheme was left off.
+    func url(for service: StreamingService) -> URL? {
+        let raw = link(for: service)
+        guard !raw.isEmpty else { return nil }
+        let withScheme = raw.contains("://") ? raw : "https://" + raw
+        guard let url = URL(string: withScheme), url.host != nil else { return nil }
+        return url
+    }
+
+    /// Every service with a usable link, in display order.
+    var links: [(service: StreamingService, url: URL)] {
+        StreamingService.allCases.compactMap { service in
+            url(for: service).map { (service: service, url: $0) }
+        }
+    }
 }
 
-/// The extra lines on a filmmaker's page.
+/// The extra lines on a filmmaker's section.
 struct FilmmakerDetails: Codable, Equatable {
     var specialties: String = ""
     var gear: String = ""
@@ -275,8 +371,8 @@ struct FilmmakerDetails: Codable, Equatable {
     }
 }
 
-/// Every style's details, saved together as one JSON string so switching style never
-/// throws away what was typed for another one.
+/// Every group's details, saved together as one JSON string so dropping a tag and
+/// adding it back never throws away what was typed.
 struct CreativeDetails: Codable, Equatable {
     var actor = ActorDetails()
     var musician = MusicianDetails()
@@ -305,36 +401,19 @@ struct CreativeDetails: Codable, Equatable {
     }
 }
 
-// MARK: - Synced Records
+// MARK: - Synced Record
 
-/// Someone's style and details as stored in their `CreativeProfile` record.
+/// Someone's group details and headshot as stored in their `CreativeProfile` record.
+/// Which sections show is decided by their tags, not by this record.
 struct CreativeProfile: Identifiable, Equatable {
     /// Raw iCloud user record name — the same ID as `DirectoryUser.messagingUserID`.
     let userID: String
-    var style: ProfileStyle
     var details: CreativeDetails
     /// Local copy of the headshot asset, when there is one.
     var headshotFileURL: URL?
     var updatedAt: Date
 
     var id: String { userID }
-}
-
-/// A moderator's decision on whether a profile appears on its style's public page.
-/// Moderator-owned, like `ModerationAction`, because only a record's creator can
-/// modify it in the public database.
-struct DirectoryListing: Equatable {
-    enum Status: String {
-        case approved
-        case declined
-    }
-
-    let userID: String
-    /// The style the decision was made for. Switching style sends the profile back
-    /// to the review queue.
-    let style: ProfileStyle
-    let status: Status
-    let modifiedAt: Date
 }
 
 // MARK: - Cast Role Matching
@@ -539,8 +618,8 @@ extension Submission {
     }
 }
 
-/// Builds the "is this credit that person" check used across the profile-style
-/// screens: the linked profile when the credit has one, otherwise the name.
+/// Builds the "is this credit that person" check used across the group screens:
+/// the linked profile when the credit has one, otherwise the name.
 enum PersonMatcher {
     static func make(name: String, profileID: String?) -> (OrderedEntry) -> Bool {
         let key = Collaborator.nameKey(for: name)

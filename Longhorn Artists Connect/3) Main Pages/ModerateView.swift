@@ -17,8 +17,6 @@ struct ModerateView_3_1: View {
                 if store.approvedSubmissions.isEmpty {
                     List {
                         ModeratorSchoolsSection()
-                        // Approve profiles for the public Actors / Filmmakers / Musicians pages.
-                        CreativeListingsModerationSection()
                         analyticsSection
                         Text("No posts on the platform.")
                             .foregroundStyle(.secondary)
@@ -27,8 +25,6 @@ struct ModerateView_3_1: View {
                 } else {
                     List {
                         ModeratorSchoolsSection()
-                        // Approve profiles for the public Actors / Filmmakers / Musicians pages.
-                        CreativeListingsModerationSection()
                         analyticsSection
                         ForEach(sortedSubmissions) { submission in
                             SubmissionModerateCard(

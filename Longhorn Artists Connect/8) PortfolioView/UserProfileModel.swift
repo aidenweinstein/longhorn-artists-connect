@@ -189,10 +189,6 @@ class UserProfileModel: ObservableObject {
     /// Artist / Enthusiast, picked on `UserTypePage`. Nil for accounts that
     /// predate that page (treated as Artist) and for non-student accounts.
     @Published var accountKind: AccountKind?
-    /// Base profile — Filmmaker, Actor or Musician — picked on `ProfileStylePage`
-    /// (required for artists). Owned by `CreativeProfileStore`, which also keeps the
-    /// style's details and headshot and syncs them; this is a mirror for onboarding.
-    @Published var profileStyle: ProfileStyle?
     @Published var bio: String = ""
     @Published var instagramHandle: String = ""
     @Published var websiteURL: String = ""
@@ -306,14 +302,6 @@ class UserProfileModel: ObservableObject {
         isIndustryProfessionalStored = isIndustryProfessional
         storedAccountKind = accountKind?.rawValue ?? ""
 
-        // Base profile style. `CreativeProfileStore` is the owner: it persists the
-        // choice, keeps whatever details were already typed for it, and uploads the
-        // `CreativeProfile` record (which also queues it for the moderator).
-        if let profileStyle, CreativeProfileStore.shared.myStyle != profileStyle {
-            let creative = CreativeProfileStore.shared
-            creative.update(style: profileStyle, details: creative.myDetails, headshot: creative.myHeadshot)
-        }
-
         // Save profile image to documents directory
         if let profileImage {
             saveProfileImage(profileImage)
@@ -354,7 +342,6 @@ class UserProfileModel: ObservableObject {
         companyRole = storedCompanyRole
         isIndustryProfessional = isIndustryProfessionalStored
         accountKind = AccountKind(storedValue: storedAccountKind)
-        profileStyle = ProfileStyle.current
         migrateLegacyAgentAccount()
 
         // Parse stored user types
@@ -405,6 +392,8 @@ class UserProfileModel: ObservableObject {
         companyRole = ""
         isIndustryProfessional = false
         accountKind = nil
+        // Tag-unlocked details, headshot and auditions (see CreativeProfileStore).
+        CreativeProfileStore.shared.clearMine()
         bio = ""
         instagramHandle = ""
         websiteURL = ""

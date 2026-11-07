@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/* Brand primitives ported from NexusColors.swift. Colors only, not layout. */
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --surface: #f4f4f5;
+  --border: rgb(0 0 0 / 0.1);
+  --muted: #5f5f66;
+
+  /* Themed per school in the app; UT burnt orange is the default. */
+  --brand: #bf5700;
+  --brand-foreground: #ffffff;
+  --pill: #b67717;
+  --pill-active: #f0a52e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #121212;
+    --foreground: #ededed;
+    --surface: #1c1c1e;
+    --border: rgb(255 255 255 / 0.12);
+    --muted: #a1a1aa;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-pill: var(--pill);
+  --color-pill-active: var(--pill-active);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-pragmatica), var(--font-geist-sans), system-ui, sans-serif;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Headings use Pragmatica Extended Bold. Use the font-display class for anything else. */
+h1,
+h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+/* Hover preview on feed cards */
+@keyframes preview-zoom {
+  from { transform: scale(1); }
+  to { transform: scale(1.12); }
+}
+@keyframes preview-progress {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.preview-zoom {
+  animation: preview-zoom 15s ease-out forwards;
+}
+.preview-progress {
+  animation-name: preview-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .preview-zoom { animation: none; }
+}
