@@ -263,7 +263,10 @@ class MessageStore: ObservableObject {
         
         // Setup local file URLs
         let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let messagingDir = documentsDir.appendingPathComponent("Messaging", isDirectory: true)
+        // Per-CloudKit-environment, so dev and production conversations never mix.
+        let messagingDir = documentsDir.appendingPathComponent(
+            "\(CloudKitEnvironmentDetector.localCachePrefix)Messaging", isDirectory: true
+        )
         
         // Create directory if needed
         try? FileManager.default.createDirectory(at: messagingDir, withIntermediateDirectories: true)
@@ -948,8 +951,13 @@ class MessageStore: ObservableObject {
         notificationInfo.alertLocalizationArgs = ["messagePreview"]
         notificationInfo.soundName = "default"
         notificationInfo.shouldBadge = true
+        // Route the push through the NotificationService extension before it's shown,
+        // so it can be restyled as a communication notification with the sender's
+        // profile picture as the icon (and the Nexus icon small in its corner).
+        notificationInfo.shouldSendMutableContent = true
         // Carried in the push payload so the app can honor per-conversation mute in the
-        // foreground without a follow-up fetch.
+        // foreground without a follow-up fetch, and so the extension can name the sender
+        // and look up their photo without a fetch of its own.
         notificationInfo.desiredKeys = ["senderUserID", "senderName", "messagePreview"]
         subscription.notificationInfo = notificationInfo
         

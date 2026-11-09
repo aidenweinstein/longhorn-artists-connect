@@ -235,6 +235,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = film.submittedBy
         submission.createdDate = film.createdDate
         submission.lastEditedDate = film.lastEditedDate
+        submission.schoolID = film.schoolID
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = film.thumbnailURL,
@@ -249,8 +250,10 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.orderedCast = film.orderedCast
         submission.orderedCrew = film.orderedCrew
         submission.studio = film.studio
+        submission.releaseYear = film.releaseYear
         submission.videoFileName = film.videoFileName
         submission.videoDuration = film.videoDuration
+        submission.videoCrop = film.videoCrop
         submission.festivalBound = film.festivalBound
         submission.trailerFileName = film.trailerFileName
         submission.btsImageFileNames = film.btsImageFileNames
@@ -270,6 +273,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = music.submittedBy
         submission.createdDate = music.createdDate
         submission.lastEditedDate = music.lastEditedDate
+        submission.schoolID = music.schoolID
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = music.thumbnailURL,
@@ -289,6 +293,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.soundcloudLink = music.soundcloudLink
         submission.lyrics = music.lyrics
         submission.musicCategory = music.category
+        submission.releaseYear = music.releaseYear
         submission.audioFileName = music.audioFileName
         submission.musicTrackFileNames = music.trackFileNames.isEmpty ? nil : music.trackFileNames
         // Carry the audio length in the shared `videoDuration` cache so the feed's
@@ -309,6 +314,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = reel.submittedBy
         submission.createdDate = reel.createdDate
         submission.lastEditedDate = reel.lastEditedDate
+        submission.schoolID = reel.schoolID
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = reel.thumbnailURL,
@@ -318,12 +324,16 @@ class CloudKitTransitionAdapter: ObservableObject {
         
         submission.reelType = reel.reelType
         submission.reelDescription = reel.reelDescription
+        submission.orderedCast = reel.orderedCast
         submission.orderedCrew = reel.orderedCrew
         submission.videoFileName = reel.videoFileName
         submission.videoDuration = reel.videoDuration
+        submission.videoCrop = reel.videoCrop
         submission.featuredWorkIDs = reel.featuredWorkIDs
         submission.featuredWorkManual = reel.featuredWorkManual
         submission.artist = reel.artist
+        submission.releaseYear = reel.releaseYear
+        submission.stillImageFileNames = reel.stillImageFileNames
 
         return submission
     }
@@ -339,6 +349,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = photography.submittedBy
         submission.createdDate = photography.createdDate
         submission.lastEditedDate = photography.lastEditedDate
+        submission.schoolID = photography.schoolID
 
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = photography.thumbnailURL,
@@ -366,6 +377,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = design.submittedBy
         submission.createdDate = design.createdDate
         submission.lastEditedDate = design.lastEditedDate
+        submission.schoolID = design.schoolID
 
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = design.thumbnailURL,
@@ -378,6 +390,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.designImageFileNames = design.imageFileNames
         submission.videoFileName = design.videoFileName
         submission.videoDuration = design.videoDuration
+        submission.videoCrop = design.videoCrop
         submission.orderedCrew = design.orderedCrew
 
         return submission
@@ -394,6 +407,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = project.submittedBy
         submission.createdDate = project.createdDate
         submission.lastEditedDate = project.lastEditedDate
+        submission.schoolID = project.schoolID
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = project.thumbnailURL,
@@ -416,6 +430,9 @@ class CloudKitTransitionAdapter: ObservableObject {
         // Nil rather than an empty array for a project with no slides, so the detail
         // view falls back to the plain poster (see `Submission.projectSlideFileNames`).
         submission.projectSlideFileNames = project.slideImageFileNames.isEmpty ? nil : project.slideImageFileNames
+        submission.projectAuditionURL = project.auditionURL.isEmpty ? nil : project.auditionURL
+        submission.projectContacts = project.contacts.isEmpty ? nil : project.contacts
+        submission.studio = project.studio
 
         return submission
     }
@@ -431,6 +448,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.submittedBy = event.submittedBy
         submission.createdDate = event.createdDate
         submission.lastEditedDate = event.lastEditedDate
+        submission.schoolID = event.schoolID
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = event.thumbnailURL,
@@ -448,6 +466,8 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.eventTicketsURL = event.ticketsURL
         submission.eventExpectations = event.eventExpectations
         submission.eventApplicationURL = event.eventApplicationURL
+        submission.eventRSVPURL = event.eventRSVPURL
+        submission.eventWebsiteURL = event.eventWebsiteURL
         submission.eventLineup = event.eventLineup
         submission.eventShowings = event.eventShowings.isEmpty ? nil : event.eventShowings
         // Category is stored in the submission's `genres` throughout the app.
@@ -482,6 +502,8 @@ class CloudKitTransitionAdapter: ObservableObject {
         film.trailerFileName = submission.trailerFileName
         film.btsImageFileNames = submission.btsImageFileNames
         film.stillImageFileNames = submission.stillImageFileNames
+        film.releaseYear = submission.releaseYear
+        film.videoCrop = submission.videoCrop
 
         // Convert thumbnailData to thumbnailFileName if needed
         if let thumbnailData = submission.thumbnailData,
@@ -528,6 +550,7 @@ class CloudKitTransitionAdapter: ObservableObject {
             audioFileName: submission.audioFileName
         )
         music.category = submission.musicCategory
+        music.releaseYear = submission.releaseYear
         music.trackFileNames = submission.musicTrackFileNames ?? []
         // Bridge the audio length back from the shared `videoDuration` cache.
         music.audioDuration = submission.videoDuration
@@ -571,7 +594,11 @@ class CloudKitTransitionAdapter: ObservableObject {
         reel.featuredWorkIDs = submission.featuredWorkIDs
         reel.featuredWorkManual = submission.featuredWorkManual
         reel.artist = submission.artist
+        reel.releaseYear = submission.releaseYear
+        reel.stillImageFileNames = submission.stillImageFileNames
+        reel.orderedCast = submission.orderedCast
         reel.videoDuration = submission.videoDuration
+        reel.videoCrop = submission.videoCrop
 
         // Convert thumbnailData to thumbnailFileName if needed
         if let thumbnailData = submission.thumbnailData,
@@ -648,6 +675,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         design.imageFileNames = submission.designImageFileNames
         design.videoFileName = submission.videoFileName
         design.videoDuration = submission.videoDuration
+        design.videoCrop = submission.videoCrop
         design.orderedCrew = submission.orderedCrew
 
         // Convert thumbnailData to thumbnailFileName if needed
@@ -695,6 +723,9 @@ class CloudKitTransitionAdapter: ObservableObject {
         project.castAssembled = submission.orderedCast
         project.crewAssembled = submission.orderedCrew
         project.slideImageFileNames = submission.projectSlideFileNames ?? []
+        project.auditionURL = submission.projectAuditionURL ?? ""
+        project.contacts = submission.projectContacts ?? []
+        project.studio = submission.studio
 
         // Convert thumbnailData to thumbnailFileName if needed
         if let thumbnailData = submission.thumbnailData,
@@ -738,6 +769,8 @@ class CloudKitTransitionAdapter: ObservableObject {
         event.eventCategory = submission.genres.first ?? ""
         event.eventExpectations = submission.eventExpectations
         event.eventApplicationURL = submission.eventApplicationURL
+        event.eventRSVPURL = submission.eventRSVPURL
+        event.eventWebsiteURL = submission.eventWebsiteURL
         event.eventLineup = submission.eventLineup
         event.eventShowings = submission.eventShowings ?? []
 

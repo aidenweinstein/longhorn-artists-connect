@@ -47,7 +47,10 @@ enum SchoolScope {
     /// rescue path in `CloudKitManager` retries after dropping the field CloudKit
     /// named. A wasted round-trip on every upload, so don't stamp before the
     /// schema is there.
-    static let isStampingEnabled = false
+    ///
+    /// Enabled 2026-09-25: `schoolID` confirmed queryable on all seven types in
+    /// both environments.
+    static let isStampingEnabled = true
 
     /// Whether feeds filter to `visibleSchoolIDs`. Flip to `true` only once the
     /// field exists in both environments *and* the backfill has stamped every
@@ -71,9 +74,13 @@ enum SchoolScope {
     /// True for account types that have no school at all: guests and industry
     /// professionals. Neither can post, and scoping them to a school they don't
     /// have would leave them with an empty app, so they see every school.
+    ///
+    /// Enthusiasts are guest accounts too, but they picked a school during
+    /// onboarding and see only that school's work.
     static var isUnscopedAccount: Bool {
         let defaults = UserDefaults.standard
-        return defaults.bool(forKey: "isGuestUser") || defaults.bool(forKey: "isIndustryProfessional")
+        let isSchoolessGuest = defaults.bool(forKey: "isGuestUser") && AccountKind.current != .enthusiast
+        return isSchoolessGuest || defaults.bool(forKey: "isIndustryProfessional")
     }
 
     /// The school to stamp on posts this user creates.
@@ -82,7 +89,13 @@ enum SchoolScope {
     /// write. Falls back to the school picked during onboarding — a hint only,
     /// since an unverified account can't get past the Share gate anyway — and
     /// finally to `legacyDefault` for accounts that predate all of this.
+    ///
+    /// A moderator who has picked a school in Moderate → Schools posts to that
+    /// school instead.
     static var postingSchoolID: String {
+        if let moderatorSchool {
+            return slugsByDisplayName[moderatorSchool] ?? legacyDefault
+        }
         if let verified = StudentVerificationManager.shared.verifiedSchoolID {
             return verified
         }
@@ -91,8 +104,73 @@ enum SchoolScope {
     }
 
     /// The schools whose work this user sees, or `nil` for "every school".
+    /// A moderator sees whichever school they picked in Moderate → Schools.
     static var visibleSchoolIDs: [String]? {
-        isUnscopedAccount ? nil : [postingSchoolID]
+        if moderatorSchool != nil { return [postingSchoolID] }
+        return isUnscopedAccount ? nil : [postingSchoolID]
+    }
+
+    // MARK: - Moderator school override
+
+    /// UserDefaults key for the school (display name) a moderator is viewing and
+    /// posting as. Empty means "my own school".
+    static let moderatorSchoolKey = "moderatorSchool"
+
+    /// The school a moderator picked in Moderate → Schools, or `nil` when none is
+    /// picked or this account isn't the moderator.
+    ///
+    /// Deliberately tied to the moderator *account*, not the moderator-mode
+    /// switch: moderator mode swaps the Share tab out for Moderate, so the pick
+    /// has to survive switching the mode off in order to post to that school.
+    static var moderatorSchool: String? {
+        guard ModeratorAccess.isModerator else { return nil }
+        let school = UserDefaults.standard.string(forKey: moderatorSchoolKey) ?? ""
+        return slugsByDisplayName[school] == nil ? nil : school
+    }
+
+    // MARK: - On-device filter
+
+    /// Whether a post stamped with `schoolID` belongs in this user's feeds.
+    ///
+    /// This is the client-side half of scoping, and unlike the query filter it is
+    /// always on: it only hides posts already fetched, so it can't make CloudKit
+    /// drop records the way an early `isFilteringEnabled` does. It also covers the
+    /// on-disk cache, which the sync reconciler deliberately keeps even when a
+    /// fetch doesn't return a post — so switching schools clears the old school's
+    /// posts from the feeds immediately.
+    ///
+    /// An unstamped post counts as `legacyDefault`, which is correct for every
+    /// post in the container today. Until `isStampingEnabled` is on, though, a new
+    /// post from another school also arrives unstamped and shows as UT Austin.
+    static func isVisible(schoolID: String?) -> Bool {
+        isVisible(schoolID: schoolID, in: visibleSchoolIDs)
+    }
+
+    /// Same as `isVisible(schoolID:)`, against an already-read `visibleSchoolIDs`.
+    ///
+    /// Use this when filtering a whole list: `visibleSchoolIDs` costs several
+    /// UserDefaults reads, and paying that per post on every feed render froze
+    /// the Discover tab for minutes in 1.40. Read it once, then filter.
+    static func isVisible(schoolID: String?, in visibleIDs: [String]?) -> Bool {
+        guard let visibleIDs else { return true }
+        let school = schoolID.flatMap { $0.isEmpty ? nil : $0 } ?? legacyDefault
+        return visibleIDs.contains(school)
+    }
+
+    /// Whether a person whose profile lists `schoolName` (a display name, as
+    /// `UserProfile.school` stores it) belongs in this user's directory.
+    ///
+    /// An empty name is a profile saved before the school picker existed, which
+    /// is UT Austin — the same fallback `UserProfileModel` uses. A name with no
+    /// registered slug never matches, so it only shows to unscoped accounts.
+    static func isVisible(schoolName: String) -> Bool {
+        isVisible(schoolName: schoolName, in: visibleSchoolIDs)
+    }
+
+    /// Same as `isVisible(schoolName:)`, against an already-read `visibleSchoolIDs`.
+    static func isVisible(schoolName: String, in visibleIDs: [String]?) -> Bool {
+        let name = schoolName.trimmingCharacters(in: .whitespaces)
+        return isVisible(schoolID: name.isEmpty ? nil : (slugsByDisplayName[name] ?? name), in: visibleIDs)
     }
 
     // MARK: - Queries
@@ -139,13 +217,18 @@ enum SchoolScope {
     /// pre-verification hint — the authoritative mapping is the verification
     /// service's D1 `schools` table, and the picker itself should eventually
     /// read from there instead of `UserProfileModel.otherSchools`.
-    private static let slugsByDisplayName: [String: String] = [
-        UserProfileModel.utSchoolName: legacyDefault,
-        "University of Michigan": "umich",
-        "Cal Poly SLO": "calpoly-slo",
-        "USC": "usc",
-        "NYU": "nyu",
-        "DePaul": "depaul",
-        "University of California, Berkeley": "berkeley"
+    ///
+    /// Ordered, so it can also drive pickers (Moderate → Schools).
+    static let registeredSchools: [(name: String, slug: String)] = [
+        (UserProfileModel.utSchoolName, legacyDefault),
+        (UserProfileModel.berkeleySchoolName, "berkeley"),
+        ("University of Michigan", "umich"),
+        ("USC", "usc"),
+        ("Cal Poly SLO", "calpoly-slo"),
+        ("NYU", "nyu"),
+        ("DePaul", "depaul")
     ]
+
+    private static let slugsByDisplayName: [String: String] =
+        Dictionary(uniqueKeysWithValues: registeredSchools.map { ($0.name, $0.slug) })
 }

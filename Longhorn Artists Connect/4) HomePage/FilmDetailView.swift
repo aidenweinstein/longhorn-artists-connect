@@ -11,7 +11,10 @@ import Combine
 import MediaPlayer
 
 struct FilmDetailView: View {
-    let film: Submission
+    /// The post as it was when the detail opened. Read it through `film` instead, which
+    /// resolves the store's current copy — so an edit shows immediately, and a second
+    /// edit starts from the first one's result instead of silently reverting it.
+    private let passedFilm: Submission
     @Binding var liked: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -63,6 +66,19 @@ struct FilmDetailView: View {
     @State private var fullScreenImageURLs: [URL] = []
     @State private var fullScreenStartIndex = 0
     @State private var showImageViewer = false
+
+    init(film: Submission, liked: Binding<Bool>) {
+        self.passedFilm = film
+        self._liked = liked
+        // Open the player at the video's known shape (from a previous load, the feed
+        // preloader, or the poster's dimensions) so it doesn't snap from 16:9 later.
+        self._videoAspectRatio = State(initialValue: VideoAspectCache.shared.displayAspect(for: film))
+    }
+
+    /// The live version of this film from the store (see `passedFilm`).
+    private var film: Submission {
+        store.currentCopy(of: passedFilm)
+    }
 
     // Icon color that adapts to light/dark mode
     private var iconColor: Color {
@@ -161,6 +177,12 @@ struct FilmDetailView: View {
             return
         }
         guard resolvedVideoURL == nil, !isLoadingVideo else { return }
+        // Fast path: the home feed already resolved and warmed this stream (hover
+        // preview / preload), so skip the CloudKit lookup and start on it directly.
+        if let warmed = FeedVideoPreloader.shared.readyStreamURL(for: film.id) {
+            resolvedVideoURL = warmed
+            return
+        }
         isLoadingVideo = true
         // Stream only: play from a range-supporting CDN URL so playback starts without
         // ever writing the file to the device. Map each resolution outcome to a precise
@@ -210,16 +232,10 @@ struct FilmDetailView: View {
     /// Loads the video's natural aspect ratio (accounting for its orientation
     /// transform) so the inline preview can size itself to the real dimensions.
     private func loadVideoAspectRatio(_ url: URL) async {
-        let asset = AVURLAsset(url: url)
-        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
-              let naturalSize = try? await track.load(.naturalSize),
-              let transform = try? await track.load(.preferredTransform) else { return }
-        let resolved = naturalSize.applying(transform)
-        let width = abs(resolved.width)
-        let height = abs(resolved.height)
-        guard width > 0, height > 0 else { return }
-        let ratio = width / height
-        await MainActor.run { videoAspectRatio = ratio }
+        // The cache applies the playback crop and remembers the natural shape so the
+        // next open starts at the right aspect ratio without waiting on the track.
+        guard let ratio = await VideoAspectCache.shared.learn(film, from: AVURLAsset(url: url)) else { return }
+        videoAspectRatio = ratio
     }
 
     var body: some View {
@@ -248,7 +264,7 @@ struct FilmDetailView: View {
                     showSlowLoadingMessage = true
                 }
             } else {
-                ScrollView {
+                ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         // Video Player Section
                         VStack(alignment: .leading, spacing: 0) {
@@ -278,131 +294,123 @@ struct FilmDetailView: View {
                                 // a video), "File Non-Existent", "Error Streaming", etc. —
                                 // and is non-tappable (the old poster zoomed into the
                                 // thumbnail with no way back, softlocking the view).
-                                VideoUnavailableView(status: streamStatus, tintColor: tintColor, detail: streamDebug)
+                                VideoUnavailableView(status: streamStatus, tintColor: tintColor, detail: streamDebug, thumbnailData: film.thumbnailData)
                             } else {
                                 // No local video yet. The feed skips heavy video assets, so
                                 // stream it on demand here: show a labeled spinner while it
                                 // pulls from CloudKit. When it resolves this branch is
                                 // replaced by the player above, or the diagnostic
                                 // placeholder if it couldn't be streamed.
-                                VideoStreamingLoadingView(tintColor: tintColor)
+                                VideoStreamingLoadingView(tintColor: tintColor, aspectRatio: videoAspectRatio ?? (16.0/9.0))
                                     .task { await resolveVideo() }
                             }
 
-                            // Title, age rating, genres, and action buttons
-                            VStack(alignment: .leading, spacing: 8) {
+                            // Title and action buttons, then the logline, then the
+                            // age rating / genres with the studio credit. Stacked as
+                            // full-width rows so the logline can sit directly under
+                            // the title without pushing the right-hand column around.
+                            VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .top, spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text(film.title)
-                                            .font(.system(size: 28, weight: .bold))
-                                            .minimumScaleFactor(0.6)
-                                            .lineLimit(2)
+                                    // Up to three lines, shrinking rather than truncating so every
+                                    // word of the title is always visible (the feed card is the
+                                    // only place a title gets an ellipsis).
+                                    Text(film.title)
+                                        .font(.system(size: 28, weight: .bold))
+                                        .minimumScaleFactor(0.5)
+                                        .lineLimit(3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        // Fill the leftover width so the buttons sit
+                                        // flush with the card's right edge.
+                                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                                        // Age rating and genres. The release year rides
-                                        // with the studio credit under the buttons
-                                        // instead (e.g. "Collective • 2025"), so it's
-                                        // left out of this row.
-                                        GenreReleaseYearRow(releaseYear: "") {
-                                            if !film.ageRating.isEmpty {
-                                                Text(film.ageRating)
-                                                    .font(.subheadline)
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 4)
-                                                    .background(.secondary.opacity(0.2))
-                                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                                    // Action buttons, backed by a hidden one-line title
+                                    // template so they're centered on the title's first
+                                    // line. The template measures a *single* line on
+                                    // purpose: a title that wraps to two lines grows
+                                    // downward without dragging the buttons along.
+                                    ZStack(alignment: .trailing) {
+                                        Text(verbatim: " ")
+                                            .font(.system(size: 28, weight: .bold))
+                                            .lineLimit(1)
+                                            .hidden()
+
+                                        // Action buttons — packed tight to leave the title more room.
+                                        HStack(spacing: 2) {
+                                            Button {
+                                                store.toggleLike(for: film)
+                                            } label: {
+                                                // Like counts are private: only credited collaborators
+                                                // see them on their own portfolio page.
+                                                Image(systemName: store.isLiked(film) ? "heart.fill" : "heart")
+                                                    .font(.system(size: 20))
+                                                    .foregroundStyle(store.isLiked(film) ? .red : .primary)
+                                                    .frame(minWidth: 30, minHeight: 32)
                                             }
 
-                                            GenreText(genres: film.genres.joined(separator: " • "))
+                                            Button {
+                                                showCollectionPicker = true
+                                            } label: {
+                                                Image(systemName: store.isInAnyCollection(film) ? "bookmark.fill" : "bookmark")
+                                                    .font(.system(size: 20))
+                                                    .foregroundStyle(iconColor)
+                                                    .frame(width: 30, height: 32)
+                                            }
+
+                                            Button {
+                                                showSendMessage = true
+                                            } label: {
+                                                Image(systemName: "paperplane")
+                                                    .font(.system(size: 20))
+                                                    .foregroundStyle(iconColor)
+                                                    .frame(width: 30, height: 32)
+                                            }
+
+                                            Button {
+                                                showReportSheet = true
+                                            } label: {
+                                                Image(systemName: "flag")
+                                                    .font(.system(size: 20))
+                                                    .foregroundStyle(iconColor)
+                                                    .frame(width: 30, height: 32)
+                                            }
                                         }
                                     }
-                                    // No Spacer here: the genre row above is full-width,
-                                    // so the info column already pushes the buttons
-                                    // right — and a Spacer would split the leftover
-                                    // width, pulling them off the edge.
+                                }
 
-                                    // Action buttons, with the studio/year credit
-                                    // directly beneath them so it sits flush with the
-                                    // card's right edge.
-                                    //
-                                    // Each row is backed by a hidden template matching
-                                    // the row it faces on the left — one line of the
-                                    // title, then the genre row — which centers the
-                                    // studio credit on the genres and keeps both
-                                    // heights tied to their text styles. The templates
-                                    // measure a *single* title line on purpose: a title
-                                    // that wraps to two lines pushes the genres down
-                                    // without dragging the credit along.
-                                    VStack(alignment: .trailing, spacing: 6) {
-                                        ZStack(alignment: .trailing) {
-                                            Text(verbatim: " ")
-                                                .font(.system(size: 28, weight: .bold))
-                                                .lineLimit(1)
-                                                .hidden()
+                                // Logline, directly under the title.
+                                if !film.logline.isEmpty {
+                                    Text(film.logline)
+                                        .font(.body)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
 
-                                            // Action buttons — packed tight to leave the title more room.
-                                            HStack(spacing: 2) {
-                                                Button {
-                                                    store.toggleLike(for: film)
-                                                } label: {
-                                                    // Like counts are private: only credited collaborators
-                                                    // see them on their own portfolio page.
-                                                    Image(systemName: store.isLiked(film) ? "heart.fill" : "heart")
-                                                        .font(.system(size: 20))
-                                                        .foregroundStyle(store.isLiked(film) ? .red : .primary)
-                                                        .frame(minWidth: 30, minHeight: 32)
-                                                }
-
-                                                Button {
-                                                    showCollectionPicker = true
-                                                } label: {
-                                                    Image(systemName: store.isInAnyCollection(film) ? "bookmark.fill" : "bookmark")
-                                                        .font(.system(size: 20))
-                                                        .foregroundStyle(iconColor)
-                                                        .frame(width: 30, height: 32)
-                                                }
-
-                                                Button {
-                                                    showSendMessage = true
-                                                } label: {
-                                                    Image(systemName: "paperplane")
-                                                        .font(.system(size: 20))
-                                                        .foregroundStyle(iconColor)
-                                                        .frame(width: 30, height: 32)
-                                                }
-
-                                                Button {
-                                                    showReportSheet = true
-                                                } label: {
-                                                    Image(systemName: "flag")
-                                                        .font(.system(size: 20))
-                                                        .foregroundStyle(iconColor)
-                                                        .frame(width: 30, height: 32)
-                                                }
-                                            }
+                                // Age rating and genres, with the studio/year credit
+                                // (e.g. "Collective • 2025") flush right and centered
+                                // on the row. The release year rides with the credit,
+                                // so it's left out of the genre row itself.
+                                HStack(alignment: .center, spacing: 12) {
+                                    GenreReleaseYearRow(releaseYear: "") {
+                                        if !film.ageRating.isEmpty {
+                                            Text(film.ageRating)
+                                                .font(.subheadline)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(.secondary.opacity(0.2))
+                                                .clipShape(RoundedRectangle(cornerRadius: 4))
                                         }
 
-                                        // Skipped when there's nothing to credit, so the
-                                        // genre-row template can't leave a gap under the
-                                        // buttons.
-                                        if StudioYearCredit.hasCredit(studio: film.studio, releaseYear: film.releaseYear) {
-                                            ZStack(alignment: .trailing) {
-                                                // The genre row's height: a line of
-                                                // subheadline text, plus the age-rating
-                                                // badge's padding when there's a badge.
-                                                Text(verbatim: " ")
-                                                    .font(.subheadline)
-                                                    .padding(.vertical, film.ageRating.isEmpty ? 0 : 4)
-                                                    .hidden()
+                                        GenreText(genres: film.genres.joined(separator: " • "))
+                                    }
 
-                                                // Studio and release year, e.g. "Collective • 2025".
-                                                // Tapping the studio opens its page.
-                                                StudioYearCredit(
-                                                    studio: film.studio,
-                                                    releaseYear: film.releaseYear,
-                                                    onStudioTap: studioPageTap
-                                                )
-                                            }
-                                        }
+                                    // Skipped when there's nothing to credit. Tapping
+                                    // the studio opens its page.
+                                    if StudioYearCredit.hasCredit(studio: film.studio, releaseYear: film.releaseYear) {
+                                        StudioYearCredit(
+                                            studio: film.studio,
+                                            releaseYear: film.releaseYear,
+                                            onStudioTap: studioPageTap
+                                        )
                                     }
                                 }
                             }
@@ -413,15 +421,6 @@ struct FilmDetailView: View {
 
                         // Film Information
                         VStack(alignment: .leading, spacing: 12) {
-                            // Logline
-                            if !film.logline.isEmpty {
-                                Text(film.logline)
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.bottom, 12)
-                            }
-
                             // Cast section
                             if !film.orderedCast.isEmpty {
                                 Divider()
@@ -541,6 +540,7 @@ struct FilmDetailView: View {
         // pinned close button (see needsForcedCloseButton above).
         .presentationDragIndicator(.hidden)
         .onAppear {
+            PostAnalytics.shared.record(.open, for: film)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation {
                     isLoading = false
@@ -554,9 +554,11 @@ struct FilmDetailView: View {
         }
         .sheet(item: $selectedPortfolioName) { person in
             PersonProfileView(name: person.name)
+                .onAppear { PostAnalytics.shared.record(.profileVisit, for: film) }
         }
         .sheet(isPresented: $showSendMessage) {
             SendPostMessageView(post: film)
+                .onAppear { PostAnalytics.shared.record(.message, for: film) }
         }
         .sheet(isPresented: $showReportSheet) {
             ReportContentView(post: film)
@@ -569,7 +571,9 @@ struct FilmDetailView: View {
                 // wouldn't otherwise pick up the change.
                 resolvedVideoURL = updatedSubmission.videoURL
                 streamStatus = nil
-                videoAspectRatio = nil
+                // Re-derive the shape (a crop change applies instantly; a replaced
+                // video corrects itself once its track loads).
+                videoAspectRatio = VideoAspectCache.shared.displayAspect(for: updatedSubmission)
                 videoReloadToken += 1
             }
         }

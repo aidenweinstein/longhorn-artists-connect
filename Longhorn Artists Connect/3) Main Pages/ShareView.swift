@@ -864,14 +864,16 @@ struct ShareView_3: View {
 
 
     // Event-specific states
-    @State private var eventCategory: String = ""
-    @State private var eventStartDate: Date = Date()
-    @State private var eventEndDate: Date = Date().addingTimeInterval(3600) // 1 hour later
+    // Seeded on the nearest round hour so the time pickers open on e.g. 3:00, not 2:37.
+    @State private var eventStartDate: Date = Date().roundedToNearestHour()
+    @State private var eventEndDate: Date = Date().roundedToNearestHour().addingTimeInterval(3600) // 1 hour later
     @State private var eventLocation: String = ""
     @State private var eventHost: String = ""
     @State private var eventTicketsURL: String = ""
     @State private var eventExpectations: String = ""
     @State private var eventApplicationURL: String = ""
+    @State private var eventRSVPURL: String = ""
+    @State private var eventWebsiteURL: String = ""
     @State private var eventLineup: String = ""
     /// Theatre Performance: the run's showings, each a date with start/end times.
     @State private var eventShowings: [EventShowing] = []
@@ -946,7 +948,6 @@ struct ShareView_3: View {
     @State private var showReelThumbnailPicker = false
     
     // Talent Reel-specific states
-    @State private var reelType: String = ""
     @State private var reelDescription: String = ""
     /// UUID strings of posts referenced as "Featured Work" on the reel being composed.
     @State private var reelFeaturedWorkIDs: [String] = []
@@ -955,20 +956,26 @@ struct ShareView_3: View {
     @State private var reelFeaturedWorkManual: [String] = []
     /// The reel's release year.
     @State private var reelReleaseYear = ""
+    /// Production stills on an Actor/Dance Showcase reel.
+    @State private var reelStillImages: [UIImage] = []
     
     // Project-specific states
-    @State private var projectCategory: String = ""   // ProjectType raw value
-    @State private var projectWriters: String = ""     // Script / In-Development writer(s)
-    @State private var projectGenre: String = ""       // Script genre
-    @State private var shootStartDate: Date = Date()
-    @State private var shootEndDate: Date = Date()
-    @State private var projectReleaseDate: Date = Date()
+    /// The form no longer asks for a project type; every new project is posted as a
+    /// Cast & Crew Call, the type whose card shows the shoot days, team needed, and
+    /// audition link the unified form collects.
+    @State private var projectCategory: String = ProjectType.castCrewCall.rawValue
+    @State private var projectWriters: String = ""     // No longer collected; kept for drafts of older posts
+    @State private var projectGenre: String = ""       // No longer collected; kept for drafts of older posts
+    @State private var shootDays: [ShootDay] = []
+    @State private var shootDatesTBD: Bool = false      // Shoot dates not set yet → stores "TBD"
     @State private var castNeeded: [String] = []
     @State private var crewNeeded: [String] = []
     @State private var selectedProjectScriptURL: URL?
     @State private var showProjectScriptPicker: Bool = false
     /// The project's slideshow images, in the order they were picked.
     @State private var projectSlides: [UIImage] = []
+    @State private var projectAuditionURL: String = ""
+    @State private var projectContacts: [String] = []
     
     // Film-specific states
     /// Empty until the film's Category is picked; "Independent" once the user chooses
@@ -983,7 +990,6 @@ struct ShareView_3: View {
     @State private var selectedMusicVideoURL: URL?
     @State private var musicVideoThumbnail: UIImage?
     @State private var selectedMusicGenres: Set<String> = []
-    @State private var musicCategory = ""
     @State private var musicReleaseYear = ""
     @State private var musicRecordingCredits: [OrderedEntry] = []
     @State private var musicProductionCredits: [OrderedEntry] = []
@@ -1003,10 +1009,13 @@ struct ShareView_3: View {
     // Design-specific states (reuses the shared `title`)
     @State private var designImages: [UIImage] = []
     @State private var designDescription: String = ""
-    @State private var designCategory: String = ""
     @State private var designReleaseYear: String = ""
     @State private var designVideoURL: URL?
     @State private var designVideoFirstFrame: UIImage?
+    /// Playback crops (`VideoCrop` strings) for the film / reel / design videos.
+    @State private var filmVideoCrop: String?
+    @State private var reelVideoCrop: String?
+    @State private var designVideoCrop: String?
     @State private var designCredits = CrewInfo(orderedEntries: [])
 
     // Draft states
@@ -1025,6 +1034,8 @@ struct ShareView_3: View {
     /// Retained so a failed upload can be retried from the form.
     @State private var lastSubmittedSubmission: Submission? = nil
     @State private var showPostedToast = false
+    /// True while Post is confirming the CloudKit schema is ready for this post type.
+    @State private var isCheckingSchema = false
 
     /// Live upload phase for the in-flight post, or `nil` while filling out the form.
     private var currentUploadPhase: MediaUploadPhase? {
@@ -1058,20 +1069,28 @@ struct ShareView_3: View {
         }
 
         ToolbarItem(placement: .confirmationAction) {
-            Button("Post") {
-                submitPost()
+            Button {
+                Task { await submitPostIfCloudKitReady() }
+            } label: {
+                if isCheckingSchema {
+                    ProgressView()
+                } else {
+                    Text("Post")
+                }
             }
             // While an upload is in flight (or just finished / failed), the form shows
             // the progress wheel; re-posting is blocked (use Retry on failure).
-            .disabled(activeUploadID != nil)
+            .disabled(activeUploadID != nil || isCheckingSchema)
         }
     }
 
     /// Whether the in-flight post is actively transferring (as opposed to finished or
     /// failed). Used to keep the sheet from being swiped away mid-upload.
     private var isUploadingNow: Bool {
-        if case .uploading = currentUploadPhase { return true }
-        return false
+        switch currentUploadPhase {
+        case .preparing, .uploading: return true
+        default: return false
+        }
     }
     
     var body: some View {
@@ -1465,7 +1484,6 @@ struct ShareView_3: View {
         ReelSubmissionView(
             title: $title,
             artist: $artist,
-            reelType: $reelType,
             reelDescription: $reelDescription,
             releaseYear: $reelReleaseYear,
             selectedReelVideoURL: $selectedReelVideoURL,
@@ -1479,8 +1497,12 @@ struct ShareView_3: View {
             showReelThumbnailPicker: $showReelThumbnailPicker,
             featuredWorkIDs: $reelFeaturedWorkIDs,
             featuredWorkManual: $reelFeaturedWorkManual,
+            stillImages: $reelStillImages,
+            castInfo: $castInfo,
+            crewInfo: $crewInfo,
             uploadPhase: currentUploadPhase,
-            onRetryUpload: retryUpload
+            onRetryUpload: retryUpload,
+            videoCrop: $reelVideoCrop
         )
     }
 
@@ -1489,12 +1511,9 @@ struct ShareView_3: View {
         ProjectSubmissionView(
             title: $title,
             logline: $logline,
-            projectCategory: $projectCategory,
-            writers: $projectWriters,
-            projectGenre: $projectGenre,
-            shootStartDate: $shootStartDate,
-            shootEndDate: $shootEndDate,
-            projectReleaseDate: $projectReleaseDate,
+            studio: $selectedStudio,
+            shootDays: $shootDays,
+            shootDatesTBD: $shootDatesTBD,
             castNeeded: $castNeeded,
             crewNeeded: $crewNeeded,
             castInfo: $castInfo,
@@ -1505,6 +1524,8 @@ struct ShareView_3: View {
             showProjectImageDocumentPicker: $showProjectImageDocumentPicker,
             showProjectScriptPicker: $showProjectScriptPicker,
             slides: $projectSlides,
+            auditionURL: $projectAuditionURL,
+            contacts: $projectContacts,
             uploadPhase: currentUploadPhase,
             onRetryUpload: retryUpload
         )
@@ -1528,13 +1549,14 @@ struct ShareView_3: View {
             title: $title,
             eventDetails: $logline,
             eventHost: $eventHost,
-            eventCategory: $eventCategory,
             eventStartDate: $eventStartDate,
             eventEndDate: $eventEndDate,
             eventLocation: $eventLocation,
             ticketsURL: $eventTicketsURL,
             eventExpectations: $eventExpectations,
             eventApplicationURL: $eventApplicationURL,
+            eventRSVPURL: $eventRSVPURL,
+            eventWebsiteURL: $eventWebsiteURL,
             eventLineup: $eventLineup,
             eventShowings: $eventShowings,
             selectedEventImageData: $selectedEventImageData,
@@ -1571,7 +1593,8 @@ struct ShareView_3: View {
             onGenerateThumbnail: generateThumbnail,
             onTrailerPickerResult: handleTrailerPickerResult,
             uploadPhase: currentUploadPhase,
-            onRetryUpload: retryUpload
+            onRetryUpload: retryUpload,
+            videoCrop: $filmVideoCrop
         )
     }
 
@@ -1580,7 +1603,6 @@ struct ShareView_3: View {
         MusicSubmissionView(
             title: $title,
             artist: $artist,
-            category: $musicCategory,
             selectedGenres: $selectedMusicGenres,
             releaseYear: $musicReleaseYear,
             explicitRating: $explicitRating,
@@ -1625,14 +1647,14 @@ struct ShareView_3: View {
         DesignSubmissionView(
             title: $title,
             designDescription: $designDescription,
-            category: $designCategory,
             releaseYear: $designReleaseYear,
             images: $designImages,
             videoURL: $designVideoURL,
             videoFirstFrame: $designVideoFirstFrame,
             credits: $designCredits,
             uploadPhase: currentUploadPhase,
-            onRetryUpload: retryUpload
+            onRetryUpload: retryUpload,
+            videoCrop: $designVideoCrop
         )
     }
 
@@ -1661,12 +1683,16 @@ struct ShareView_3: View {
     // MARK: - Configuration Methods
     
     private func configureReelSubmission(_ submission: inout Submission) {
-        submission.reelType = reelType
         submission.reelDescription = reelDescription
         submission.artist = artist
         submission.releaseYear = reelReleaseYear
         submission.featuredWorkIDs = reelFeaturedWorkIDs
         submission.featuredWorkManual = reelFeaturedWorkManual
+        submission.videoCrop = reelVideoCrop
+        submission.stillImageFileNames = persistFilmExtraImages(reelStillImages, submissionID: submission.id, kind: "still")
+        // Cast and crew, flattened the same way the film form stores them.
+        submission.orderedCast = castInfo.toOrderedEntries()
+        submission.orderedCrew = crewInfo.toOrderedEntries()
 
         if let videoURL = selectedReelVideoURL {
             let fileName = "video_\(submission.id.uuidString).\(videoURL.pathExtension)"
@@ -1695,10 +1721,17 @@ struct ShareView_3: View {
         submission.writers = projectWriters
         // `genres` holds the Script genre only; the type lives in `projectType`.
         submission.genres = (ProjectType(rawValue: projectCategory) == .script && !projectGenre.isEmpty) ? [projectGenre] : []
-        submission.shootDates = formatDate(shootStartDate) + " - " + formatDate(shootEndDate)
-        submission.expectedReleaseDate = formatDate(projectReleaseDate)
+        // The org or class behind the project, in the same field films use.
+        submission.studio = selectedStudio
+        submission.shootDates = shootDatesTBD ? projectDateTBDText : ShootSchedule.text(from: shootDays)
+        // The form no longer asks for an expected release; the card hides the row when empty.
+        submission.expectedReleaseDate = ""
         submission.castNeeded = castNeeded.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         submission.crewNeeded = crewNeeded.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let audition = projectAuditionURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        submission.projectAuditionURL = audition.isEmpty ? nil : audition
+        let contacts = projectContacts.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        submission.projectContacts = contacts.isEmpty ? nil : contacts
 
         if let imageData = selectedProjectImageData {
             submission.thumbnailData = imageData
@@ -1711,11 +1744,11 @@ struct ShareView_3: View {
             ? nil
             : persistFilmExtraImages(projectSlides, submissionID: submission.id, kind: "slide")
 
-        // Script projects use the script's first page as the thumbnail and record its
-        // page count (overrides any poster, which Script doesn't collect).
-        if ProjectType(rawValue: projectCategory) == .script, let scriptURL = selectedProjectScriptURL {
+        // A script's first page stands in as the thumbnail when no poster was picked,
+        // and its page count is recorded either way.
+        if let scriptURL = selectedProjectScriptURL {
             let (thumb, pages) = ScriptThumbnail.make(from: scriptURL)
-            if let thumb { submission.thumbnailData = thumb }
+            if selectedProjectImageData == nil, let thumb { submission.thumbnailData = thumb }
             submission.scriptPageCount = pages
         }
 
@@ -1757,14 +1790,13 @@ struct ShareView_3: View {
         submission.eventTicketsURL = eventTicketsURL.isEmpty ? nil : eventTicketsURL
         submission.eventExpectations = eventExpectations.isEmpty ? nil : eventExpectations
         submission.eventApplicationURL = eventApplicationURL.isEmpty ? nil : eventApplicationURL
+        submission.eventRSVPURL = eventRSVPURL.isEmpty ? nil : eventRSVPURL
+        submission.eventWebsiteURL = eventWebsiteURL.isEmpty ? nil : eventWebsiteURL
         submission.eventLineup = eventLineup.isEmpty ? nil : eventLineup
-        submission.genres = [eventCategory]
 
-        // Showings belong to Theatre Performance only, so anything entered before the
-        // category was switched away is dropped rather than saved invisibly. For a
-        // theatre run the showings also set the post's start/end dates, which is what
-        // every other date-aware screen reads.
-        if EventCategoryKind(rawValue: eventCategory)?.usesShowings == true, !eventShowings.isEmpty {
+        // The showings also set the post's start/end dates, which is what every other
+        // date-aware screen reads.
+        if !eventShowings.isEmpty {
             submission.eventShowings = eventShowings
             submission.syncEventDatesToShowings()
         } else {
@@ -1783,7 +1815,8 @@ struct ShareView_3: View {
         submission.ageRating = selectedAgeRating.rawValue
         submission.studio = selectedStudio
         submission.festivalBound = filmFestivalBound
-        
+        submission.videoCrop = filmVideoCrop
+
         // Add cast
         var orderedCast: [OrderedEntry] = []
         for entry in castInfo.primaries + castInfo.secondaries + castInfo.extras {
@@ -1862,12 +1895,12 @@ struct ShareView_3: View {
     }
 
     private func configureDesignSubmission(_ submission: inout Submission) {
-        submission.designCategory = designCategory
         submission.releaseYear = designReleaseYear
         // Design's description round-trips through `details` (the Design model stores it
         // as `designDescription`).
         submission.details = designDescription
         submission.orderedCrew = designCredits.toOrderedEntries()
+        submission.videoCrop = designVideoCrop
 
         // Persist the picked images to the media cache under the deterministic names the
         // CloudKit upload/parse expect (`<id>_design_<n>.jpg`).
@@ -1894,13 +1927,14 @@ struct ShareView_3: View {
         if let first = designImages.first {
             submission.thumbnailData = first.jpegData(compressionQuality: 0.7)
         } else if let frame = designVideoFirstFrame {
-            submission.thumbnailData = frame.jpegData(compressionQuality: 0.7)
+            // Match what the player shows when the video is cropped.
+            let poster = VideoCrop(designVideoCrop).map { ImageCropper.crop(frame, to: $0.rect) } ?? frame
+            submission.thumbnailData = poster.jpegData(compressionQuality: 0.7)
         }
     }
 
     private func configureMusicSubmission(_ submission: inout Submission) {
         submission.artist = artist
-        submission.musicCategory = musicCategory
         submission.genres = Array(selectedMusicGenres)
         submission.releaseYear = musicReleaseYear
         submission.explicit = explicitRating
@@ -2013,14 +2047,15 @@ struct ShareView_3: View {
         selectedProjectImageItem = nil
         selectedEventImageData = nil
         selectedEventImageItem = nil
-        eventCategory = ""
-        eventStartDate = Date()
-        eventEndDate = Date().addingTimeInterval(3600)
+        eventStartDate = Date().roundedToNearestHour()
+        eventEndDate = Date().roundedToNearestHour().addingTimeInterval(3600)
         eventLocation = ""
         eventHost = ""
         eventTicketsURL = ""
         eventExpectations = ""
         eventApplicationURL = ""
+        eventRSVPURL = ""
+        eventWebsiteURL = ""
         eventLineup = ""
         eventShowings = []
 
@@ -2031,23 +2066,24 @@ struct ShareView_3: View {
         reelVideoThumbnailIsCustom = false
         reelVideoLoadError = false
         isUploadingReelVideo = false
-        reelType = ""
         reelDescription = ""
         reelFeaturedWorkIDs = []
         reelFeaturedWorkManual = []
         reelReleaseYear = ""
+        reelStillImages = []
 
         // Project fields
-        projectCategory = ""
+        projectCategory = ProjectType.castCrewCall.rawValue
         projectWriters = ""
         projectGenre = ""
-        shootStartDate = Date()
-        shootEndDate = Date()
-        projectReleaseDate = Date()
+        shootDays = []
+        shootDatesTBD = false
         castNeeded = []
         crewNeeded = []
         selectedProjectScriptURL = nil
         projectSlides = []
+        projectAuditionURL = ""
+        projectContacts = []
 
         // Film fields
         selectedStudio = ""
@@ -2055,7 +2091,6 @@ struct ShareView_3: View {
         // Music fields
         artist = ""
         selectedMusicGenres = []
-        musicCategory = ""
         musicReleaseYear = ""
         musicRecordingCredits = []
         musicProductionCredits = []
@@ -2079,11 +2114,15 @@ struct ShareView_3: View {
         // Design fields
         designImages = []
         designDescription = ""
-        designCategory = ""
         designReleaseYear = ""
         designVideoURL = nil
         designVideoFirstFrame = nil
         designCredits = CrewInfo(orderedEntries: [])
+
+        // Playback crops
+        filmVideoCrop = nil
+        reelVideoCrop = nil
+        designVideoCrop = nil
     }
     
     // MARK: - Submission Logic
@@ -2126,8 +2165,35 @@ struct ShareView_3: View {
         return submission
     }
 
+    /// Posts only once CloudKit has the record type and every field this post type
+    /// writes. A gap used to mean a post that showed "Posted!" and then vanished, so
+    /// it's refused up front with the exact Dashboard fix instead.
+    private func submitPostIfCloudKitReady() async {
+        guard let contentType = selectedContentType else { return }
+        isCheckingSchema = true
+        let blocker = await CloudKitSchemaCheck.postingBlocker(for: contentType)
+        isCheckingSchema = false
+
+        if let blocker {
+            errorMessage = blocker
+            showErrorAlert = true
+            return
+        }
+        submitPost()
+    }
+
     private func submitPost() {
         guard let submission = buildSubmission() else { return }
+
+        // A picked audio file that couldn't be copied into the media cache leaves the
+        // submission with no readable `audioURL`, and the upload would then publish the
+        // track with no `musicAudio` asset — a card stuck on "Coming Soon". Stop here
+        // instead so the user can re-pick the file.
+        if submission.type == .music, selectedAudioURL != nil, submission.audioURL == nil {
+            errorMessage = "The audio file couldn't be read, so the post wasn't uploaded. Please select the audio file again and retry."
+            showErrorAlert = true
+            return
+        }
 
         // `add` returns nil on success, or the reason it was rejected. It also kicks
         // off the CloudKit upload (with progress tracking) in the background.
@@ -2219,12 +2285,14 @@ struct ShareView_3: View {
         switch type {
         case .reel:
             flags += [
-                filled(reelType),
                 filled(reelDescription),
                 filled(artist),
                 filled(reelReleaseYear),
                 !reelFeaturedWorkIDs.isEmpty || !reelFeaturedWorkManual.isEmpty,
-                selectedReelVideoURL != nil
+                !reelStillImages.isEmpty,
+                selectedReelVideoURL != nil,
+                !castInfo.toOrderedEntries().isEmpty,
+                !crewInfo.toOrderedEntries().isEmpty
             ]
         case .project:
             flags += [
@@ -2232,20 +2300,25 @@ struct ShareView_3: View {
                 filled(projectCategory),
                 filled(projectWriters),
                 filled(projectGenre),
+                filled(selectedStudio),
+                shootDatesTBD,
                 !castNeeded.isEmpty,
                 !crewNeeded.isEmpty,
                 selectedProjectImageData != nil,
                 selectedProjectScriptURL != nil,
-                !projectSlides.isEmpty
+                !projectSlides.isEmpty,
+                filled(projectAuditionURL),
+                !projectContacts.isEmpty
             ]
         case .event:
             flags += [
-                filled(eventCategory),
                 filled(eventLocation),
                 filled(eventHost),
                 filled(eventTicketsURL),
                 filled(eventExpectations),
                 filled(eventApplicationURL),
+                filled(eventRSVPURL),
+                filled(eventWebsiteURL),
                 filled(eventLineup),
                 selectedEventImageData != nil
             ]
@@ -2264,7 +2337,6 @@ struct ShareView_3: View {
         case .music:
             flags += [
                 filled(artist),
-                filled(musicCategory),
                 !selectedMusicGenres.isEmpty,
                 filled(musicReleaseYear),
                 explicitRating,
@@ -2287,7 +2359,6 @@ struct ShareView_3: View {
         case .design:
             flags += [
                 filled(designDescription),
-                filled(designCategory),
                 filled(designReleaseYear),
                 !designImages.isEmpty || designVideoURL != nil
             ]
@@ -2329,12 +2400,12 @@ struct ShareView_3: View {
 
         switch draft.type {
         case .reel:
-            reelType = draft.reelType
             reelDescription = draft.reelDescription
             artist = draft.artist
             reelReleaseYear = draft.releaseYear
             reelFeaturedWorkIDs = draft.featuredWorkIDs
             reelFeaturedWorkManual = draft.featuredWorkManual
+            reelStillImages = draft.stillImageURLs.compactMap { UIImage(contentsOfFile: $0.path) }
             selectedReelVideoURL = draft.videoURL
             if let data = draft.thumbnailData {
                 reelVideoThumbnail = UIImage(data: data)
@@ -2345,27 +2416,34 @@ struct ShareView_3: View {
             if let videoURL = draft.videoURL {
                 generateReelThumbnail(from: videoURL)
             }
+            castInfo = makeCastInfo(from: draft.orderedCast)
+            crewInfo = makeCrewInfo(from: draft.orderedCrew)
         case .project:
             projectCategory = draft.projectType
             projectWriters = draft.writers
             projectGenre = draft.genres.first ?? ""
+            selectedStudio = draft.studio
+            shootDatesTBD = draft.shootDates == projectDateTBDText
             castNeeded = draft.castNeeded
             crewNeeded = draft.crewNeeded
             selectedProjectImageData = draft.thumbnailData
             selectedProjectScriptURL = draft.scriptURL
             // Restore the slideshow from its persisted media-cache copies.
             projectSlides = draft.projectSlideURLs.compactMap { UIImage(contentsOfFile: $0.path) }
+            projectAuditionURL = draft.projectAuditionURL ?? ""
+            projectContacts = draft.projectContacts ?? []
             castInfo = makeCastInfo(from: draft.orderedCast)
             crewInfo = makeCrewInfo(from: draft.orderedCrew)
         case .event:
-            eventStartDate = draft.eventStartDate ?? Date()
-            eventEndDate = draft.eventEndDate ?? Date().addingTimeInterval(3600)
+            eventStartDate = draft.eventStartDate ?? Date().roundedToNearestHour()
+            eventEndDate = draft.eventEndDate ?? Date().roundedToNearestHour().addingTimeInterval(3600)
             eventLocation = draft.eventLocation ?? ""
             eventTicketsURL = draft.eventTicketsURL ?? ""
-            eventCategory = draft.genres.first ?? ""
             eventHost = draft.eventHost
             eventExpectations = draft.eventExpectations ?? ""
             eventApplicationURL = draft.eventApplicationURL ?? ""
+            eventRSVPURL = draft.eventRSVPURL ?? ""
+            eventWebsiteURL = draft.eventWebsiteURL ?? ""
             eventLineup = draft.eventLineup ?? ""
             eventShowings = draft.eventShowings ?? []
             selectedEventImageData = draft.thumbnailData
@@ -2391,7 +2469,6 @@ struct ShareView_3: View {
             crewInfo = makeCrewInfo(from: draft.orderedCrew)
         case .music:
             artist = draft.artist
-            musicCategory = draft.musicCategory
             selectedMusicGenres = Set(draft.genres)
             musicReleaseYear = draft.releaseYear
             explicitRating = draft.explicit
@@ -2416,7 +2493,6 @@ struct ShareView_3: View {
             photographyImages = draft.photoImageURLs.compactMap { UIImage(contentsOfFile: $0.path) }
         case .design:
             designDescription = draft.details
-            designCategory = draft.designCategory
             designReleaseYear = draft.releaseYear
             designCredits = CrewInfo(orderedEntries: draft.orderedCrew)
             designVideoURL = draft.videoURL
@@ -2474,7 +2550,10 @@ struct ContentTypeSelectorPage: View {
         var draftsFontSize: CGFloat
         var infoWidth: CGFloat
         var infoFontSize: CGFloat
-        var pillHeight: CGFloat
+        /// On-screen height of every pill, shared with the other pages (see
+        /// `ScreenSizeFormat.toolbarPillHeight`). Buttons divide it by their own
+        /// `scaleEffect` so the rendered height matches Home's exactly.
+        var pillHeight: CGFloat = ScreenSizeFormat.toolbarPillHeight
         var pillOffsetX: CGFloat
         var pillOffsetY: CGFloat
         var logoHeight: CGFloat
@@ -2524,6 +2603,11 @@ struct ContentTypeSelectorPage: View {
     private var infoHelpOffsetY: CGFloat { -4 }
     private var infoHelpPadding: CGFloat { 0 }    // space reserved around each
 
+    /// Pre-scale button heights: the shared pill height divided by each button's
+    /// `scaleEffect`, so every pill renders at exactly the Home pill's height.
+    private var draftsPillHeight: CGFloat { toolbarFormat.pillHeight / draftsSize }
+    private var infoHelpPillHeight: CGFloat { toolbarFormat.pillHeight / infoHelpSize }
+
     /// The per-device format, universally scaled by `toolbarSizeMultiplier`, with the
     /// Share asset additionally scaled by `shareSize`.
     private var toolbarFormat: ToolbarFormat {
@@ -2536,17 +2620,19 @@ struct ContentTypeSelectorPage: View {
     private var baseToolbarFormat: ToolbarFormat {
         switch ScreenSizeFormat.current {
         case .size393x852: // iPhone 14 Pro, 15, 15 Pro, 16
-            return ToolbarFormat(draftsWidth: 60, draftsFontSize: 14, infoWidth: 50, infoFontSize: 18, pillHeight: 40, pillOffsetX: 0, pillOffsetY: 0, logoHeight: 29, barHeight: 50)
+            return ToolbarFormat(draftsWidth: 60, draftsFontSize: 14, infoWidth: 50, infoFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 29, barHeight: 50)
         case .size402x874: // iPhone 16 Pro, 17
-            return ToolbarFormat(draftsWidth: 61, draftsFontSize: 14, infoWidth: 51, infoFontSize: 18, pillHeight: 41, pillOffsetX: 0, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
+            return ToolbarFormat(draftsWidth: 61, draftsFontSize: 14, infoWidth: 51, infoFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
         case .size430x932: // iPhone 14 Pro Max, 15 Plus, 15 Pro Max, 16 Plus
-            return ToolbarFormat(draftsWidth: 66, draftsFontSize: 15, infoWidth: 55, infoFontSize: 20, pillHeight: 44, pillOffsetX: 0, pillOffsetY: 0, logoHeight: 32, barHeight: 52)
+            return ToolbarFormat(draftsWidth: 66, draftsFontSize: 15, infoWidth: 55, infoFontSize: 20, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 32, barHeight: 52)
         case .size440x956: // iPhone 16 Pro Max, 17 Pro Max
-            return ToolbarFormat(draftsWidth: 67, draftsFontSize: 16, infoWidth: 56, infoFontSize: 20, pillHeight: 45, pillOffsetX: 0, pillOffsetY: 0, logoHeight: 33, barHeight: 53)
+            return ToolbarFormat(draftsWidth: 67, draftsFontSize: 16, infoWidth: 56, infoFontSize: 20, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 33, barHeight: 53)
+        // iPad: the orange bar spans the screen, but its contents stay iPhone-sized and
+        // centered (see `ScreenSizeFormat.toolbarContentMaxWidth`), so these match the phone.
         case .iPad11: // iPad Pro 11", iPad Air 11"
-            return ToolbarFormat(draftsWidth: 90, draftsFontSize: 20, infoWidth: 74, infoFontSize: 26, pillHeight: 56, pillOffsetX: 0, pillOffsetY: 0, logoHeight: 41, logoOffsetX: 0, logoOffsetY: 0, pillLength: nil, barHeight: 66)
+            return ToolbarFormat(draftsWidth: 61, draftsFontSize: 14, infoWidth: 51, infoFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
         case .iPad13: // iPad Pro 13", iPad Air 13"
-            return ToolbarFormat(draftsWidth: 104, draftsFontSize: 23, infoWidth: 84, infoFontSize: 30, pillHeight: 64, pillOffsetX: -30, pillOffsetY: -10, logoHeight: 47, logoOffsetX: 30, logoOffsetY: -10, pillLength: nil, barHeight: 72)
+            return ToolbarFormat(draftsWidth: 61, draftsFontSize: 14, infoWidth: 51, infoFontSize: 18, pillOffsetX: -4, pillOffsetY: 0, logoHeight: 30, barHeight: 50)
         }
     }
 
@@ -2579,18 +2665,18 @@ struct ContentTypeSelectorPage: View {
             return FeedFormat(titleFontSize: 36, cardSpacing: 13, horizontalPadding: 22, cardIconSize: 59, cardVerticalPadding: 12)
         case .size440x956: // iPhone 16 Pro Max, 17 Pro Max
             return FeedFormat(titleFontSize: 37, cardSpacing: 13, horizontalPadding: 22, cardIconSize: 61, cardVerticalPadding: 12)
+        // iPad keeps the iPhone layout and sizes for this page.
         case .iPad11: // iPad Pro 11", iPad Air 11"
-            return FeedFormat(titleFontSize: 48, cardSpacing: 18, horizontalPadding: 80, cardIconSize: 82, cardVerticalPadding: 14)
+            return FeedFormat(titleFontSize: 34, cardSpacing: 12, horizontalPadding: 20, cardIconSize: 55, cardVerticalPadding: 11)
         case .iPad13: // iPad Pro 13", iPad Air 13"
-            return FeedFormat(titleFontSize: 56, cardSpacing: 20, horizontalPadding: 140, cardIconSize: 95, cardVerticalPadding: 15)
+            return FeedFormat(titleFontSize: 34, cardSpacing: 12, horizontalPadding: 20, cardIconSize: 55, cardVerticalPadding: 11)
         }
     }
 
     // ORANGE HEADER
     private var topBar: some View {
         HStack(spacing: 1) {
-            Image("Share")
-                .resizable()
+            SchoolAssetImage("Share")
                 .scaledToFit()
                 .frame(height: toolbarFormat.logoHeight)
                 .offset(x: -4, y: -2)
@@ -2601,6 +2687,9 @@ struct ContentTypeSelectorPage: View {
         }
         .frame(height: 44)
         .padding(.horizontal, 12)
+        // iPad: keep the wordmark and pills iPhone-sized and centered while the orange
+        // bar behind them still runs edge to edge. `nil` (no limit) on iPhone.
+        .frame(maxWidth: ScreenSizeFormat.toolbarContentMaxWidth)
         .padding(.vertical, 6)
         // Orange fills the bar and bleeds up behind the status bar / Dynamic Island.
         .frame(maxWidth: .infinity, minHeight: toolbarFormat.barHeight, maxHeight: toolbarFormat.barHeight)
@@ -2617,7 +2706,7 @@ struct ContentTypeSelectorPage: View {
                 Text("Drafts")
                     .font(.system(size: toolbarFormat.draftsFontSize, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: toolbarFormat.pillLength ?? toolbarFormat.draftsWidth, height: toolbarFormat.pillHeight)
+                    .frame(width: toolbarFormat.pillLength ?? toolbarFormat.draftsWidth, height: draftsPillHeight)
                     .padding(.horizontal, 9)
                     .contentShape(Rectangle())
             }
@@ -2633,7 +2722,7 @@ struct ContentTypeSelectorPage: View {
                 Image(systemName: "info.circle.fill")
                     .font(.system(size: toolbarFormat.infoFontSize, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: toolbarFormat.infoWidth, height: toolbarFormat.pillHeight)
+                    .frame(width: toolbarFormat.infoWidth, height: infoHelpPillHeight)
                     .padding(.horizontal,-2)
                     .contentShape(Rectangle())
             }
@@ -2650,7 +2739,7 @@ struct ContentTypeSelectorPage: View {
                 Image(systemName: "questionmark.diamond.fill")
                     .font(.system(size: toolbarFormat.infoFontSize, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: toolbarFormat.infoWidth, height: toolbarFormat.pillHeight)
+                    .frame(width: toolbarFormat.infoWidth, height: infoHelpPillHeight)
                     .padding(.horizontal,-2)
                     .contentShape(Rectangle())
             }
@@ -2707,17 +2796,6 @@ struct ContentTypeSelectorPage: View {
                     }
 
                     ContentTypeCard(
-                        imageName: "Photography",
-                        title: "Photography",
-                        subtitle: SubmissionTypeSubtitles.subtitle(for: .photography),
-                        color: .black,
-                        iconSize: feedFormat.cardIconSize,
-                        verticalPadding: feedFormat.cardVerticalPadding
-                    ) {
-                        selectedType = .photography
-                    }
-
-                    ContentTypeCard(
                         imageName: "Design",
                         title: "Design",
                         subtitle: SubmissionTypeSubtitles.subtitle(for: .design),
@@ -2726,6 +2804,17 @@ struct ContentTypeSelectorPage: View {
                         verticalPadding: feedFormat.cardVerticalPadding
                     ) {
                         selectedType = .design
+                    }
+
+                    ContentTypeCard(
+                        imageName: "Photography",
+                        title: "Photography",
+                        subtitle: SubmissionTypeSubtitles.subtitle(for: .photography),
+                        color: .black,
+                        iconSize: feedFormat.cardIconSize,
+                        verticalPadding: feedFormat.cardVerticalPadding
+                    ) {
+                        selectedType = .photography
                     }
 
                     ContentTypeCard(
@@ -2797,8 +2886,7 @@ struct ContentTypeCard: View {
                             .frame(width: iconSize * 34 / 60, height: iconSize * 34 / 60)
                             .foregroundColor(.white)
                     } else if let imageName {
-                        Image(imageName)
-                            .resizable()
+                        SchoolAssetImage(imageName)
                             .scaledToFit()
                             .frame(width: iconSize * 43.75 / 60, height: iconSize * 43.75 / 60)
                             .foregroundColor(.white)
@@ -2919,13 +3007,13 @@ enum SubmissionTypeSubtitles {
 
     /// The tagline for every submission type, in the order the Share page lists them.
     static let byType: [MediaType: String] = [
-        .film:        "Frame your vision",
-        .music:       "Sound that resonates",
-        .reel:        "Take center stage",
-        .photography: "Capture the moment",
-        .design:      "Paint the walls",
-        .project:     "Building something bigger",
-        .event:       "Gather your people"
+        .film:        "class, studio, independent...",
+        .music:       "song, album/ep, music video...",
+        .reel:        "acting, dancing, reel...",
+        .photography: "sports, people, nature...",
+        .design:      "graphic, magazine, costume...",
+        .project:     "film, music video, campaign...",
+        .event:       "concert, theatre, festival..."
     ]
 
     /// The tagline for `type`, or an empty string if none is defined.

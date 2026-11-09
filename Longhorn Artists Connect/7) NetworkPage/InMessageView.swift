@@ -8,6 +8,7 @@
 import SwiftUI
 import PhotosUI
 import CloudKit
+import AVKit
 
 struct InMessageView: View {
     // MARK: - Properties
@@ -244,6 +245,15 @@ struct InMessageView: View {
                     }
                 }
                 .padding()
+            }
+            // Open the thread already scrolled to the newest message, like iMessage.
+            // The scroll view is only created once messages have loaded, so the
+            // `onChange(of: messages.count)` below never fires for the initial batch.
+            .defaultScrollAnchor(.bottom)
+            .onAppear {
+                if let lastMessage = messages.last {
+                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                }
             }
             .onChange(of: messages.count) { _, _ in
                 if let lastMessage = messages.last {
@@ -529,6 +539,7 @@ struct MessageBubbleView: View {
 
     @State private var showPostDetail = false
     @State private var postLiked = false
+    @State private var showVideoPlayer = false
 
     /// Bubble fill: brand orange for the current user, neutral for the other person.
     private var bubbleColor: Color {
@@ -564,13 +575,23 @@ struct MessageBubbleView: View {
                     }
                 } else {
                     // Media attachment (image/video/document) renders as its own bubble.
+                    // Videos (e.g. an audition self-tape) open a player when tapped,
+                    // once the file has been downloaded from CloudKit.
                     if message.attachmentType != nil {
-                        AttachmentPreview(
-                            attachmentType: message.attachmentType,
-                            localURL: attachmentURL,
-                            fileName: message.attachmentFileName,
-                            isFromCurrentUser: isFromCurrentUser
-                        )
+                        Button {
+                            if message.attachmentType == .video, attachmentURL != nil {
+                                showVideoPlayer = true
+                            }
+                        } label: {
+                            AttachmentPreview(
+                                attachmentType: message.attachmentType,
+                                localURL: attachmentURL,
+                                fileName: message.attachmentFileName,
+                                isFromCurrentUser: isFromCurrentUser
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(message.attachmentType != .video || attachmentURL == nil)
                     }
 
                     // Any accompanying text sits in its own speech bubble below.
@@ -596,6 +617,11 @@ struct MessageBubbleView: View {
         }
         .sheet(isPresented: $showPostDetail) {
             sharedPostDetail
+        }
+        .sheet(isPresented: $showVideoPlayer) {
+            if let attachmentURL {
+                MessageVideoPlayerSheet(url: attachmentURL)
+            }
         }
     }
 
@@ -657,6 +683,46 @@ struct MessageBubbleView: View {
         } else {
             formatter.dateFormat = "MMM d, h:mm a"
             return formatter.string(from: date)
+        }
+    }
+}
+
+// MARK: - Video Attachment Player
+
+/// Plays a downloaded video attachment (e.g. an audition self-tape) full-screen
+/// with the system player controls. Presented from the video bubble on tap.
+struct MessageVideoPlayerSheet: View {
+    let url: URL
+    @Environment(\.dismiss) private var dismiss
+    @State private var player: AVPlayer?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let player {
+                    VideoPlayer(player: player)
+                        .ignoresSafeArea(edges: .bottom)
+                } else {
+                    ProgressView()
+                }
+            }
+            .background(Color.black)
+            .navigationTitle("Video")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .onAppear {
+            let newPlayer = AVPlayer(url: url)
+            player = newPlayer
+            newPlayer.play()
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
         }
     }
 }
@@ -985,7 +1051,7 @@ struct InMessageDocumentPickerView: UIViewControllerRepresentable {
         HStack {
             SharedPostMessageBubble(
                 thumbnail: nil,
-                title: "The Midnight Garden",
+                title: "Sample Film",
                 placeholderSymbol: "film"
             )
             Spacer(minLength: 60)
@@ -995,7 +1061,7 @@ struct InMessageDocumentPickerView: UIViewControllerRepresentable {
             Spacer(minLength: 60)
             SharedPostMessageBubble(
                 thumbnail: nil,
-                title: "Neon Dreams",
+                title: "Sample Track",
                 placeholderSymbol: "music.note",
                 isFromCurrentUser: true
             )

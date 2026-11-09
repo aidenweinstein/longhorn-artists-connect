@@ -17,74 +17,19 @@ extension Color {
     // red, etc. Defaults to UT burnt-orange when no school is set.
     static var brandOrange: Color { AppTheme.brandColor }
 
-    // Toolbar pill background (the dark brown capsule in HomeView)
-    static let pillActive = Color(red: 240/255, green: 165/255, blue: 46/255)
+    // Toolbar pill background (the capsule behind the top-bar icons). Themed to the
+    // current user's school — see `SchoolTheme.toolbarPill`.
+    static var pillActive: Color { AppTheme.current.toolbarPill }
 
-    // Toolbar pill active/selected state (slightly darker)
-    static let pillBackground = Color(red: 182/255, green: 119/255, blue: 23/255)
+    // Toolbar pill active/selected state (slightly darker). Themed — see
+    // `SchoolTheme.toolbarHighlight`.
+    static var pillBackground: Color { AppTheme.current.toolbarHighlight }
 
     // App background in dark mode
     static let darkBackground = Color(red: 18/255, green: 18/255, blue: 18/255)
 }
 
-// MARK: - School Credit Themes
-
-/// Bubble + text colors for a credited person's name chip, keyed by their school.
-/// Registered members get a colored bubble; unrecognized names stay plain grey.
-struct SchoolTheme {
-    let bubble: Color
-    let text: Color
-
-    /// Fallback for a recognized Nexus member whose school isn't one of the themed
-    /// ones (or is unset) — uses the app's own (UT) brand accent.
-    static let nexusDefault = SchoolTheme(bubble: .utBurntOrange, text: .white)
-
-    /// The theme for a school name. Unknown/empty falls back to `nexusDefault`.
-    static func forSchool(_ school: String) -> SchoolTheme {
-        switch school.trimmingCharacters(in: .whitespaces) {
-        case "The University of Texas at Austin", "UT", "UT Austin":
-            return SchoolTheme(bubble: .utBurntOrange, text: .white)
-        case "University of Michigan", "Michigan", "UMich":
-            return SchoolTheme(bubble: Color(hex: "00274C"), text: Color(hex: "FFCB05"))
-        case "Cal Poly SLO", "Cal Poly", "Cal Poly San Luis Obispo":
-            return SchoolTheme(bubble: Color(hex: "154734"), text: Color(hex: "BD8B13"))
-        case "USC", "University of Southern California":
-            return SchoolTheme(bubble: Color(hex: "990000"), text: Color(hex: "FFC72C"))
-        case "NYU", "New York University":
-            return SchoolTheme(bubble: Color(hex: "57068C"), text: .white)
-        case "DePaul", "DePaul University":
-            return SchoolTheme(bubble: Color(hex: "005EB8"), text: .white)
-        default:
-            return .nexusDefault
-        }
-    }
-
-    /// The brand accent for a school (the bubble color), used to theme the whole app.
-    static func brandColor(for school: String) -> Color {
-        forSchool(school).bubble
-    }
-}
-
-// MARK: - App Theme
-
-/// Resolves the app-wide brand color from the current user's school. Guest users
-/// (and users with no school set) always get UT burnt-orange.
-enum AppTheme {
-    /// The current user's school, as saved during onboarding.
-    static var currentSchool: String {
-        UserDefaults.standard.string(forKey: "userSchool") ?? ""
-    }
-
-    /// Whether this account was created via the Guest flow.
-    static var isGuest: Bool {
-        UserDefaults.standard.bool(forKey: "isGuestUser")
-    }
-
-    /// The themed brand color for the whole app. Guests stay orange.
-    static var brandColor: Color {
-        isGuest ? .utBurntOrange : SchoolTheme.brandColor(for: currentSchool)
-    }
-}
+// School-specific colors (`SchoolTheme`, `AppTheme`) live in SchoolColors.swift.
 
 // MARK: - UIKit Colors
 // Used by AppearanceManager for UINavigationBar, UITabBar, etc.

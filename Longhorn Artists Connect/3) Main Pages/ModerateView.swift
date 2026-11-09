@@ -9,18 +9,23 @@ struct ModerateView_3_1: View {
     @State private var showDeleted = false
     @State private var showUsers = false
     @State private var showFlags = false
+    @State private var showAnalytics = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if store.approvedSubmissions.isEmpty {
                     List {
+                        ModeratorSchoolsSection()
+                        analyticsSection
                         Text("No posts on the platform.")
                             .foregroundStyle(.secondary)
                     }
                     .listStyle(.plain)
                 } else {
                     List {
+                        ModeratorSchoolsSection()
+                        analyticsSection
                         ForEach(sortedSubmissions) { submission in
                             SubmissionModerateCard(
                                 submission: submission,
@@ -42,7 +47,7 @@ struct ModerateView_3_1: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbarBackground(Color(red: 191/255, green: 87/255, blue: 0/255), for: .navigationBar)
+            .toolbarBackground(Color.brandOrange, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .principal) {
@@ -136,13 +141,94 @@ struct ModerateView_3_1: View {
             .sheet(isPresented: $showFlags) {
                 FlagsListView()
             }
+            .sheet(isPresented: $showAnalytics) {
+                PostAnalyticsView()
+            }
         }
     }
-    
+
+    /// Opens the post engagement numbers (moderator-only; never shown to artists).
+    private var analyticsSection: some View {
+        Section {
+            Button {
+                showAnalytics = true
+            } label: {
+                Label("Post Analytics", systemImage: "chart.bar.fill")
+            }
+        } header: {
+            Text("Analytics")
+        }
+    }
+
     // Sort submissions by newest first
     private var sortedSubmissions: [Submission] {
         store.approvedSubmissions.sorted { submission1, submission2 in
             submission1.createdDate > submission2.createdDate
+        }
+    }
+}
+
+// MARK: - Schools Section
+
+/// The "Schools" section at the top of the Moderate page: picks which school the
+/// moderator is looking at and posting to (see `SchoolScope.moderatorSchool`).
+/// The whole app re-themes to that school, and the pick stays in effect after
+/// moderator mode is switched off, so the Share tab posts to it.
+struct ModeratorSchoolsSection: View {
+    @AppStorage(SchoolScope.moderatorSchoolKey) private var moderatorSchool = ""
+    @AppStorage("userSchool") private var userSchool = ""
+
+    /// The moderator's own school, normalized to a registered one (UT if unset).
+    private var ownSchool: String {
+        SchoolScope.registeredSchools.contains { $0.name == userSchool }
+            ? userSchool
+            : UserProfileModel.utSchoolName
+    }
+
+    /// Picking your own school clears the override rather than storing it, so the
+    /// app goes back to following the account's school.
+    private var selection: Binding<String> {
+        Binding(
+            get: { moderatorSchool.isEmpty ? ownSchool : moderatorSchool },
+            set: { newValue in
+                moderatorSchool = newValue == ownSchool ? "" : newValue
+                // UIKit appearance (tab bar tint) is read when bars are created, so
+                // refresh it before ContentView rebuilds the tabs for the new school.
+                AppearanceManager.configure()
+            }
+        )
+    }
+
+    var body: some View {
+        Section {
+            Picker("Viewing & posting as", selection: selection) {
+                ForEach(SchoolScope.registeredSchools, id: \.name) { school in
+                    schoolRow(school.name)
+                        .tag(school.name)
+                }
+            }
+            .pickerStyle(.navigationLink)
+        } header: {
+            Text("Schools")
+        } footer: {
+            Text("The app shows this school's colors and feed, and anything you post goes to this school. It stays set when you turn moderator mode off.")
+        }
+    }
+
+    private func schoolRow(_ name: String) -> some View {
+        let theme = SchoolTheme.forSchool(name)
+        return HStack(spacing: 12) {
+            // Swatch: the school's main color with its second color as a ring.
+            Circle()
+                .fill(theme.bubble)
+                .overlay(Circle().strokeBorder(theme.text, lineWidth: 3))
+                .frame(width: 22, height: 22)
+            Text(name)
+            if name == ownSchool {
+                Text("Your school")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

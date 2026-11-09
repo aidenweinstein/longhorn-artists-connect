@@ -51,6 +51,7 @@ final class StudentVerificationManager {
         let id: String
         let expiresAt: Date
         let schoolName: String
+        let email: String
     }
 
     enum VerificationError: LocalizedError {
@@ -84,10 +85,16 @@ final class StudentVerificationManager {
     /// `SchoolScope`.
     private(set) var verifiedSchoolID: String?
 
+    /// The address this device verified, for display in Edit Profile only.
+    /// The `Verification` record stores just a hash of the email, so this is
+    /// nil when verification happened on another device.
+    private(set) var verifiedEmail: String?
+
     /// Cached so the UI isn't gated behind a network round trip at launch.
     /// Advisory only — `refreshStatus()` re-reads the authoritative record.
     private let cacheKey = "studentVerificationCachedSchool"
     private let schoolIDCacheKey = "studentVerificationCachedSchoolID"
+    private let emailCacheKey = "studentVerificationCachedEmail"
 
     private let session = URLSession(configuration: .default)
 
@@ -96,6 +103,9 @@ final class StudentVerificationManager {
             status = .verified(schoolName: cached)
         }
         verifiedSchoolID = UserDefaults.standard.string(forKey: schoolIDCacheKey).flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        verifiedEmail = UserDefaults.standard.string(forKey: emailCacheKey).flatMap {
             $0.isEmpty ? nil : $0
         }
     }
@@ -139,6 +149,20 @@ final class StudentVerificationManager {
         #else
         return isConfigured
         #endif
+    }
+
+    /// Whether verification is enforced in this build.
+    ///
+    /// Development builds (the CloudKit Development environment: Xcode runs
+    /// and the simulator) skip it entirely — onboarding doesn't show the step
+    /// and `VerificationGate` stays open — so test accounts don't need a real
+    /// school address. Verifying voluntarily from Edit Profile still works,
+    /// and the moderator's test-email button still exercises the real send.
+    /// Keyed on the CloudKit environment rather than `#if DEBUG` for the same
+    /// reason `CloudKitEnvironmentDetector` exists: a Debug-configured archive
+    /// on TestFlight must still enforce.
+    static var isRequired: Bool {
+        !CloudKitEnvironmentDetector.isDevelopment
     }
 
     // MARK: - Grandfathering
@@ -200,8 +224,10 @@ final class StudentVerificationManager {
             if let ckError = error as? CKError, ckError.code == .unknownItem {
                 status = .unverified
                 verifiedSchoolID = nil
+                verifiedEmail = nil
                 UserDefaults.standard.removeObject(forKey: cacheKey)
                 UserDefaults.standard.removeObject(forKey: schoolIDCacheKey)
+                UserDefaults.standard.removeObject(forKey: emailCacheKey)
             }
         }
     }
@@ -228,6 +254,25 @@ final class StudentVerificationManager {
     /// that, which is how the service proves the caller owns the account it
     /// claims at confirm time.
     func requestCode(email: String) async throws -> PendingVerification {
+        let (pending, nonce, userRecordName) = try await sendCodeRequest(email: email)
+        try await writeNonce(nonce, userRecordName: userRecordName)
+        return pending
+    }
+
+    /// Moderator diagnostics: asks the service to email a real code — same
+    /// endpoint, template, sender and rate limits as `requestCode` — but skips
+    /// the ownership nonce, so the send is checked in isolation and a CloudKit
+    /// hiccup can't be mistaken for a mail failure. Without the nonce the code
+    /// can never be confirmed, so nothing about the account changes.
+    func sendTestCode(email: String) async throws -> PendingVerification {
+        try await sendCodeRequest(email: email).pending
+    }
+
+    /// The `/v1/verify/request` round trip shared by the real flow and the
+    /// moderator's test send.
+    private func sendCodeRequest(
+        email: String
+    ) async throws -> (pending: PendingVerification, nonce: String, userRecordName: String) {
         guard let baseURL = Self.baseURL else { throw VerificationError.notConfigured }
         guard let userRecordName = try? await CKContainer.default().userRecordID().recordName else {
             throw VerificationError.noAccount
@@ -253,13 +298,13 @@ final class StudentVerificationManager {
             body: Request(email: email, userRecordName: userRecordName)
         )
 
-        try await writeNonce(response.nonce, userRecordName: userRecordName)
-
-        return PendingVerification(
+        let pending = PendingVerification(
             id: response.pendingID,
             expiresAt: Date(timeIntervalSince1970: response.expiresAt),
-            schoolName: response.school.name
+            schoolName: response.school.name,
+            email: email
         )
+        return (pending, response.nonce, userRecordName)
     }
 
     /// Submits the emailed code. On success the service has written the
@@ -282,6 +327,16 @@ final class StudentVerificationManager {
         )
 
         await refreshStatus()
+
+        // The service only answers 2xx once it has written the record, so if
+        // the read-back missed it (propagation lag, flaky network), trust the
+        // reply for this session; the next refresh settles it either way.
+        if !status.isVerified {
+            status = .verified(schoolName: pending.schoolName)
+            UserDefaults.standard.set(pending.schoolName, forKey: cacheKey)
+        }
+        verifiedEmail = pending.email
+        UserDefaults.standard.set(pending.email, forKey: emailCacheKey)
     }
 
     // MARK: - Ownership proof

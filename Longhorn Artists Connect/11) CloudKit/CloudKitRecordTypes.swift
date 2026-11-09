@@ -65,6 +65,18 @@ enum CloudKitRecordTypes {
     /// Written by the verification service, never by the app.
     static let verification = "Verification"
 
+    /// The extra profile details a person's tags unlock (an actor's Actors Access
+    /// sheet and headshot, a musician's streaming links, a filmmaker's specialties)
+    /// as a details JSON plus a headshot asset. Written only by its owner. See
+    /// `CreativeProfileStore`. Added 2026-11-04.
+    static let creativeProfile = "CreativeProfile"
+
+    // MARK: - Scripts
+
+    /// A script in the Script Collection (see `ScriptManager`). Not reachable
+    /// from the tab bar since Agent mode was removed on 2026-10-16.
+    static let script = "Script"
+
     // MARK: - Organizations
 
     static let organization = "Organization"
@@ -74,6 +86,13 @@ enum CloudKitRecordTypes {
 
     static let conversation = "Conversation"
     static let message = "Message"
+
+    // MARK: - Connections
+
+    /// One directed edge of a private, mutual connection (`fromUserID` →
+    /// `toUserID`). Written only by its sender; see `ConnectionsManager` for the
+    /// two-edge model and the field list. Added 2026-10-23.
+    static let connection = "Connection"
 
     // MARK: - Groups
 
@@ -103,6 +122,7 @@ enum CloudKitRecordTypes {
     static let people = [
         userProfile,
         verification,
+        creativeProfile,
     ]
 
     static let organizations = [
@@ -117,24 +137,25 @@ enum CloudKitRecordTypes {
 
     /// Every record type the app touches. Use this when auditing the schema
     /// against the Dashboard.
-    static let all = allSubmissions + postMetadata + people + organizations + messaging
+    static let all = allSubmissions + postMetadata + people + [script] + organizations + messaging
 }
 
 // MARK: - Schema status
 //
-// Last checked 2026-09-23. This table is hand-maintained — it records what was
+// Last checked 2026-09-25. This table is hand-maintained — it records what was
 // true at that date, not what the Dashboard says right now. Verify before
-// relying on a row.
+// relying on a row. `schoolID` (queryable) exists on all seven *Submission
+// types in both environments as of 2026-09-25.
 //
 // | Record type           | Development | Production | Note                            |
 // |-----------------------|-------------|------------|---------------------------------|
-// | FilmSubmission        | yes         | yes        |                                 |
-// | MusicSubmission       | yes         | yes        | `musicTracks`/`musicTrackExts` missing in both |
-// | ReelSubmission        | yes         | yes        | `reelArtist`, `featuredWorkManual`, `reelVideoDuration` missing in both |
-// | ProjectSubmission     | yes         | yes        | `projectSlides` missing in both |
+// | FilmSubmission        | yes         | yes        | `filmReleaseYear` (added 2026-09-25) missing in both |
+// | MusicSubmission       | yes         | yes        | `musicTracks`/`musicTrackExts`, `musicReleaseYear` missing in both |
+// | ReelSubmission        | yes         | yes        | `reelArtist`, `featuredWorkManual`, `reelVideoDuration`, `reelReleaseYear` missing in both |
+// | ProjectSubmission     | yes         | yes        | `projectSlides`, `projectAuditionURL`, `projectContacts` (added 2026-09-29), `projectStudio` (added 2026-10-17) missing in both |
 // | EventSubmission       | yes         | yes        | `eventShowtimes` missing in both |
 // | PhotographySubmission | yes         | yes        |                                 |
-// | DesignSubmission      | NO          | NO         | whole type still needs creating |
+// | DesignSubmission      | yes         | yes        | queryable since 2026-09-25; field types unverified until a real post |
 // | Submission            | yes         | yes        | legacy, read-only               |
 // | PostLike              | yes         | yes        |                                 |
 // | ModerationAction      | yes         | yes        |                                 |
@@ -142,10 +163,13 @@ enum CloudKitRecordTypes {
 // | Flag                  | NO          | NO         | reports fail silently until created |
 // | UserProfile           | yes         | yes        |                                 |
 // | Verification          | server-owned| server-owned| Authenticated = Read, writes reserved to the service key |
+// | Script                | NO          | NO         | added 2026-09-29; fields listed on `ScriptManager` |
 // | Organization          | yes         | yes        |                                 |
 // | OrgContentLink        | yes         | yes        |                                 |
 // | Conversation          | yes         | yes        |                                 |
 // | Message               | yes         | yes        |                                 |
+// | Connection            | NO          | NO         | added 2026-10-23; fields on `ConnectionsManager`. Connect buttons fail silently until created |
+// | CreativeProfile       | NO          | NO         | added 2026-11-04; details (STRING), headshot (ASSET), updatedAt (DATE). Needs recordName QUERYABLE. Until created, Edit details saves locally only |
 //
 // Cross-service lists that must stay in step with `liveSubmissions` above:
 //

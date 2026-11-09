@@ -60,34 +60,35 @@ struct AppearanceManager {
 
     private static func configureTabBar() {
 
-        // Light mode tab bar
-        let lightAppearance = UITabBarAppearance()
-        lightAppearance.configureWithDefaultBackground()
-        lightAppearance.stackedLayoutAppearance    = tabBarItemAppearance(dark: false)
-        lightAppearance.inlineLayoutAppearance     = tabBarItemAppearance(dark: false)
-        lightAppearance.compactInlineLayoutAppearance = tabBarItemAppearance(dark: false)
+        // One appearance for both states. UIKit swaps between `standardAppearance` and
+        // `scrollEdgeAppearance` as content scrolls and while full-screen covers dismiss,
+        // so any difference between them shows up as the bar flickering. The background
+        // and icon colors adapt to light/dark mode instead: dark gray (Instagram-style)
+        // with white icons in dark mode, system white with black icons in light mode.
+        let appearance = UITabBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor               = .adaptiveBackground
+        appearance.stackedLayoutAppearance       = tabBarItemAppearance()
+        appearance.inlineLayoutAppearance        = tabBarItemAppearance()
+        appearance.compactInlineLayoutAppearance = tabBarItemAppearance()
 
-        // Dark mode tab bar — dark gray background (Instagram-style)
-        let darkAppearance = UITabBarAppearance()
-        darkAppearance.configureWithOpaqueBackground()
-        darkAppearance.backgroundColor            = .darkBackground
-        darkAppearance.stackedLayoutAppearance    = tabBarItemAppearance(dark: true)
-        darkAppearance.inlineLayoutAppearance     = tabBarItemAppearance(dark: true)
-        darkAppearance.compactInlineLayoutAppearance = tabBarItemAppearance(dark: true)
-
-        UITabBar.appearance().standardAppearance    = lightAppearance
-        UITabBar.appearance().scrollEdgeAppearance  = darkAppearance
+        UITabBar.appearance().standardAppearance    = appearance
+        UITabBar.appearance().scrollEdgeAppearance  = appearance
         UITabBar.appearance().tintColor             = .brandOrange
-        UITabBar.appearance().unselectedItemTintColor = UIColor { traitCollection in
-            traitCollection.userInterfaceStyle == .dark ? .white : .black
-        }
+        UITabBar.appearance().unselectedItemTintColor = unselectedTabColor
+    }
+
+    /// Unselected tab icon color: white in dark mode, black in light mode, resolved from
+    /// the current traits so it can never disagree with the active appearance.
+    private static let unselectedTabColor = UIColor { traitCollection in
+        traitCollection.userInterfaceStyle == .dark ? .white : .black
     }
 
     /// Builds a UITabBarItemAppearance with brand orange for selected,
     /// white (dark) or black (light) for unselected.
-    private static func tabBarItemAppearance(dark: Bool) -> UITabBarItemAppearance {
+    private static func tabBarItemAppearance() -> UITabBarItemAppearance {
         let item = UITabBarItemAppearance()
-        let unselected: UIColor = dark ? .white : .black
+        let unselected = unselectedTabColor
 
         item.selected.iconColor = .brandOrange
         item.selected.titleTextAttributes = [.foregroundColor: UIColor.brandOrange]

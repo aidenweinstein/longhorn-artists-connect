@@ -21,6 +21,8 @@ export interface Env {
     RESEND_API_KEY: string;
     /// Bearer token for /v1/admin/*. Unset disables those routes entirely.
     ADMIN_TOKEN: string;
+    /// Bearer token the website presents on /v1/web/*. Unset disables them.
+    WEB_CLIENT_TOKEN: string;
 }
 
 export function json(body: unknown, status = 200): Response {

@@ -171,6 +171,208 @@ struct EventShowing: Identifiable, Codable, Hashable {
     }
 }
 
+// MARK: - Shoot Schedule (Cast & Crew Calls)
+
+/// One day of a shoot in the submission form: its date and call time (`date`) and its
+/// wrap time (`end`). Only `end`'s hour and minute matter — it's written onto `date`'s
+/// day when the schedule is stored, so the two pickers can't drift apart.
+struct ShootDay: Identifiable, Hashable {
+    var id = UUID()
+    var date: Date
+    var end: Date
+
+    /// `end` defaults to eight hours after the call time, a typical shoot day.
+    init(date: Date, end: Date? = nil) {
+        self.date = date
+        self.end = end ?? ShootDay.defaultEnd(for: date)
+    }
+
+    static func defaultEnd(for start: Date) -> Date {
+        Calendar.current.date(byAdding: .hour, value: 8, to: start) ?? start
+    }
+
+    /// The calendar day this shoot day sits on. Setting it moves both the call time and
+    /// the wrap time onto that day while preserving each one's time, so the form's single
+    /// "Date" picker and its two time pickers stay in sync (mirrors `EventShowing.day`).
+    var day: Date {
+        get { date }
+        set {
+            let calendar = Calendar.current
+            let dayComponents = calendar.dateComponents([.year, .month, .day], from: newValue)
+            func applyDay(to value: Date) -> Date {
+                let time = calendar.dateComponents([.hour, .minute], from: value)
+                var combined = dayComponents
+                combined.hour = time.hour
+                combined.minute = time.minute
+                return calendar.date(from: combined) ?? value
+            }
+            date = applyDay(to: date)
+            end = applyDay(to: end)
+        }
+    }
+}
+
+/// A Cast & Crew Call's shoot schedule: specific days, each with a call time and a wrap
+/// time.
+///
+/// It travels in the project's existing `shootDates` text (CloudKit
+/// `projectShootDatesText`) as one "MMM d, yyyy h:mm a - h:mm a" entry per day joined
+/// by " · ", e.g. "Jun 15, 2026 7:00 AM - 5:00 PM · Jun 16, 2026 8:30 AM - 6:00 PM".
+/// Reusing that field means no CloudKit schema change, and the value stays readable on
+/// app versions that display the text verbatim. Entries written before wrap times
+/// existed ("Jun 15, 2026 7:00 AM") still parse, with no end; and posts older than the
+/// day list wrote a "start - end" range of dates, which `parse` also understands.
+enum ShootSchedule {
+    /// One parsed shoot day: its call time and, when stored, its wrap time.
+    struct Day: Hashable {
+        let start: Date
+        let end: Date?
+    }
+
+    enum Parsed {
+        /// Specific shoot days, soonest first. Never empty.
+        case days([Day])
+        /// A legacy "start - end" range (dates only; `end` is nil for a single date).
+        case range(start: Date, end: Date?)
+    }
+
+    private static let separator = " · "
+    /// Separates a day's call time from its wrap time inside one entry.
+    private static let timeSeparator = " - "
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d, yyyy h:mm a"
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }()
+
+    /// Every format a legacy range's dates were written in across app versions.
+    private static let legacyFormats = ["MMM d, yyyy", "MMMM d, yyyy", "MM/dd/yyyy"]
+
+    /// The stored text for `days` (soonest first). Empty when there are no days. Only
+    /// the wrap time's hour and minute are kept; it's read back onto the call's day.
+    static func text(from days: [ShootDay]) -> String {
+        days.sorted { $0.date < $1.date }
+            .map { dayFormatter.string(from: $0.date) + timeSeparator + timeFormatter.string(from: $0.end) }
+            .joined(separator: separator)
+    }
+
+    /// Parses stored `shootDates` text — the day list, or a legacy range. `nil` when the
+    /// text is empty or in no recognizable form (e.g. "Summer 2026" or "TBD").
+    static func parse(_ text: String) -> Parsed? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let entries = trimmed.components(separatedBy: separator)
+        let days = entries.compactMap(parseDay)
+        if !days.isEmpty, days.count == entries.count {
+            return .days(days.sorted { $0.start < $1.start })
+        }
+
+        let parts = trimmed.components(separatedBy: timeSeparator)
+        guard let first = parts.first, let start = legacyDate(first) else { return nil }
+        let end = parts.count > 1 ? legacyDate(parts[1]) : nil
+        return .range(start: start, end: end)
+    }
+
+    /// One entry: "Jun 15, 2026 7:00 AM - 5:00 PM", or the older "Jun 15, 2026 7:00 AM".
+    /// The wrap time is placed on the call's day. A legacy date range ("Jun 15, 2026 -
+    /// Jul 20, 2026") fails here — its first half has no time — and falls through to the
+    /// range parser in `parse`.
+    private static func parseDay(_ entry: String) -> Day? {
+        let parts = entry.components(separatedBy: timeSeparator)
+        guard let first = parts.first,
+              let start = dayFormatter.date(from: first.trimmingCharacters(in: .whitespaces))
+        else { return nil }
+
+        var end: Date?
+        if parts.count > 1, let wrap = timeFormatter.date(from: parts[1].trimmingCharacters(in: .whitespaces)) {
+            let calendar = Calendar.current
+            let time = calendar.dateComponents([.hour, .minute], from: wrap)
+            end = calendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0, of: start)
+        }
+        return Day(start: start, end: end)
+    }
+
+    /// The first shoot day, which the legacy `projectShootStart` timestamp carries.
+    static func firstDate(in text: String) -> Date? {
+        switch parse(text) {
+        case .days(let days)?: return days.first?.start
+        case .range(let start, _)?: return start
+        case nil: return nil
+        }
+    }
+
+    /// One pre-built formatter per legacy format. `parse` runs inside feed sorts and
+    /// card bodies, and building a `DateFormatter` costs on the order of a millisecond,
+    /// so allocating them per call made the Discover feed stutter on every render.
+    private static let legacyFormatters: [DateFormatter] = legacyFormats.map { format in
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private static func legacyDate(_ string: String) -> Date? {
+        let trimmed = string.trimmingCharacters(in: .whitespaces)
+        for formatter in legacyFormatters {
+            if let date = formatter.date(from: trimmed) { return date }
+        }
+        return nil
+    }
+
+    // MARK: Display
+
+    private static let dayTextFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE, MMM d"
+        return formatter
+    }()
+
+    private static let dayTextWithYearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE, MMM d, yyyy"
+        return formatter
+    }()
+
+    private static let timeTextFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mma"
+        return formatter
+    }()
+
+    /// "Mon, Jun 15" — with the year added when the day isn't in the current year.
+    static func dayText(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+        return (sameYear ? dayTextFormatter : dayTextWithYearFormatter).string(from: date)
+    }
+
+    /// "7:00am" — lowercase meridiem, no space, matching how event times are shown.
+    static func timeText(_ date: Date) -> String {
+        timeTextFormatter.string(from: date).lowercased()
+    }
+
+    /// "7:00am - 5:00pm" for a day with a wrap time, or just "7:00am" without one.
+    static func timeRangeText(_ day: Day) -> String {
+        guard let end = day.end else { return timeText(day.start) }
+        return "\(timeText(day.start)) - \(timeText(end))"
+    }
+}
+
+extension Submission {
+    /// The project's shoot schedule, parsed from `shootDates` (see `ShootSchedule`).
+    var shootSchedule: ShootSchedule.Parsed? { ShootSchedule.parse(shootDates) }
+}
+
 struct Submission: Identifiable, Equatable, Codable {
     let id: UUID
     let type: MediaType
@@ -180,7 +382,13 @@ struct Submission: Identifiable, Equatable, Codable {
     var submittedBy: String = ""
     var createdDate: Date = Date()
     var lastEditedDate: Date?
-    
+
+    /// Registry slug of the school this post belongs to ("ut-austin", "berkeley").
+    /// Nil on records that predate stamping — `SchoolScope.isVisible` treats those
+    /// as UT Austin. Optional so the on-disk cache written before this field still
+    /// decodes (see `eventShowings`).
+    var schoolID: String?
+
     // Parsed fields for display
     var logline: String = ""
     var ageRating: String = ""
@@ -244,7 +452,13 @@ struct Submission: Identifiable, Equatable, Codable {
     /// the duration badge can show on every device — even ones that haven't
     /// downloaded the video file yet. Nil for non-film posts or older records.
     var videoDuration: Double?
-    
+
+    /// Film / Reel / Design: the crop applied to the post's video at playback, encoded by
+    /// `VideoCrop` as normalized "x,y,w,h". The file itself is never re-encoded, so a
+    /// streamed video can be cropped without downloading it. Nil = show the full frame.
+    /// Optional so the on-disk `[Submission]` cache still decodes without it.
+    var videoCrop: String?
+
     // Event-specific fields
     var eventStartDate: Date?
     var eventEndDate: Date?
@@ -255,6 +469,9 @@ struct Submission: Identifiable, Equatable, Codable {
     var eventExpectations: String?
     /// Recruitment Schedule: link to the application.
     var eventApplicationURL: String?
+    /// "Other" links, available on every category (alongside `eventTicketsURL`).
+    var eventRSVPURL: String?
+    var eventWebsiteURL: String?
     /// Freeform lineup for the category — Artists (Concert), Actors (Actor Showcase),
     /// or Films (Film Festival). The label is chosen by the category at display time.
     var eventLineup: String?
@@ -273,8 +490,9 @@ struct Submission: Identifiable, Equatable, Codable {
     var expectedReleaseDate: String = ""
     var castNeeded: [String] = []
     var crewNeeded: [String] = []
-    /// Which kind of project post this is: "Cast & Crew Call", "Script", or
-    /// "In-Development". Empty for legacy projects (treated as Cast & Crew Call).
+    /// Which kind of project post this is: "Cast & Crew Call", "Script",
+    /// "In-Development", or "In-Post-Production". Empty for legacy projects (treated as
+    /// Cast & Crew Call).
     var projectType: String = ""
     /// Page count of an attached script PDF (Script projects). 0 when not applicable.
     var scriptPageCount: Int = 0
@@ -287,6 +505,12 @@ struct Submission: Identifiable, Equatable, Codable {
     /// `init(from:)`, which throws on a missing key for a non-optional property, and
     /// that would drop the whole cached feed on the first launch after this update.
     var projectSlideFileNames: [String]?
+    /// Project posts: where to sign up for an audition (Cast & Crew Calls). Nil when unset.
+    var projectAuditionURL: String?
+    /// Project posts: who to reach out to, one free-form line each (e.g. "Jamie Martinez —
+    /// jamie@utexas.edu"). Emails, phone numbers and links in a line become tappable on
+    /// the detail view. Optional for the same cache-decoding reason as above.
+    var projectContacts: [String]?
 
     // Film-specific fields
     var studio: String = ""
@@ -610,6 +834,12 @@ struct Submission: Identifiable, Equatable, Codable {
         if let eventApplicationURL = eventApplicationURL {
             record["eventApplicationURL"] = eventApplicationURL as CKRecordValue
         }
+        if let eventRSVPURL = eventRSVPURL {
+            record["eventRSVPURL"] = eventRSVPURL as CKRecordValue
+        }
+        if let eventWebsiteURL = eventWebsiteURL {
+            record["eventWebsiteURL"] = eventWebsiteURL as CKRecordValue
+        }
         if let eventLineup = eventLineup {
             record["eventLineup"] = eventLineup as CKRecordValue
         }
@@ -664,7 +894,8 @@ struct Submission: Identifiable, Equatable, Codable {
         submission.submittedBy = (record["submittedBy"] as? String) ?? "Anonymous"
         submission.createdDate = (record["createdDate"] as? Date) ?? Date()
         submission.lastEditedDate = record["lastEditedDate"] as? Date
-        
+        submission.schoolID = record["schoolID"] as? String
+
         // Type-specific fields
         submission.logline = (record["logline"] as? String) ?? ""
         submission.ageRating = (record["ageRating"] as? String) ?? ""
@@ -706,6 +937,8 @@ struct Submission: Identifiable, Equatable, Codable {
         submission.eventTicketsURL = record["eventTicketsURL"] as? String
         submission.eventExpectations = record["eventExpectations"] as? String
         submission.eventApplicationURL = record["eventApplicationURL"] as? String
+        submission.eventRSVPURL = record["eventRSVPURL"] as? String
+        submission.eventWebsiteURL = record["eventWebsiteURL"] as? String
         submission.eventLineup = record["eventLineup"] as? String
         if let showtimes = record["eventShowtimes"] as? [String] {
             let showings = EventShowing.showings(fromWireEntries: showtimes)
@@ -1084,12 +1317,25 @@ class SubmissionStore_3_2: ObservableObject {
     /// that created them.
     private var sessionUploadIDs: Set<UUID> = []
 
+    /// IDs whose CloudKit save is running right now. A large video can take minutes to
+    /// upload, and the record doesn't exist server-side until it finishes — so without
+    /// this, a sync in the meantime sees "pending + absent" and starts a second,
+    /// duplicate upload of the same post.
+    private var inFlightUploadIDs: Set<UUID> = []
+
     /// Approved posts that are safe to show in the browse feeds: everything whose
     /// CloudKit upload has confirmed. A post is withheld while it's still uploading
     /// (its ID is in `pendingUploadIDs`) so a half-uploaded post never appears on the
     /// main pages — the Home upload banner surfaces its progress in the meantime.
+    /// Also scoped to the schools this user sees (`SchoolScope.isVisible`).
     var visibleApprovedSubmissions: [Submission] {
-        approvedSubmissions.filter { !pendingUploadIDs.contains($0.id) }
+        // Read the school scope once, not per post — it's several UserDefaults reads,
+        // and views call this property many times per render.
+        let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
+        return approvedSubmissions.filter {
+            !pendingUploadIDs.contains($0.id)
+                && SchoolScope.isVisible(schoolID: $0.schoolID, in: visibleSchoolIDs)
+        }
     }
 
     /// Collapses duplicate IDs to their first occurrence, preserving order. A stray
@@ -1141,7 +1387,9 @@ class SubmissionStore_3_2: ObservableObject {
     private init() {
         // Determine if this is a beta build
         let isBeta = UserDefaults.standard.bool(forKey: Self.betaModeKey)
-        self.keyPrefix = isBeta ? "beta_" : ""
+        // The CloudKit environment prefix keeps development and production caches apart,
+        // so a Debug build never shows posts cached by a release build (or vice versa).
+        self.keyPrefix = CloudKitEnvironmentDetector.localCachePrefix + (isBeta ? "beta_" : "")
         
         // Load data asynchronously for better performance
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -2298,6 +2546,11 @@ class SubmissionStore_3_2: ObservableObject {
     ///   - unknown → couldn't reach CloudKit; leave it alone and let the next sync decide.
     @MainActor
     private func reconcileMissingLocalSubmission(_ submission: Submission) async {
+        // Still uploading — absent only because the save hasn't finished yet.
+        guard !inFlightUploadIDs.contains(submission.id) else {
+            print("⏳ '\(submission.title)' is still uploading — skipping reconcile")
+            return
+        }
         switch await cloudKitAdapter.recordExists(id: submission.id) {
         case .some(true):
             print("🔎 '\(submission.title)' already exists in CloudKit — marking synced, skipping re-upload")
@@ -2316,15 +2569,10 @@ class SubmissionStore_3_2: ObservableObject {
             if sessionUploadIDs.contains(submission.id) || pendingUploadIDs.contains(submission.id) {
                 print("⚠️  Pending-upload submission confirmed absent, uploading: \(submission.title)")
                 await saveSubmissionToCloudKit(submission)
-            } else if Self.isDevelopmentCloudKitEnvironment {
-                // A development build talks to a different (near-empty) CloudKit
-                // database than the production one the cached feed was downloaded from,
-                // so "no such record" here is not evidence that anything was deleted.
-                // Without this guard a single debug run wipes the local cache of every
-                // production post — which is what made posts (and an event) vanish from
-                // the feed for good.
-                print("🧪 '\(submission.title)' isn't in the CloudKit development database — keeping it locally (a dev build says nothing about production posts)")
             } else {
+                // Safe in development builds too: local caches are namespaced per
+                // CloudKit environment (`CloudKitEnvironmentDetector.localCachePrefix`),
+                // so a dev build only ever holds dev posts and can't wipe production ones.
                 print("🗑️  '\(submission.title)' is absent from CloudKit (deleted server-side or a stale local copy) — removing locally; CloudKit is the master copy")
                 removeSubmissionLocally(submission.id)
             }
@@ -2333,20 +2581,6 @@ class SubmissionStore_3_2: ObservableObject {
         }
     }
 
-    /// Whether this build talks to CloudKit's *development* environment.
-    ///
-    /// The container environment follows the code signature: Xcode debug runs get the
-    /// development database, TestFlight/App Store builds get production. The two are
-    /// separate databases, so a record that exists in one is genuinely "unknown" in the
-    /// other — which makes a development build's answers useless (and dangerous) as
-    /// proof that a production post was deleted.
-    private static var isDevelopmentCloudKitEnvironment: Bool {
-        #if DEBUG
-        true
-        #else
-        false
-        #endif
-    }
 
     /// Removes a submission from every local store and clears its tracking state.
     /// Used when reconciliation determines a post was deleted server-side.
@@ -2423,6 +2657,9 @@ class SubmissionStore_3_2: ObservableObject {
             )
             return
         }
+
+        inFlightUploadIDs.insert(submission.id)
+        defer { inFlightUploadIDs.remove(submission.id) }
 
         print("✅ CloudKit is available, proceeding with save...")
         print("🚀 Calling cloudKitAdapter.saveSubmission()...")
@@ -2596,6 +2833,14 @@ class SubmissionStore_3_2: ObservableObject {
     func handleCloudKitNotification() async {
         print("🔔 CloudKit notification received - syncing...")
         await syncWithCloudKit()
+        // A feed push is the moment a connection's new post lands; tell the user.
+        ConnectionsManager.shared.noticeNewPosts(
+            approvedSubmissions,
+            directory: UserProfileManager.shared.allUsers
+        )
+        // A project push may be a new casting or crew call: tell the people whose
+        // tags match its open roles (visible list, so school scope already applies).
+        await RoleCallNotifier.noticeOpenRoles(in: visibleApprovedSubmissions)
     }
 }
 

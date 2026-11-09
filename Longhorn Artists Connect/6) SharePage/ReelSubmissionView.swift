@@ -13,7 +13,6 @@ struct ReelSubmissionView: View {
     @Binding var title: String
     /// The reel's headline artist/creator, shown under the title (mirrors music's Artist).
     @Binding var artist: String
-    @Binding var reelType: String
     @Binding var reelDescription: String
     /// The reel's release year, shown as a picker in the Details section.
     @Binding var releaseYear: String
@@ -35,6 +34,12 @@ struct ReelSubmissionView: View {
     /// Hand-typed "Featured Work" entries (project + director), each a JSON-encoded
     /// `ManualFeaturedWork`.
     @Binding var featuredWorkManual: [String]
+    /// Photos of the performance (any number, images only).
+    @Binding var stillImages: [UIImage]
+    /// Cast credits (role + performer), edited in the same Cast form films use.
+    @Binding var castInfo: CastInfo
+    /// Crew credits (role + name), edited in the same Crew form films use.
+    @Binding var crewInfo: CrewInfo
 
     /// Live CloudKit upload state, set once the post is submitted.
     var uploadPhase: MediaUploadPhase? = nil
@@ -49,6 +54,14 @@ struct ReelSubmissionView: View {
     /// search — a reel shouldn't feature itself.
     var selfID: UUID? = nil
 
+    /// Edit screen only: a URL for the already-posted reel video (its streaming link)
+    /// when it isn't on disk, so its first frame can be read for cropping.
+    var loadExistingVideo: (() async -> URL?)? = nil
+
+    /// The reel video's playback crop (`VideoCrop` string). Applied by the player, so
+    /// cropping never re-encodes or downloads the video.
+    var videoCrop: Binding<String?> = .constant(nil)
+
     /// Live progress of pulling the picked video out of Photos/Files (incl. iCloud
     /// download). Drives the determinate "Downloading from iCloud…" ring.
     @ObservedObject private var downloadCenter = MediaDownloadCenter.shared
@@ -56,6 +69,8 @@ struct ReelSubmissionView: View {
     @State private var thumbnailPhotoItem: PhotosPickerItem?
     @State private var showThumbnailDocumentPicker = false
     @State private var showFeaturedWorkPicker = false
+    @State private var showCastForm = false
+    @State private var showCrewForm = false
     /// Reveals the "Select headshots" / "Select resume" rows under the thumbnail row.
     @State private var showMoreOptions = false
     // Headshots: one or more images, chosen from Photos or Files.
@@ -69,81 +84,92 @@ struct ReelSubmissionView: View {
     @State private var showResumePhotoPicker = false
     @State private var resumePhotoItem: PhotosPickerItem?
     @State private var showResumeDocumentPicker = false
-    /// Draft fields for the "add a project by hand" row in Featured Work, revealed only
-    /// after tapping "Add Project".
-    @State private var showManualEntry = false
-    @State private var newManualTitle = ""
-    @State private var newManualDirector = ""
+    // Stills (showcase categories only): any number of images, from Photos or Files.
+    @State private var stillPhotoItems: [PhotosPickerItem] = []
+    @State private var showStillPhotoPicker = false
+    @State private var showStillDocumentPicker = false
+    /// The open crop editor, if any (video, thumbnail, or resume image).
+    @State private var cropRequest: MediaCropRequest?
+    /// Set when the user trashes the existing video while editing, so the row reads as
+    /// empty even though an already-posted video may not be on disk to hold a URL for.
+    @State private var existingVideoRemoved = false
     @ObservedObject private var store: SubmissionStore_3_2 = .shared
     
-    /// Performance categories. The form's fields are the same for every one; the
-    /// category simply labels the post.
-    private let reelCategories = ["Acting Reel", "Dancing Reel", "Actor Showcase", "Dance Showcase"]
-
-    /// Category selector — its own section; the rest of the form stays hidden until chosen.
-    private var categoryMenu: some View {
-        Menu {
-            ForEach(reelCategories, id: \.self) { category in
-                Button {
-                    reelType = category
-                } label: {
-                    HStack {
-                        Text(category)
-                        if reelType == category { Image(systemName: "checkmark") }
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Text("Category")
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(reelType.isEmpty ? "Select Category" : reelType)
-                    .foregroundStyle(Color.brandOrange)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
-            }
-        }
-        .buttonStyle(.plain)
-    }
+    /// The reel categories the form used to offer. The form no longer asks for one, but
+    /// older posts still carry these, so `SecurityManager` keeps accepting them.
+    static let reelCategories = ["Acting Reel", "Dancing Reel", "Actor Showcase", "Dance Showcase"]
 
     var body: some View {
         List {
-            // Category first, and on its own until it's chosen: the rest of the form
-            // stays hidden until then.
-            Section("Category") { categoryMenu }
+            Section("Upload") {
+                reelUploadSection
+            }
 
-            if !reelType.isEmpty {
-                Section("Upload") {
-                    reelUploadSection
+            Section("Details") {
+                TextField("Title", text: $title, axis: .vertical)
+                // Performer can be credited to a registered user: suggests matching
+                // profiles as you type and autofills their exact name on tap.
+                CreditNameField(placeholder: "Performer", text: $artist)
+
+                TextField("Description", text: $reelDescription, axis: .vertical)
+                    .lineLimit(4, reservesSpace: true)
+
+                ReleaseYearPicker(releaseYear: $releaseYear)
+
+                // Cast and crew credits, each opening the same full form films use.
+                Button {
+                    showCastForm = true
+                } label: {
+                    HStack {
+                        Text("Cast")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(castInfo.summary.isEmpty ? "Add" : "Edited")
+                            .foregroundStyle(Color.brandOrange)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(Color.brandOrange)
+                    }
                 }
+                .buttonStyle(.plain)
 
-                Section("Details") {
-                    TextField("Title", text: $title, axis: .vertical)
-                    // Artist can be credited to a registered user: suggests matching
-                    // profiles as you type and autofills their exact name on tap.
-                    CreditNameField(placeholder: "Artist", text: $artist)
-
-                    TextField("Description", text: $reelDescription, axis: .vertical)
-                        .lineLimit(4, reservesSpace: true)
-
-                    ReleaseYearPicker(releaseYear: $releaseYear)
+                Button {
+                    showCrewForm = true
+                } label: {
+                    HStack {
+                        Text("Crew")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text(crewInfo.summary.isEmpty ? "Add" : "Edited")
+                            .foregroundStyle(Color.brandOrange)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(Color.brandOrange)
+                    }
                 }
+                .buttonStyle(.plain)
+            }
 
-                Section {
-                    featuredWorkSection
-                } header: {
-                    Text("Other")
-                }
+            Section {
+                featuredWorkSection
+            } header: {
+                Text("Other")
             }
         }
         .scrollContentBackground(.hidden)
         .background(Color(.systemGray6))
         // Pushed (slides in from the side with a back arrow) rather than presented as a
-        // bottom sheet.
+        // bottom sheet. Destinations live on the List itself, not on rows inside it:
+        // rows in a lazy container may not exist yet, so destinations declared there
+        // can be missed by the navigation stack.
         .navigationDestination(isPresented: $showFeaturedWorkPicker) {
             FeaturedWorkPickerView(selectedIDs: $featuredWorkIDs, excludedID: selfID)
+        }
+        .navigationDestination(isPresented: $showCastForm) {
+            CastFormView(cast: $castInfo)
+        }
+        .navigationDestination(isPresented: $showCrewForm) {
+            CrewFormView(crew: $crewInfo)
         }
         .photosPicker(isPresented: $showThumbnailPhotoPicker, selection: $thumbnailPhotoItem, matching: .images)
         .onChange(of: thumbnailPhotoItem) { _, newItem in
@@ -178,6 +204,23 @@ struct ReelSubmissionView: View {
                 showResumeDocumentPicker = false
             }
         }
+        // Stills (multiple images, no videos). `maxSelectionCount: 0` = unlimited.
+        .photosPicker(isPresented: $showStillPhotoPicker, selection: $stillPhotoItems,
+                      maxSelectionCount: 0, matching: .images)
+        .onChange(of: stillPhotoItems) { _, newItems in
+            loadStills(from: newItems)
+            stillPhotoItems = []
+        }
+        .sheet(isPresented: $showStillDocumentPicker) {
+            MultiImageDocumentPicker { images in
+                stillImages.append(contentsOf: images)
+            } onCancel: {
+                showStillDocumentPicker = false
+            }
+        }
+        .mediaCropper($cropRequest)
+        // A crop belongs to the video it was framed on; a newly picked video starts uncropped.
+        .onChange(of: selectedReelVideoURL) { _, _ in videoCrop.wrappedValue = nil }
     }
     
     @ViewBuilder
@@ -189,6 +232,13 @@ struct ReelSubmissionView: View {
             // thumbnail field stays visible (and usable) while the video downloads.
             videoField
             thumbnailSelectionRow
+            MultiImageUploadRow(
+                title: "Select photos",
+                placeholderSystemName: "photo.on.rectangle.angled.fill",
+                images: $stillImages,
+                showPhotoPicker: $showStillPhotoPicker,
+                showFilePicker: $showStillDocumentPicker
+            )
             moreOptionsSection
         }
     }
@@ -257,16 +307,6 @@ struct ReelSubmissionView: View {
     /// Hand-typed featured-work entries, decoded from their stored JSON strings.
     private var manualFeaturedWorks: [ManualFeaturedWork] {
         featuredWorkManual.compactMap(ManualFeaturedWork.init(encoded:))
-    }
-
-    /// Appends the drafted project/director as a manual featured-work entry.
-    private func addManualFeaturedWork() {
-        let projectTitle = newManualTitle.trimmingCharacters(in: .whitespaces)
-        guard !projectTitle.isEmpty else { return }
-        let director = newManualDirector.trimmingCharacters(in: .whitespaces)
-        featuredWorkManual.append(ManualFeaturedWork(title: projectTitle, director: director).encoded)
-        newManualTitle = ""
-        newManualDirector = ""
     }
 
     @ViewBuilder
@@ -338,44 +378,6 @@ struct ReelSubmissionView: View {
             }
         }
 
-        // Add a hand-typed project. The name/director fields appear only after tapping
-        // "Add Project" (they aren't a permanent field under the section).
-        if showManualEntry {
-            TextField("Project name", text: $newManualTitle, axis: .vertical)
-            CreditNameField(placeholder: "Director", text: $newManualDirector)
-            HStack {
-                Button("Cancel") {
-                    newManualTitle = ""
-                    newManualDirector = ""
-                    showManualEntry = false
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-
-                Spacer()
-
-                Button("Add") {
-                    addManualFeaturedWork()
-                    showManualEntry = false
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(newManualTitle.trimmingCharacters(in: .whitespaces).isEmpty ? Color.secondary : Color.brandOrange)
-                .disabled(newManualTitle.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        } else {
-            Button {
-                showManualEntry = true
-            } label: {
-                HStack {
-                    Text("Add Project")
-                        .foregroundStyle(Color.primary)
-                    Spacer()
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundStyle(Color.brandOrange)
-                }
-            }
-            .buttonStyle(.plain)
-        }
     }
 
     /// SF Symbol used to represent a post type in the small thumbnail placeholder.
@@ -393,43 +395,74 @@ struct ReelSubmissionView: View {
 
     // MARK: - Upload Rows
 
-    /// "Select video" row: film-strip icon, label, and Photos/Files pickers.
+    /// Whether the video row holds a video: a picked one, or (while editing) the
+    /// already-posted one unless the user trashed it.
+    private var hasVideo: Bool {
+        selectedReelVideoURL != nil || (isEditing && !existingVideoRemoved)
+    }
+
+    /// "Select video" row: film-strip icon, label, and Photos/Files pickers — swapped
+    /// for Crop + Trash once a video is picked.
     private var videoSelectionRow: some View {
         HStack {
             // Show the video's first frame (the auto-generated thumbnail) once a video
             // is picked, scaled to fit so it stays within the row; film icon otherwise.
-            UploadRowThumbnail(image: (selectedReelVideoURL == nil && !isEditing) ? nil : reelVideoFirstFrame,
+            UploadRowThumbnail(image: hasVideo ? croppedFirstFrame : nil,
                                placeholderSystemName: "film")
-            Text((selectedReelVideoURL == nil && !isEditing) ? "Select video" : "Video selected")
+            Text(hasVideo ? "Video selected" : "Select video")
                 .foregroundStyle(.primary)
-            if selectedReelVideoURL != nil || isEditing {
+            if hasVideo {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            if true { // media pickers available when creating and editing
-                HStack(spacing: 12) {
-                    Button {
-                        showReelVideoPicker = true
-                    } label: {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
+            UploadPickerButtons(
+                hasSelection: hasVideo,
+                onPhotos: { showReelVideoPicker = true },
+                onFiles: { showReelDocumentPicker = true },
+                onCrop: {
+                    // Frame the crop on the video's first frame; the player applies it.
+                    let url = selectedReelVideoURL
+                    let loadExisting = loadExistingVideo
+                    // Only a picked video's row frame is its real first frame; while editing
+                    // it's the post's poster, so let the editor pull the frame itself.
+                    cropRequest = .playbackCrop(
+                        preview: url == nil ? nil : reelVideoFirstFrame,
+                        load: {
+                            if let url { return url }
+                            return await loadExisting?()
+                        },
+                        current: VideoCrop(videoCrop.wrappedValue)
+                    ) { crop in
+                        videoCrop.wrappedValue = crop?.encoded
+                        // A new post's auto poster is the first frame — keep it matching
+                        // what the player will show.
+                        if !isEditing, !reelVideoThumbnailIsCustom, let frame = reelVideoFirstFrame {
+                            reelVideoThumbnail = crop.map { ImageCropper.crop(frame, to: $0.rect) } ?? frame
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showReelDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
+                },
+                onRemove: {
+                    selectedReelVideoURL = nil
+                    reelVideoFirstFrame = nil
+                    videoCrop.wrappedValue = nil
+                    existingVideoRemoved = true
+                    // Drop the auto-generated poster with its video; a custom one (or a
+                    // posted one, while editing) stays.
+                    if !reelVideoThumbnailIsCustom && !isEditing { reelVideoThumbnail = nil }
                 }
-            }
+            )
         }
+    }
+
+    /// The video row's preview frame with the playback crop applied, so the row shows
+    /// what the player will.
+    private var croppedFirstFrame: UIImage? {
+        guard let frame = reelVideoFirstFrame else { return nil }
+        // While editing, the row frame is the post's poster, not the video's frame.
+        guard let crop = VideoCrop(videoCrop.wrappedValue), !isEditing else { return frame }
+        return ImageCropper.crop(frame, to: crop.rect)
     }
 
     /// "Select thumbnail" row: thumbnail icon (or chosen image preview), label,
@@ -449,27 +482,24 @@ struct ReelSubmissionView: View {
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            if true { // media pickers available when creating and editing
-                HStack(spacing: 12) {
-                    Button {
-                        showThumbnailPhotoPicker = true
-                    } label: {
-                        Label("Photos", systemImage: "photo.stack")
-                            .labelStyle(.iconOnly)
+            UploadPickerButtons(
+                hasSelection: reelVideoThumbnail != nil,
+                onPhotos: { showThumbnailPhotoPicker = true },
+                onFiles: { showThumbnailDocumentPicker = true },
+                onCrop: reelVideoThumbnail.map { image in
+                    {
+                        cropRequest = .image(image) { cropped in
+                            reelVideoThumbnail = cropped
+                            reelVideoThumbnailIsCustom = true
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
-
-                    Button {
-                        showThumbnailDocumentPicker = true
-                    } label: {
-                        Label("Files", systemImage: "folder")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.primary)
+                },
+                onRemove: {
+                    reelVideoThumbnail = nil
+                    reelVideoThumbnailIsCustom = false
+                    thumbnailPhotoItem = nil
                 }
-            }
+            )
         }
         }
     }
@@ -523,25 +553,25 @@ struct ReelSubmissionView: View {
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            HStack(spacing: 12) {
-                Button {
-                    showResumePhotoPicker = true
-                } label: {
-                    Label("Photos", systemImage: "photo.stack")
-                        .labelStyle(.iconOnly)
+            UploadPickerButtons(
+                hasSelection: hasResume,
+                onPhotos: { showResumePhotoPicker = true },
+                onFiles: { showResumeDocumentPicker = true },
+                // Only an image resume can be cropped (not a PDF).
+                onCrop: resumeImage.map { image in
+                    {
+                        cropRequest = .image(image) { cropped in
+                            resumeImage = cropped
+                            resumeFileURL = nil
+                        }
+                    }
+                },
+                onRemove: {
+                    resumeImage = nil
+                    resumeFileURL = nil
+                    resumePhotoItem = nil
                 }
-                .buttonStyle(.bordered)
-                .tint(.primary)
-
-                Button {
-                    showResumeDocumentPicker = true
-                } label: {
-                    Label("Files", systemImage: "folder")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.bordered)
-                .tint(.primary)
-            }
+            )
         }
     }
 
@@ -647,6 +677,26 @@ struct ReelSubmissionView: View {
             resumeImage = nil
         }
         showResumeDocumentPicker = false
+    }
+
+    // MARK: - Stills Loading
+
+    /// Append chosen photos (from the Photos picker) to the stills, in pick order.
+    private func loadStills(from items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        MediaDownloadCenter.shared.beginImageLoad()
+        Task {
+            var loaded: [UIImage] = []
+            for item in items {
+                if let image = (try? await item.loadTransferable(type: Data.self)).flatMap(UIImage.init) {
+                    loaded.append(image)
+                }
+            }
+            await MainActor.run {
+                stillImages.append(contentsOf: loaded)
+                MediaDownloadCenter.shared.finishImageLoad()
+            }
+        }
     }
 }
 
@@ -760,11 +810,20 @@ struct ReelEditView: View {
     @State private var showReelDocumentPicker = false
     /// True once the user picks a new reel video, so `save()` copies/re-uploads it.
     @State private var videoWasReplaced = false
+    /// The showcase's stills, seeded from any local copies and topped up from CloudKit
+    /// on appear (the feed doesn't download them).
+    @State private var stillImages: [UIImage]
+    /// Cast and crew, rebuilt from the post's stored credits for the shared forms.
+    @State private var castInfo: CastInfo
+    @State private var crewInfo: CrewInfo
 
     init(submission: Submission, onSave: @escaping (Submission) -> Void) {
         self.submission = submission
         self.onSave = onSave
         _edited = State(initialValue: submission)
+        _stillImages = State(initialValue: submission.stillImageURLs.compactMap { UIImage(contentsOfFile: $0.path) })
+        _castInfo = State(initialValue: CastInfo(orderedEntries: submission.orderedCast))
+        _crewInfo = State(initialValue: CrewInfo(orderedEntries: submission.orderedCrew))
         _reelVideoThumbnail = State(initialValue: submission.thumbnailData.flatMap(UIImage.init))
         // Editing has only the stored poster to show, so the video row falls back to it.
         _reelVideoFirstFrame = State(initialValue: submission.thumbnailData.flatMap(UIImage.init))
@@ -776,7 +835,6 @@ struct ReelEditView: View {
             ReelSubmissionView(
                 title: $edited.title,
                 artist: $edited.artist,
-                reelType: $edited.reelType,
                 reelDescription: $edited.reelDescription,
                 releaseYear: $edited.releaseYear,
                 selectedReelVideoURL: $selectedReelVideoURL,
@@ -790,11 +848,26 @@ struct ReelEditView: View {
                 showReelThumbnailPicker: .constant(false),
                 featuredWorkIDs: $edited.featuredWorkIDs,
                 featuredWorkManual: $edited.featuredWorkManual,
+                stillImages: $stillImages,
+                castInfo: $castInfo,
+                crewInfo: $crewInfo,
                 isEditing: true,
-                selfID: submission.id
+                selfID: submission.id,
+                loadExistingVideo: { [submissionID = submission.id] in
+                    // The streaming link gives the first frame without a download.
+                    await CloudKitManager.shared.streamingURL(submissionID: submissionID, type: .reel)
+                },
+                videoCrop: $edited.videoCrop
             )
             .navigationTitle("Edit Reel")
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                // Pull the posted stills so they can be kept, removed, or added to.
+                guard stillImages.isEmpty else { return }
+                let urls = await CloudKitManager.shared.downloadReelStills(submissionID: submission.id)
+                let images = urls.compactMap { UIImage(contentsOfFile: $0.path) }
+                if stillImages.isEmpty { stillImages = images }
+            }
             .sheet(isPresented: $showReelVideoPicker) {
                 VideoPickerWithiCloudSupport { result in handleVideoPick(result) }
             }
@@ -853,6 +926,13 @@ struct ReelEditView: View {
             edited.thumbnailData = thumbnail.jpegData(compressionQuality: 0.7)
         }
 
+        // Re-write the current stills set (covers additions, removals, and reordering).
+        edited.stillImageFileNames = persistFilmExtraImages(stillImages, submissionID: edited.id, kind: "still")
+
+        // Flatten the edited cast and crew back into the stored credit lists.
+        edited.orderedCast = castInfo.toOrderedEntries()
+        edited.orderedCrew = crewInfo.toOrderedEntries()
+
         onSave(edited)
         dismiss()
     }
@@ -861,7 +941,6 @@ struct ReelEditView: View {
 #Preview {
     @Previewable @State var title = ""
     @Previewable @State var artist = ""
-    @Previewable @State var reelType = ""
     @Previewable @State var reelDescription = ""
     @Previewable @State var releaseYear = ""
     @Previewable @State var selectedReelVideoURL: URL? = nil
@@ -878,7 +957,6 @@ struct ReelEditView: View {
         ReelSubmissionView(
             title: $title,
             artist: $artist,
-            reelType: $reelType,
             reelDescription: $reelDescription,
             releaseYear: $releaseYear,
             selectedReelVideoURL: $selectedReelVideoURL,
@@ -891,7 +969,10 @@ struct ReelEditView: View {
             showReelDocumentPicker: $showReelDocumentPicker,
             showReelThumbnailPicker: $showReelThumbnailPicker,
             featuredWorkIDs: .constant([]),
-            featuredWorkManual: .constant([])
+            featuredWorkManual: .constant([]),
+            stillImages: .constant([]),
+            castInfo: .constant(CastInfo()),
+            crewInfo: .constant(CrewInfo())
         )
         .navigationTitle("Reel")
         .navigationBarTitleDisplayMode(.inline)

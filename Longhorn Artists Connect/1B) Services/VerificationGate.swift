@@ -27,8 +27,12 @@ struct VerificationGate<Content: View>: View {
 
     var body: some View {
         Group {
-            if bypass || !StudentVerificationManager.isConfigured || verification.status.isVerified {
-                // No service configured in this build — don't wall anything off.
+            if bypass
+                || !StudentVerificationManager.isRequired
+                || !StudentVerificationManager.isConfigured
+                || verification.status.isVerified {
+                // Development build, or no service configured in this build —
+                // don't wall anything off.
                 content()
             } else {
                 switch verification.status {

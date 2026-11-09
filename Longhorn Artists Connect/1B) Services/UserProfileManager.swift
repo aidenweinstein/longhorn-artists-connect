@@ -44,6 +44,13 @@ struct DirectoryUser: Identifiable, Hashable, Codable {
     var industry: String = ""
     var company: String = ""
     var companyRole: String = ""
+    /// Artist / Enthusiast (`AccountKind` raw value). Empty for accounts that
+    /// predate the choice. May still read "Agent" for accounts that haven't
+    /// launched the app since Agent mode was removed (2026-10-16).
+    var accountKind: String = ""
+    /// Left over from the removed Agent flow, which uploaded agents' emails. New
+    /// saves clear the field, so this is empty for everyone once they relaunch.
+    var email: String = ""
 
     var fullName: String {
         "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
@@ -103,12 +110,12 @@ class UserProfileManager: ObservableObject {
     // thumbnail per user) is written to a file — NOT UserDefaults — because it easily
     // exceeds the 4 MB NSUserDefaults limit and would otherwise be silently dropped.
     private let cacheKey = "cachedDirectoryUsers"        // legacy UserDefaults key (migrated off)
-    private let cacheTimestampKey = "lastUserFetchTimestamp"
+    private let cacheTimestampKey = "\(CloudKitEnvironmentDetector.localCachePrefix)lastUserFetchTimestamp"
 
     /// On-disk location of the directory cache (Caches dir; safe to be evicted).
     private var cacheFileURL: URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("cachedDirectoryUsers.json")
+            .appendingPathComponent("\(CloudKitEnvironmentDetector.localCachePrefix)cachedDirectoryUsers.json")
     }
 
     /// The lightweight fields fetched first so the directory list appears immediately.
@@ -116,7 +123,8 @@ class UserProfileManager: ObservableObject {
     private static let metadataKeys: [CKRecord.FieldKey] = [
         "firstName", "lastName", "major", "graduationYear", "userTypes", "bio",
         "instagramHandle", "isUTStudent", "portfolioOrder", "school",
-        "isIndustryProfessional", "industry", "company", "companyRole"
+        "isIndustryProfessional", "industry", "company", "companyRole", "accountKind",
+        "userEmail"
     ]
     
     private init() {
@@ -525,7 +533,9 @@ class UserProfileManager: ObservableObject {
             isIndustryProfessional: isIndustryProfessional,
             industry: industry,
             company: company,
-            companyRole: companyRole
+            companyRole: companyRole,
+            accountKind: record["accountKind"] as? String ?? "",
+            email: record["userEmail"] as? String ?? ""
         )
     }
 

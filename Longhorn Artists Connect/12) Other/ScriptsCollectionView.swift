@@ -9,8 +9,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import QuickLook
 import Combine
-import Combine
-import Combine
+import CloudKit
 
 // MARK: - Script Model
 
@@ -23,10 +22,16 @@ struct Script: Identifiable, Codable, Equatable {
     var pageCount: Int
     var projectStatus: String
     var shootDates: String
+    /// The script file's extension ("pdf", "txt", …), so the downloaded copy opens
+    /// in QuickLook.
+    var fileExtension: String
+    /// The downloaded copy on disk, or nil until `ScriptManager` fetches it.
     var fileURL: URL?
     var uploadDate: Date
     var submittedBy: String
-    
+    /// The submitter's CloudKit user record name.
+    var submittedByUserID: String
+
     init(
         id: UUID = UUID(),
         title: String,
@@ -36,9 +41,11 @@ struct Script: Identifiable, Codable, Equatable {
         pageCount: Int = 0,
         projectStatus: String = "",
         shootDates: String = "",
+        fileExtension: String = "pdf",
         fileURL: URL? = nil,
         uploadDate: Date = Date(),
-        submittedBy: String = ""
+        submittedBy: String = "",
+        submittedByUserID: String = ""
     ) {
         self.id = id
         self.title = title
@@ -48,9 +55,11 @@ struct Script: Identifiable, Codable, Equatable {
         self.pageCount = pageCount
         self.projectStatus = projectStatus
         self.shootDates = shootDates
+        self.fileExtension = fileExtension
         self.fileURL = fileURL
         self.uploadDate = uploadDate
         self.submittedBy = submittedBy
+        self.submittedByUserID = submittedByUserID
     }
 }
 
@@ -58,6 +67,8 @@ struct Script: Identifiable, Codable, Equatable {
 
 struct ScriptsCollectionView: View {
     @Environment(\.dismiss) private var dismiss
+    /// False when shown as a tab, where there's nothing to dismiss.
+    var showsCloseButton = true
     @StateObject private var scriptManager = ScriptManager.shared
     @State private var searchText = ""
     @State private var selectedGenreFilter: String = "All"
@@ -65,9 +76,11 @@ struct ScriptsCollectionView: View {
     @State private var selectedScript: Script?
     @State private var showScriptDetail = false
     @State private var scriptToPreview: URL?
-    
-    private let genreOptions = ["All", "Action", "Comedy", "Drama", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "Western", "Documentary"]
-    private let statusOptions = ["All", "Casting & Crewing", "Casting", "Crewing", "In Production", "In Post-Production", "Releasing"]
+    /// Adds a script to the collection (presents `ScriptSubmissionView`).
+    @State private var showAddScript = false
+
+    private let genreOptions = ["All"] + projectScriptGenres
+    private let statusOptions = ["All"] + scriptStatusOptions
     
     var filteredScripts: [Script] {
         var scripts = scriptManager.scripts
@@ -220,7 +233,7 @@ struct ScriptsCollectionView: View {
                             .font(.title3)
                             .fontWeight(.semibold)
                         
-                        Text(searchText.isEmpty && selectedGenreFilter == "All" && selectedStatusFilter == "All" ? "Scripts from project submissions will appear here" : "Try adjusting your filters or search terms")
+                        Text(searchText.isEmpty && selectedGenreFilter == "All" && selectedStatusFilter == "All" ? (scriptManager.loadError ?? "Scripts submitted by artists will appear here") : "Try adjusting your filters or search terms")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -239,6 +252,9 @@ struct ScriptsCollectionView: View {
                         }
                         .padding()
                     }
+                    .refreshable {
+                        await scriptManager.refresh()
+                    }
                 }
             }
             .navigationTitle("Scripts Collection")
@@ -246,10 +262,20 @@ struct ScriptsCollectionView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        dismiss()
+                        showAddScript = true
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("Add Script")
+                }
+                if showsCloseButton {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -258,9 +284,12 @@ struct ScriptsCollectionView: View {
                     ScriptDetailView(script: script)
                 }
             }
+            .sheet(isPresented: $showAddScript) {
+                ScriptSubmissionView()
+            }
         }
-        .onAppear {
-            scriptManager.loadScripts()
+        .task {
+            await scriptManager.refresh()
         }
     }
 }
@@ -640,110 +669,174 @@ struct QuickLookView: UIViewControllerRepresentable {
 
 // MARK: - Script Manager
 
-class ScriptManager: ObservableObject {
+/// The shared script database: every script added from the Script Collection,
+/// stored as `Script` records in the public CloudKit database.
+///
+/// Reading is gated on the client only — this is not a security control. The
+/// collection has had no entry point from the tab bar since Agent mode was
+/// removed on 2026-10-16.
+///
+/// ⚠️ CloudKit: the `Script` record type must be created in BOTH environments with
+/// `title`, `logline`, `projectStatus`, `shootDates`, `scriptFileExt`, `submittedBy`,
+/// `submittedByUserID` (STRING), `genres`, `authors` (STRING LIST), `pageCount`
+/// (INT64), `uploadDate` (DATE/TIME), `scriptFile` (ASSET), plus a Queryable index
+/// on `recordName` (the collection lists every record).
+@MainActor
+final class ScriptManager: ObservableObject {
     static let shared = ScriptManager()
-    
-    @Published var scripts: [Script] = []
-    @Published var isLoading = false
-    
+
+    @Published private(set) var scripts: [Script] = []
+    @Published private(set) var isLoading = false
+    /// The last fetch failure, shown in the collection's empty state.
+    @Published private(set) var loadError: String?
+
+    /// Every field except the file itself, so a refresh doesn't re-download PDFs
+    /// that are already on disk.
+    private static let metadataKeys = [
+        "title", "logline", "genres", "authors", "pageCount", "projectStatus",
+        "shootDates", "scriptFileExt", "submittedBy", "submittedByUserID", "uploadDate",
+    ]
+
+    private var database: CKDatabase { CKContainer.default().publicCloudDatabase }
+
+    /// Env-prefixed like every other CloudKit cache (see `localCachePrefix`).
+    private var cacheKey: String { CloudKitEnvironmentDetector.localCachePrefix + "scriptCollectionCache" }
+
+    /// Downloaded script files, kept so QuickLook can open them offline.
+    private var filesDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent(CloudKitEnvironmentDetector.localCachePrefix + "Scripts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     private init() {
-        loadSampleScripts()
-    }
-    
-    func loadScripts() {
-        isLoading = true
-        
-        // Load scripts from UserDefaults
-        if let data = UserDefaults.standard.data(forKey: "savedScripts"),
-           let decoded = try? JSONDecoder().decode([Script].self, from: data) {
-            scripts = decoded
-        } else {
-            // If no saved scripts, use sample data
-            loadSampleScripts()
-        }
-        
-        isLoading = false
-    }
-    
-    func addScript(_ script: Script) {
-        scripts.append(script)
-        saveScripts()
-    }
-    
-    func removeScript(_ script: Script) {
-        scripts.removeAll { $0.id == script.id }
-        saveScripts()
-    }
-    
-    private func saveScripts() {
-        if let encoded = try? JSONEncoder().encode(scripts) {
-            UserDefaults.standard.set(encoded, forKey: "savedScripts")
+        if let data = UserDefaults.standard.data(forKey: cacheKey),
+           let cached = try? JSONDecoder().decode([Script].self, from: data) {
+            scripts = cached.map { withLocalFile($0) }
         }
     }
-    
-    private func loadSampleScripts() {
-        scripts = [
-            Script(
-                title: "The Last Stand",
-                logline: "A gripping thriller about a detective's final case before retirement takes an unexpected turn into a web of corruption and betrayal.",
-                genres: ["Thriller", "Crime", "Drama"],
-                authors: ["Jane Doe", "John Smith"],
-                pageCount: 112,
-                projectStatus: "Casting & Crewing",
-                shootDates: "May 1 - May 15, 2026",
-                submittedBy: "Jane Doe"
-            ),
-            Script(
-                title: "Summer Nights",
-                logline: "A coming-of-age story set during one transformative summer in Austin, Texas. Three friends navigate love, loss, and the meaning of friendship.",
-                genres: ["Drama", "Romance"],
-                authors: ["Emma Davis"],
-                pageCount: 98,
-                projectStatus: "In Production",
-                shootDates: "June 10 - June 24, 2026",
-                submittedBy: "Emma Davis"
-            ),
-            Script(
-                title: "Echoes of Tomorrow",
-                logline: "In a dystopian future, a programmer discovers a way to communicate with the past and must prevent a catastrophic event that shaped their world.",
-                genres: ["Sci-Fi", "Thriller"],
-                authors: ["Michael Chen", "Sarah Williams"],
-                pageCount: 125,
-                projectStatus: "Casting",
-                shootDates: "August 5 - August 25, 2026",
-                submittedBy: "Michael Chen"
-            ),
-            Script(
-                title: "The Coffee Shop Chronicles",
-                logline: "A heartwarming comedy following the daily lives of baristas and regulars at a quirky Austin coffee shop where everyone knows your name and your drink order.",
-                genres: ["Comedy", "Drama"],
-                authors: ["Alex Martinez"],
-                pageCount: 87,
-                projectStatus: "Crewing",
-                shootDates: "April 20 - May 5, 2026",
-                submittedBy: "Alex Martinez"
-            ),
-            Script(
-                title: "Whispers in the Woods",
-                logline: "A group of college students on a camping trip in the Hill Country encounter something ancient and terrifying that has been waiting in the darkness.",
-                genres: ["Horror", "Mystery"],
-                authors: ["Tom Wilson", "Lisa Anderson"],
-                pageCount: 95,
-                projectStatus: "Casting & Crewing",
-                shootDates: "October 15 - October 30, 2026",
-                submittedBy: "Tom Wilson"
-            ),
-            Script(
-                title: "Beyond the Frame",
-                logline: "A documentary-style exploration of emerging filmmakers at UT Austin, capturing their creative journeys, struggles, and triumphs.",
-                genres: ["Documentary"],
-                authors: ["Chris Lee"],
-                pageCount: 62,
-                projectStatus: "In Post-Production",
-                shootDates: "Completed",
-                submittedBy: "Chris Lee"
+
+    /// Re-reads the collection from CloudKit, then downloads any script files that
+    /// aren't on disk yet. Keeps the cached list when CloudKit can't be reached.
+    func refresh() async {
+        isLoading = scripts.isEmpty
+        defer { isLoading = false }
+        do {
+            let records = try await CloudKitManager.shared.fetchRecords(
+                ofType: CloudKitRecordTypes.script,
+                matching: NSPredicate(value: true),
+                sortBy: nil
             )
-        ]
+            loadError = nil
+            scripts = records.compactMap(Self.script(from:)).map { withLocalFile($0) }
+            saveCache()
+            await downloadMissingFiles()
+        } catch {
+            print("⚠️ Couldn't load scripts: \(error.localizedDescription)")
+            loadError = "Couldn't load scripts. Make sure the \(CloudKitRecordTypes.script) record type exists in CloudKit (\(CloudKitEnvironmentDetector.current))."
+        }
+    }
+
+    /// Uploads a script to the collection. `fileURL` must be a local copy (the
+    /// `DocumentPicker` hands back one in the temp directory).
+    func submit(_ script: Script, fileURL: URL) async throws {
+        let record = CKRecord(recordType: CloudKitRecordTypes.script, recordID: Self.recordID(for: script.id))
+        record["title"] = script.title as CKRecordValue
+        record["logline"] = script.logline as CKRecordValue
+        record["genres"] = script.genres as CKRecordValue
+        record["authors"] = script.authors as CKRecordValue
+        record["pageCount"] = script.pageCount as CKRecordValue
+        record["projectStatus"] = script.projectStatus as CKRecordValue
+        record["shootDates"] = script.shootDates as CKRecordValue
+        record["submittedBy"] = script.submittedBy as CKRecordValue
+        record["submittedByUserID"] = script.submittedByUserID as CKRecordValue
+        record["uploadDate"] = script.uploadDate as CKRecordValue
+        let ext = fileURL.pathExtension.isEmpty ? "pdf" : fileURL.pathExtension.lowercased()
+        record["scriptFileExt"] = ext as CKRecordValue
+        record["scriptFile"] = CKAsset(fileURL: fileURL)
+
+        try await CloudKitManager.shared.save(record: record)
+
+        // Keep a copy so the submitter sees it in the collection immediately.
+        let local = localFileURL(for: script.id, ext: ext)
+        try? FileManager.default.removeItem(at: local)
+        try? FileManager.default.copyItem(at: fileURL, to: local)
+        var saved = script
+        saved.fileExtension = ext
+        scripts.removeAll { $0.id == script.id }
+        scripts.append(withLocalFile(saved))
+        saveCache()
+    }
+
+    // MARK: - Files
+
+    private func downloadMissingFiles() async {
+        let missing = scripts.filter { $0.fileURL == nil }
+        guard !missing.isEmpty else { return }
+        do {
+            let results = try await database.records(
+                for: missing.map { Self.recordID(for: $0.id) },
+                desiredKeys: ["scriptFile"]
+            )
+            for script in missing {
+                guard case .success(let record)? = results[Self.recordID(for: script.id)],
+                      let assetURL = (record["scriptFile"] as? CKAsset)?.fileURL else { continue }
+                // The asset lives in CloudKit's own cache, without an extension —
+                // QuickLook needs the extension to know how to render it.
+                let local = localFileURL(for: script.id, ext: script.fileExtension)
+                try? FileManager.default.removeItem(at: local)
+                try? FileManager.default.copyItem(at: assetURL, to: local)
+            }
+            scripts = scripts.map { withLocalFile($0) }
+        } catch {
+            print("⚠️ Couldn't download script files: \(error.localizedDescription)")
+        }
+    }
+
+    private func localFileURL(for id: UUID, ext: String) -> URL {
+        filesDirectory.appendingPathComponent(id.uuidString).appendingPathExtension(ext)
+    }
+
+    /// Points `fileURL` at the downloaded copy, or nil if it isn't on disk yet.
+    private func withLocalFile(_ script: Script) -> Script {
+        var script = script
+        let local = localFileURL(for: script.id, ext: script.fileExtension)
+        script.fileURL = FileManager.default.fileExists(atPath: local.path) ? local : nil
+        return script
+    }
+
+    private func saveCache() {
+        if let encoded = try? JSONEncoder().encode(scripts) {
+            UserDefaults.standard.set(encoded, forKey: cacheKey)
+        }
+    }
+
+    // MARK: - Records
+
+    private static func recordID(for id: UUID) -> CKRecord.ID {
+        CKRecord.ID(recordName: "Script_\(id.uuidString)")
+    }
+
+    private static func script(from record: CKRecord) -> Script? {
+        let name = record.recordID.recordName
+        guard name.hasPrefix("Script_"),
+              let id = UUID(uuidString: String(name.dropFirst("Script_".count))),
+              let title = record["title"] as? String else { return nil }
+        return Script(
+            id: id,
+            title: title,
+            logline: record["logline"] as? String ?? "",
+            genres: record["genres"] as? [String] ?? [],
+            authors: record["authors"] as? [String] ?? [],
+            pageCount: (record["pageCount"] as? Int64).map(Int.init) ?? 0,
+            projectStatus: record["projectStatus"] as? String ?? "",
+            shootDates: record["shootDates"] as? String ?? "",
+            fileExtension: record["scriptFileExt"] as? String ?? "pdf",
+            uploadDate: record["uploadDate"] as? Date ?? record.creationDate ?? Date(),
+            submittedBy: record["submittedBy"] as? String ?? "",
+            submittedByUserID: record["submittedByUserID"] as? String ?? ""
+        )
     }
 }
 

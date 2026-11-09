@@ -68,18 +68,56 @@ class CloudKitManager: ObservableObject {
         // stripped before the first attempt. Otherwise every post from a build that's
         // ahead of the schema burns a full asset upload on a save that's certain to be
         // rejected before the drop-and-retry below can get it through.
-        let knownBadFields = SchemaRejectionMemory.knownRejectedFields(for: record.recordType)
+        var knownBadFields = SchemaRejectionMemory.knownRejectedFields(for: record.recordType)
             .filter { record[$0] != nil }
+        knownBadFields.formUnion(await preflightSchemaGaps(of: record))
         for field in knownBadFields {
             record[field] = nil
         }
         if !knownBadFields.isEmpty {
             print("""
             ⚠️ Pre-stripping \(knownBadFields.sorted().joined(separator: ", ")) from \
-            \(record.recordType) — the deployed schema rejected them on an earlier save
+            \(record.recordType) — the deployed schema doesn't accept them (pre-flight check \
+            or an earlier rejected save)
             """)
         }
         try await saveWithRetry(record: record, attemptsRemaining: 3, droppedFields: knownBadFields)
+    }
+
+    /// Checks a post record against the deployed schema *before* anything uploads, and
+    /// returns the fields to strip from it.
+    ///
+    /// Without this, each field the schema lacks costs a full rejected save — and the
+    /// drop-and-retry learns only one field per rejection, re-sending the whole video
+    /// every time. With four missing fields a large reel never finished uploading.
+    ///
+    /// Every gap is reported (console + the on-device `SchemaGapCenter` banner/Secret
+    /// page) so it can be added in CloudKit Dashboard. What's stripped depends on the
+    /// environment: Production strips missing and wrong-typed fields; Development only
+    /// strips wrong types, because a Development save auto-creates missing fields —
+    /// which is how they get into the schema to deploy. Posts only: other record types
+    /// (messages, profiles) skip the extra round trip.
+    private func preflightSchemaGaps(of record: CKRecord) async -> Set<String> {
+        guard record.recordType.hasSuffix("Submission") else { return [] }
+        let gaps = await CloudKitSchemaCheck.gaps(for: record)
+        SchemaGapCenter.shared.update(recordType: record.recordType, gaps: gaps)
+        guard !gaps.isEmpty else { return [] }
+
+        let environment = CloudKitEnvironmentDetector.current
+        print("🧩 " + CloudKitSchemaCheck.checklist(gaps, environment: environment))
+
+        let strippable = gaps.filter { gap in
+            switch gap.kind {
+            case .wrongType:         return true
+            case .missingField:      return !CloudKitEnvironmentDetector.isDevelopment
+            case .missingRecordType: return false   // nothing to strip; the save reports it
+            }
+        }
+        let fields = Set(strippable.map(\.field)).filter { record[$0] != nil }
+        if !fields.isEmpty {
+            print("🧩 Uploading \(record.recordType) without \(fields.sorted().joined(separator: ", ")) until they're added")
+        }
+        return fields
     }
 
     private func saveWithRetry(
@@ -335,6 +373,19 @@ class CloudKitManager: ObservableObject {
         "eventStartTime", "eventEndTime", "eventHost", "eventLocationText", "eventCategory"
     ]
 
+    /// Asset fields that are extras rather than the post's primary media, so the
+    /// core-only shed may drop them even though assets are otherwise protected.
+    ///
+    /// `musicTracks` (EP/Album tracks 2..n) is the case that forced this: it isn't in the
+    /// deployed production schema, and when CloudKit's rejection didn't name it in a way
+    /// the named-field drop could use, the shed kept it as "media" and every multi-song
+    /// upload failed outright. Track 1 stays in `musicAudio`, so an EP shed this way still
+    /// publishes and plays its first song.
+    ///
+    /// `reelStills` (Actor/Dance Showcase stills) is new and not yet in either schema; the
+    /// video and thumbnail are separate fields, so a showcase shed this way still posts.
+    private static let sheddableAssetFieldNames: Set<String> = ["musicTracks", "reelStills"]
+
     private static func nonCoreKeys(of record: CKRecord) -> Set<String> {
         var droppable: Set<String> = []
         for key in record.allKeys() {
@@ -342,7 +393,7 @@ class CloudKitManager: ObservableObject {
             if coreFieldNames.contains(key) { continue }
             if essentialFieldNames.contains(key) { continue }
             if key.hasSuffix("Title") || key.hasSuffix("Description") { continue }
-            if value is CKAsset || value is [CKAsset] { continue }
+            if (value is CKAsset || value is [CKAsset]) && !sheddableAssetFieldNames.contains(key) { continue }
             droppable.insert(key)
         }
         return droppable
@@ -395,7 +446,22 @@ class CloudKitManager: ObservableObject {
         config.timeoutIntervalForResource = 60 * 60 * 24 * 7  // up to 7 days for the whole transfer
         operation.configuration = config
 
+        // A rejection of the record itself is reported ONLY through `perRecordSaveBlock`:
+        // the public database's default zone doesn't support atomic saves, so `isAtomic`
+        // is ignored there and `modifyRecordsResultBlock` can still report `.success`
+        // for an operation whose one record was refused. Without capturing it here, a
+        // schema rejection read as a successful upload — "Posted!", pending flag
+        // cleared — and the next sync then removed the never-saved post as a
+        // server-side delete (every Design post, 2026-09-29).
+        let recordErrorLock = NSLock()
+        nonisolated(unsafe) var recordError: Error?
+
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            operation.perRecordSaveBlock = { _, result in
+                if case .failure(let error) = result {
+                    recordErrorLock.withLock { recordError = error }
+                }
+            }
             // Report byte-level upload progress to the progress center. CloudKit
             // invokes this on a background queue, so hop to the main actor. The
             // record name is the submission's UUID; non-submission saves (e.g. user
@@ -409,7 +475,11 @@ class CloudKitManager: ObservableObject {
             operation.modifyRecordsResultBlock = { result in
                 switch result {
                 case .success:
-                    continuation.resume()
+                    if let error = recordErrorLock.withLock({ recordError }) {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
                 case .failure(let error):
                     continuation.resume(throwing: error)
                 }
@@ -460,6 +530,16 @@ class CloudKitManager: ObservableObject {
     ///   failures. The heavy media is fetched on demand when a post is opened
     ///   (`downloadMedia`). `nil` keeps the old "fetch everything" behavior.
     private func fetchAllRecords(matching query: CKQuery, desiredKeys: [CKRecord.FieldKey]? = nil) async throws -> [CKRecord] {
+        // Post fetches also need `schoolID` for the on-device school filter
+        // (`SchoolScope.isVisible`). Added here rather than to every `FeedKeys`
+        // list, and only once stamping is live — until then the deployed schema
+        // doesn't have the field and no record carries it anyway.
+        var desiredKeys = desiredKeys
+        if SchoolScope.isStampingEnabled,
+           CloudKitRecordTypes.liveSubmissions.contains(query.recordType) {
+            desiredKeys?.append(SchoolScope.fieldKey)
+        }
+
         var records: [CKRecord] = []
 
         var (matchResults, cursor) = try await database.records(matching: query, desiredKeys: desiredKeys)
@@ -485,19 +565,21 @@ class CloudKitManager: ObservableObject {
         static let film: [CKRecord.FieldKey] = [
             "filmTitle", "filmDescription", "isApproved", "submittedBy", "createdDate",
             "lastEditedDate", "filmLogline", "filmAgeRating", "filmExplicit", "filmStudio",
-            "filmGenres", "filmCast", "filmCastIDs", "filmCrew", "filmCrewIDs",
+            "filmReleaseYear", "filmGenres", "filmCast", "filmCastIDs", "filmCrew", "filmCrewIDs",
             // Small numeric field (not the heavy video asset) written whenever a video was
             // uploaded. Fetching it lets the feed tell a video-less film from one whose
             // video simply hasn't downloaded yet, so the "Coming Soon" placeholder only
             // shows when there is genuinely no video attached to the post.
-            "filmVideoDuration"
+            "filmVideoDuration",
+            // The playback crop — a tiny string the player applies to the streamed video.
+            "filmVideoCrop"
         ]
         static let music: [CKRecord.FieldKey] = [
             "musicTitle", "musicDescription", "isApproved", "submittedBy", "createdDate",
             "lastEditedDate", "musicArtist", "musicCategory", "musicExplicit", "musicGenres", "musicSpotifyLink",
             "musicAppleMusicLink", "amazonMusicLink", "youtubeMusicLink", "soundcloudLink",
             "lyrics", "musicRecording", "musicRecordingIDs", "musicProduction", "musicProductionIDs",
-            "musicAudioExt",
+            "musicAudioExt", "musicReleaseYear",
             // Track length — the audio counterpart to "filmVideoDuration" / "reelVideoDuration"
             // above, and just as necessary. Without it the feed's `Music.audioDuration` is
             // always nil, so the duration badge falls back to reading the local audio file
@@ -508,15 +590,19 @@ class CloudKitManager: ObservableObject {
         static let reel: [CKRecord.FieldKey] = [
             "reelTitle", "reelDescription", "isApproved", "submittedBy", "createdDate",
             "lastEditedDate", "reelType", "orderedCrew", "orderedCrewIDs",
+            // Cast credits, stored the same way as crew (see `Reel.toCloudKitRecord`).
+            "orderedCast", "orderedCastIDs",
             // The headline artist and the Featured Work lists. `desiredKeys` is an
             // allowlist, so leaving these out made the feed parse them as nil — they
             // showed on the device that posted, then disappeared on the next sync,
             // the same way the event fields did below.
-            "reelArtist", "featuredWork", "featuredWorkManual",
+            "reelArtist", "featuredWork", "featuredWorkManual", "reelReleaseYear",
             // Small numeric field (not the heavy video asset) written whenever a reel
             // video was uploaded, so the feed can show the demo reel's length badge
             // without downloading the video — mirrors "filmVideoDuration" above.
-            "reelVideoDuration"
+            "reelVideoDuration",
+            // The playback crop — a tiny string the player applies to the streamed video.
+            "reelVideoCrop"
         ]
         static let project: [CKRecord.FieldKey] = [
             "projectTitle", "projectDescription", "isApproved", "submittedBy", "createdDate",
@@ -527,7 +613,13 @@ class CloudKitManager: ObservableObject {
             // films' stills/BTS), so leaving this out of the allowlist would mean the
             // slides only ever existed on the device that posted them. They're downscaled
             // images, like photography's gallery, which rides along in the feed fetch too.
-            "projectSlides"
+            "projectSlides",
+            // Where to audition and who to contact — without these in the allowlist they'd
+            // show on the posting device and vanish on the next sync.
+            "projectAuditionURL", "projectContacts",
+            // The organization or class behind the project (the card's badge and the
+            // "Class" / "Org" Details row). Same reason.
+            "projectStudio"
         ]
         static let event: [CKRecord.FieldKey] = [
             "eventTitle", "eventDescription", "isApproved", "submittedBy", "createdDate",
@@ -540,7 +632,9 @@ class CloudKitManager: ObservableObject {
             // Theatre Performance's list of showings. Same reason as the three above:
             // without it in the allowlist the run would show on the posting device and
             // then vanish on the next sync.
-            "eventShowtimes"
+            "eventShowtimes",
+            // The "Other" links every category can carry (RSVP / Website).
+            "eventRSVPURL", "eventWebsiteURL"
         ]
         // Photography's gallery IS its content (there's no separate on-demand fetch), so
         // the gallery asset list is included in the feed fetch. The small card thumbnail
@@ -548,15 +642,15 @@ class CloudKitManager: ObservableObject {
         static let photography: [CKRecord.FieldKey] = [
             "photographyTitle", "photographyDescription", "isApproved", "submittedBy", "createdDate",
             "lastEditedDate", "photographyArtist", "photographyReleaseYear", "photographyImages",
-            "photographyEquipment", "orderedCrew", "orderedCrewIDs"
+            "photographyGear", "orderedCrew", "orderedCrewIDs"
         ]
         /// Like photography, a design post's images ARE its content, so the image asset
         /// list rides along with the feed fetch. `designVideo` is deliberately omitted —
         /// it's heavy and streams on demand (see `streamResolutionDetailed`).
         static let design: [CKRecord.FieldKey] = [
-            "designTitle", "designDescription", "isApproved", "submittedBy", "createdDate",
-            "lastEditedDate", "designCategory", "designReleaseYear", "designImages",
-            "designVideoDuration", "orderedCrew", "orderedCrewIDs"
+            "designTitle", "designDescription", "isApproved", "submittedBy", "designCreatedDate",
+            "designLastEditedDate", "designCategory", "designReleaseYear", "designImages",
+            "designVideoDuration", "designVideoCrop", "orderedCrew", "orderedCrewIDs"
         ]
     }
 
@@ -756,6 +850,17 @@ class CloudKitManager: ObservableObject {
         )
     }
 
+    /// Streamable URLs for an EP/Album's tracks 2..n, in running order. Track 1 streams
+    /// via `streamResolution(submissionID:type:)` like any single. Empty when the post has
+    /// no extra tracks or they can't be resolved.
+    func musicTrackStreamURLs(submissionID: UUID) async -> [URL] {
+        await CloudKitWebServices.streamURLs(
+            recordName: submissionID.uuidString,
+            listField: "musicTracks",
+            extensionListField: "musicTrackExts"
+        )
+    }
+
     /// Fetches a film's still/BTS photo galleries on demand. These are omitted from the
     /// feed (see `FeedKeys.film`) and fetched only when a film's detail view opens. The
     /// trailer is NOT fetched here — being video, it streams via `trailerStreamingURL`
@@ -792,6 +897,30 @@ class CloudKitManager: ObservableObject {
         } catch {
             print("❌ On-demand film-extras fetch failed for \(submissionID): \(error)")
             return ([], [])
+        }
+    }
+
+    /// Fetches an Actor/Dance Showcase reel's stills on demand. Like the film galleries
+    /// above, they're omitted from the feed (see `FeedKeys.reel`) and fetched only when the
+    /// reel's detail or edit view opens. Returns local file URLs for whatever resolved.
+    func downloadReelStills(submissionID: UUID) async -> [URL] {
+        guard let mediaDir = FileManager.default.mediaCacheDirectory else { return [] }
+        let idString = submissionID.uuidString
+
+        do {
+            let recordID = CKRecord.ID(recordName: idString)
+            let results = try await database.records(for: [recordID], desiredKeys: ["reelStills"])
+            guard case .success(let record)? = results[recordID],
+                  let assets = record["reelStills"] as? [CKAsset] else { return [] }
+            return assets.enumerated().compactMap { index, asset in
+                guard let name = FileManager.default.persistCloudKitAsset(
+                    asset, fileName: "\(idString)_still_\(index).jpg", baseDirectory: mediaDir
+                ) else { return nil }
+                return mediaDir.appendingPathComponent(name)
+            }
+        } catch {
+            print("❌ On-demand reel-stills fetch failed for \(submissionID): \(error)")
+            return []
         }
     }
 
@@ -878,6 +1007,105 @@ class CloudKitManager: ObservableObject {
         let query = CKQuery(recordType: "PostLike", predicate: predicate)
         let records = try await fetchAllRecords(matching: query, desiredKeys: ["postID"])
         return Set(records.compactMap { ($0["postID"] as? String).flatMap(UUID.init) })
+    }
+
+    // MARK: - Event Attendance (Going / Maybe / Can't Go)
+
+    /// The current iCloud user's record name, so a view can tell whether they're among
+    /// an event's attendees. Nil until the user is identified.
+    var currentAttendeeID: String? { currentUserID }
+
+    /// Deterministic record ID for one user's RSVP on one event — same idea as
+    /// `likeRecordID`: answering is a single save, clearing a single delete, and nobody
+    /// can be counted twice. (The `going_` prefix predates Maybe / Can't Go and is kept
+    /// so existing RSVPs are still found.)
+    private func attendanceRecordID(eventID: UUID, userID: String) -> CKRecord.ID {
+        CKRecord.ID(recordName: "going_\(eventID.uuidString)_\(userID)")
+    }
+
+    /// Sets the current user's RSVP on an event (Going / Maybe / Can't Go), or clears it
+    /// when `status` is nil. The same record is overwritten when the answer changes, and
+    /// each user only writes their own `EventAttendance` record, so concurrent RSVPs
+    /// can't clobber each other.
+    func setRSVP(_ status: EventRSVPStatus?, eventID: UUID) async throws {
+        guard let userID = currentUserID else { throw LikeError.notSignedIn }
+        let recordID = attendanceRecordID(eventID: eventID, userID: userID)
+        if let status {
+            let record = CKRecord(recordType: "EventAttendance", recordID: recordID)
+            record["eventID"] = eventID.uuidString as CKRecordValue
+            record["userID"] = userID as CKRecordValue
+            record["rsvpStatus"] = status.rawValue as CKRecordValue
+            record["createdDate"] = Date() as CKRecordValue
+            try await save(record: record)
+        } else {
+            do {
+                try await delete(recordID: recordID)
+            } catch let error as CKError where error.code == .unknownItem {
+                // Already gone server-side — treat "no answer" as a success.
+            }
+        }
+    }
+
+    /// Every RSVP on an event as (raw iCloud user record name, status), oldest first.
+    /// Requires the `eventID` field to be marked Queryable in the CloudKit schema.
+    func fetchEventRSVPs(eventID: UUID) async throws -> [(userID: String, status: EventRSVPStatus)] {
+        let predicate = NSPredicate(format: "eventID == %@", eventID.uuidString)
+        let query = CKQuery(recordType: "EventAttendance", predicate: predicate)
+        let records = try await fetchAllRecords(matching: query, desiredKeys: ["userID", "rsvpStatus", "createdDate"])
+        return records
+            .sorted { ($0["createdDate"] as? Date ?? .distantPast) < ($1["createdDate"] as? Date ?? .distantPast) }
+            .compactMap { record in
+                guard let userID = record["userID"] as? String else { return nil }
+                return (userID, EventRSVPStatus(record: record))
+            }
+    }
+
+    /// The IDs of every event one user has said they're going to (their "See You At"
+    /// list). `userID` may be a raw iCloud user record name or a `UserProfile_` record
+    /// name. Requires the `userID` field on `EventAttendance` to be marked Queryable.
+    func fetchEventIDsAttended(byUserID userID: String) async throws -> Set<UUID> {
+        let prefix = "UserProfile_"
+        let rawID = userID.hasPrefix(prefix) ? String(userID.dropFirst(prefix.count)) : userID
+        let predicate = NSPredicate(format: "userID == %@", rawID)
+        let query = CKQuery(recordType: "EventAttendance", predicate: predicate)
+        let records = try await fetchAllRecords(matching: query, desiredKeys: ["eventID", "rsvpStatus"])
+        // Only "Going" answers count; Maybe / Can't Go stay off the profile.
+        return Set(records
+            .filter { EventRSVPStatus(record: $0) == .going }
+            .compactMap { ($0["eventID"] as? String).flatMap(UUID.init) })
+    }
+
+    // MARK: - Post Analytics (moderator-only)
+
+    /// The CloudKit record type holding post engagement.
+    private static let postViewRecordType = "NewPostView"
+
+    /// Records one engagement with a post in `NewPostView`. The record name carries the
+    /// kind, post, user and UTC day ("view_<kind>_<postID>_<userID>_<yyyyMMdd>"), so the
+    /// same person opening the same post ten times in a day is still one record — and
+    /// the `.allKeys` save just overwrites it rather than failing.
+    func recordPostView(kind: String, postID: UUID, day: String) async throws {
+        guard let userID = currentUserID else { throw LikeError.notSignedIn }
+        let recordID = CKRecord.ID(recordName: "view_\(kind)_\(postID.uuidString)_\(userID)_\(day)")
+        let record = CKRecord(recordType: Self.postViewRecordType, recordID: recordID)
+        record["postID"] = postID.uuidString as CKRecordValue
+        record["userID"] = userID as CKRecordValue
+        record["eventKind"] = kind as CKRecordValue
+        record["createdDate"] = Date() as CKRecordValue
+        try await save(record: record)
+    }
+
+    /// Every `NewPostView` since `date` as (postID, kind, userID), for the moderator
+    /// analytics page. Requires `createdDate` to be marked Queryable in the schema.
+    func fetchPostViews(since date: Date) async throws -> [(postID: UUID, kind: String, userID: String)] {
+        let predicate = NSPredicate(format: "createdDate >= %@", date as NSDate)
+        let query = CKQuery(recordType: Self.postViewRecordType, predicate: predicate)
+        let records = try await fetchAllRecords(matching: query, desiredKeys: ["postID", "eventKind", "userID"])
+        return records.compactMap { record in
+            guard let postID = (record["postID"] as? String).flatMap(UUID.init),
+                  let kind = record["eventKind"] as? String else { return nil }
+            return (postID, kind, record["userID"] as? String ?? "")
+        }
     }
 
     // MARK: - Record Ownership
@@ -1341,6 +1569,10 @@ class CloudKitManager: ObservableObject {
             try await subscribeToRecordType("ReelSubmission", subscriptionID: "reel-changes")
             try await subscribeToRecordType("ProjectSubmission", subscriptionID: "project-changes")
             try await subscribeToRecordType("EventSubmission", subscriptionID: "event-changes")
+            // Photography and design joined later; subscribing to them too means a
+            // connection's photo/design post can wake the app and notify like the rest.
+            try await subscribeToRecordType("PhotographySubmission", subscriptionID: "photography-changes")
+            try await subscribeToRecordType("DesignSubmission", subscriptionID: "design-changes")
             print("✅ Automatic sync enabled for all media types")
         } catch {
             print("❌ Failed to setup automatic sync: \(error)")
@@ -1405,4 +1637,19 @@ struct ModerationAction {
     /// `true` = removed/hidden from all feeds; `false` = restored.
     let isRemoved: Bool
     let modifiedAt: Date
+}
+
+// MARK: - Event RSVP Status
+
+/// A user's answer on an event, stored in `EventAttendance.rsvpStatus`.
+enum EventRSVPStatus: String, CaseIterable {
+    case going
+    case maybe
+    case notGoing
+
+    /// Reads a record's status. Records saved before Maybe / Can't Go existed have no
+    /// `rsvpStatus` and were all "I'm Going", so a missing value means going.
+    init(record: CKRecord) {
+        self = (record["rsvpStatus"] as? String).flatMap(EventRSVPStatus.init(rawValue:)) ?? .going
+    }
 }

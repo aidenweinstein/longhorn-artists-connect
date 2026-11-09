@@ -372,7 +372,7 @@ struct PhotographyEditView: View {
                 credits: $credits,
                 isEditing: true
             )
-            .navigationTitle("Edit Photography")
+            .navigationTitle("Edit Photo")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -472,10 +472,13 @@ struct PhotographyDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 6) {
+                            // Up to three lines, shrinking rather than truncating so every
+                            // word of the title is always visible.
                             Text(photography.title)
                                 .font(.system(size: 28, weight: .bold))
-                                .minimumScaleFactor(0.6)
-                                .lineLimit(2)
+                                .minimumScaleFactor(0.5)
+                                .lineLimit(3)
+                                .fixedSize(horizontal: false, vertical: true)
 
                             // Category and release year, the year pinned to the row's
                             // right edge — except for Collective's magazines, which read
@@ -538,11 +541,14 @@ struct PhotographyDetailView: View {
         // still works.
         .presentationDragIndicator(.hidden)
         .task { loadGallery() }
+        .onAppear { PostAnalytics.shared.record(.open, for: photography) }
         .sheet(item: $selectedPortfolioName) { person in
             PersonProfileView(name: person.name)
+                .onAppear { PostAnalytics.shared.record(.profileVisit, for: photography) }
         }
         .sheet(isPresented: $showSendMessage) {
             SendPostMessageView(post: photography)
+                .onAppear { PostAnalytics.shared.record(.message, for: photography) }
         }
         .sheet(isPresented: $showReportSheet) {
             ReportContentView(post: photography)
@@ -586,21 +592,26 @@ struct PhotographyDetailView: View {
             .aspectRatio(4.0 / 3.0, contentMode: .fit)
             .clipped()
         } else {
-            TabView(selection: $currentIndex) {
-                ForEach(Array(galleryImages.enumerated()), id: \.offset) { index, image in
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity)
-                        .tag(index)
+            VStack(spacing: 0) {
+                TabView(selection: $currentIndex) {
+                    ForEach(Array(galleryImages.enumerated()), id: \.offset) { index, image in
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .tag(index)
+                    }
                 }
+                // The page dots sit beneath the photo (below) instead of over it.
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(maxWidth: .infinity)
+                // Size the gallery to the current photo's own aspect ratio so it displays at
+                // the same shape it was submitted — no letterboxing / black bars.
+                .aspectRatio(currentAspectRatio, contentMode: .fit)
+                .animation(.default, value: currentIndex)
+
+                GalleryPageDots(count: galleryImages.count, currentIndex: currentIndex)
             }
-            .tabViewStyle(.page(indexDisplayMode: galleryImages.count > 1 ? .automatic : .never))
-            .frame(maxWidth: .infinity)
-            // Size the gallery to the current photo's own aspect ratio so it displays at
-            // the same shape it was submitted — no letterboxing / black bars.
-            .aspectRatio(currentAspectRatio, contentMode: .fit)
-            .animation(.default, value: currentIndex)
         }
     }
 

@@ -50,6 +50,26 @@ CREATE INDEX IF NOT EXISTS idx_pending_expiry ON pending_verifications(expires_a
 CREATE INDEX IF NOT EXISTS idx_pending_email ON pending_verifications(email_hash);
 
 -- ---------------------------------------------------------------------------
+-- In-flight website sign-ins. Separate from pending_verifications so a web row
+-- can never be confirmed through the app's flow (or vice versa), and because a
+-- web sign-in has no user_record_name. Pruned by the nightly cron.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pending_web_sessions (
+    id                TEXT PRIMARY KEY,
+    email_normalized  TEXT NOT NULL,       -- cleared once confirmed
+    email_hash        TEXT NOT NULL,
+    code_hash         TEXT NOT NULL,       -- HMAC-SHA256("webcode:<id>:<code>", CODE_PEPPER)
+    school_id         TEXT NOT NULL,
+    domain_kind       TEXT NOT NULL,
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL,
+    expires_at        INTEGER NOT NULL,
+    consumed_at       INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_pending_expiry ON pending_web_sessions(expires_at);
+
+-- ---------------------------------------------------------------------------
 -- Completed verifications. email_hash PK + user_record_name UNIQUE together
 -- enforce one address per account AND one account per address.
 -- ---------------------------------------------------------------------------
@@ -108,3 +128,76 @@ CREATE INDEX IF NOT EXISTS idx_findings_reason ON sweep_findings(reason);
 --
 --   wrangler d1 execute lac-verification --remote \
 --     --command "ALTER TABLE sweep_findings ADD COLUMN reason TEXT NOT NULL DEFAULT 'creator-unverified'"
+
+-- ---------------------------------------------------------------------------
+-- People pages on the website (Filmmakers, Actors, Musicians). Hand-picked by
+-- the site's admins; artists apply, an admin decides. Only the website, with
+-- WEB_CLIENT_TOKEN, can read or write these (src/people.ts).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS people_features (
+    id            TEXT PRIMARY KEY,
+    category      TEXT NOT NULL,          -- filmmakers | actors | musicians
+    profile_id    TEXT NOT NULL,          -- UserProfile_<userRecordName>
+    name          TEXT NOT NULL,          -- shown if the profile can't be read
+    blurb         TEXT NOT NULL DEFAULT '',
+    post_ids      TEXT NOT NULL DEFAULT '[]',  -- JSON array, in display order
+    position      INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    UNIQUE (category, profile_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_people_category ON people_features(category, position);
+
+CREATE TABLE IF NOT EXISTS people_applications (
+    id                TEXT PRIMARY KEY,
+    category          TEXT NOT NULL,
+    email             TEXT NOT NULL,      -- the applicant's signed-in school email
+    profile_id        TEXT,               -- their linked app account, when there is one
+    name              TEXT NOT NULL,
+    message           TEXT NOT NULL,
+    links             TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | declined
+    created_at        INTEGER NOT NULL,
+    decided_at        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_people_apps_status ON people_applications(status, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Staff Picks on the website: posts the admins choose, in their order, each
+-- with an optional note. Managed beside the People pages (src/people.ts).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS staff_picks (
+    post_id     TEXT PRIMARY KEY,         -- the post's CloudKit record name
+    note        TEXT NOT NULL DEFAULT '',
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_picks_position ON staff_picks(position);
+
+-- ---------------------------------------------------------------------------
+-- Featured collections: named groups of posts on the website's Featured page
+-- ("Fall Showcase", "Best of RTF 2026"), shown below the main picks. Each has its
+-- own order and its own posts, each with an optional note. Added 2026-11-04.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS featured_collections (
+    id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    position     INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS featured_collection_items (
+    collection_id  TEXT NOT NULL,
+    post_id        TEXT NOT NULL,             -- the post's CloudKit record name
+    note           TEXT NOT NULL DEFAULT '',
+    position       INTEGER NOT NULL DEFAULT 0,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (collection_id, post_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_featured_collections_position ON featured_collections(position);
+CREATE INDEX IF NOT EXISTS idx_featured_items_collection ON featured_collection_items(collection_id, position);

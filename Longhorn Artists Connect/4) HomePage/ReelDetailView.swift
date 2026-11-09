@@ -28,6 +28,9 @@ struct ReelDetailView: View {
     init(reel: Submission, liked: Binding<Bool>) {
         self.passedReel = reel
         self._liked = liked
+        // Open the player at the video's known shape (from a previous load, the feed
+        // preloader, or the poster's dimensions) so it doesn't snap from 16:9 later.
+        self._videoAspectRatio = State(initialValue: VideoAspectCache.shared.displayAspect(for: reel))
     }
 
     @State private var selectedPortfolioName: CreditedPerson?
@@ -60,9 +63,18 @@ struct ReelDetailView: View {
     /// Bumped after an edit replaces the video so the inline player is recreated (the new
     /// file is written to the same path, so the AVPlayer won't reload it on its own).
     @State private var videoReloadToken = 0
+    /// The video's native width/height ratio (after any playback crop), used to size the
+    /// inline player to the submission's real shape — a vertical or 4:3 reel isn't forced
+    /// into 16:9. `nil` until the natural size loads (falls back to 16:9).
+    @State private var videoAspectRatio: CGFloat?
     /// A featured-work post the user tapped, presented in its own detail sheet.
     @State private var selectedFeaturedWork: Submission?
     @State private var featuredLiked = false
+    /// Local files for a showcase's stills — the uploader's copies, or fetched on demand
+    /// (the feed skips them).
+    @State private var stillImageURLs: [URL] = []
+    @State private var fullScreenStartIndex = 0
+    @State private var showImageViewer = false
     
     private var canEditOrDelete: Bool {
         let userFirstName = UserDefaults.standard.string(forKey: "userFirstName") ?? ""
@@ -119,6 +131,12 @@ struct ReelDetailView: View {
             return
         }
         guard resolvedVideoURL == nil, !isLoadingVideo else { return }
+        // Fast path: the home feed already resolved and warmed this stream (hover
+        // preview / preload), so skip the CloudKit lookup and start on it directly.
+        if let warmed = FeedVideoPreloader.shared.readyStreamURL(for: reel.id) {
+            resolvedVideoURL = warmed
+            return
+        }
         isLoadingVideo = true
         // Stream only: play from a range-supporting CDN URL so playback starts without
         // ever writing the file to the device. Map each resolution outcome to a precise
@@ -143,6 +161,24 @@ struct ReelDetailView: View {
             streamStatus = .notConfigured
         }
         isLoadingVideo = false
+    }
+
+    /// Loads the video's natural aspect ratio (accounting for its orientation
+    /// transform and any playback crop) so the inline player matches the submission.
+    private func loadVideoAspectRatio(_ url: URL) async {
+        // The cache applies the playback crop and remembers the natural shape so the
+        // next open starts at the right aspect ratio without waiting on the track.
+        guard let ratio = await VideoAspectCache.shared.learn(reel, from: AVURLAsset(url: url)) else { return }
+        videoAspectRatio = ratio
+    }
+
+    /// Loads the reel's stills: the local copies when the uploader is viewing, otherwise
+    /// whatever CloudKit holds (empty for a reel posted without any).
+    private func loadStills() async {
+        let local = reel.stillImageURLs
+        stillImageURLs = local.isEmpty
+            ? await CloudKitManager.shared.downloadReelStills(submissionID: reel.id)
+            : local
     }
 
     // MARK: - Featured Work
@@ -199,21 +235,24 @@ struct ReelDetailView: View {
                                 )
                                 // Recreate the player after an edit replaces the video.
                                 .id(videoReloadToken)
-                                .aspectRatio(16.0/9.0, contentMode: .fit)
+                                // Size the player to the video's real aspect ratio
+                                // rather than locking every performance to 16:9.
+                                .aspectRatio(videoAspectRatio ?? (16.0/9.0), contentMode: .fit)
                                 .frame(maxWidth: .infinity)
                                 .clipped()
+                                .task(id: videoReloadToken) { await loadVideoAspectRatio(videoURL) }
                             } else if let streamStatus {
                                 // Resolution finished without a playable video. The
                                 // placeholder states exactly why — "Coming Soon", "File
                                 // Non-Existent", "Error Streaming", etc. — and is
                                 // non-tappable (the old poster opened a full-screen
                                 // thumbnail with no way back, softlocking the view).
-                                VideoUnavailableView(status: streamStatus, tintColor: tintColor, detail: streamDebug)
+                                VideoUnavailableView(status: streamStatus, tintColor: tintColor, detail: streamDebug, thumbnailData: reel.thumbnailData)
                             } else {
                                 // Still resolving: a labeled spinner while it pulls from
                                 // CloudKit (replaced by the player, or the diagnostic
                                 // placeholder, once it resolves).
-                                VideoStreamingLoadingView(tintColor: tintColor)
+                                VideoStreamingLoadingView(tintColor: tintColor, aspectRatio: videoAspectRatio ?? (16.0/9.0))
                                     .task { await resolveVideo() }
                             }
                             
@@ -221,10 +260,13 @@ struct ReelDetailView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(alignment: .top, spacing: 12) {
                                     VStack(alignment: .leading, spacing: 6) {
+                                        // Up to three lines, shrinking rather than truncating so
+                                        // every word of the title is always visible.
                                         Text(reel.title)
                                             .font(.system(size: 28, weight: .bold))
-                                            .minimumScaleFactor(0.6)
-                                            .lineLimit(2)
+                                            .minimumScaleFactor(0.5)
+                                            .lineLimit(3)
+                                            .fixedSize(horizontal: false, vertical: true)
 
                                         // Artist name — same placement/style as the music card.
                                         if !reel.artist.isEmpty {
@@ -304,6 +346,12 @@ struct ReelDetailView: View {
                                     .padding(.bottom, 12)
                             }
 
+                            // Stills gallery (Actor/Dance Showcase only).
+                            if !stillImageURLs.isEmpty {
+                                Divider()
+                                stillsSection
+                            }
+
                             // Featured Work — linked posts this reel references plus any
                             // hand-typed entries, listed in the same card style as a portfolio.
                             if !featuredWorks.isEmpty || !manualFeaturedWorks.isEmpty {
@@ -361,6 +409,7 @@ struct ReelDetailView: View {
         // still be dismissed with a pull-down swipe.
         .presentationDragIndicator(.hidden)
         .onAppear {
+            PostAnalytics.shared.record(.open, for: reel)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 withAnimation {
                     isLoading = false
@@ -370,9 +419,11 @@ struct ReelDetailView: View {
         }
         .sheet(item: $selectedPortfolioName) { person in
             PersonProfileView(name: person.name)
+                .onAppear { PostAnalytics.shared.record(.profileVisit, for: reel) }
         }
         .sheet(isPresented: $showSendMessage) {
             SendPostMessageView(post: reel)
+                .onAppear { PostAnalytics.shared.record(.message, for: reel) }
         }
         .sheet(isPresented: $showReportSheet) {
             ReportContentView(post: reel)
@@ -384,12 +435,20 @@ struct ReelDetailView: View {
                 // the new file often lives at the same path.
                 resolvedVideoURL = updatedSubmission.videoURL
                 streamStatus = nil
+                // Re-derive the shape (a crop change applies instantly; a replaced
+                // video corrects itself once its track loads).
+                videoAspectRatio = VideoAspectCache.shared.displayAspect(for: updatedSubmission)
                 videoReloadToken += 1
             }
         }
         .sheet(isPresented: $showCollectionPicker) {
             CollectionPickerView(post: reel)
         }
+        .fullScreenCover(isPresented: $showImageViewer) {
+            FullScreenImageViewer(imageURLs: stillImageURLs, startIndex: fullScreenStartIndex)
+        }
+        // Re-runs after an edit changes the category or the stills set.
+        .task(id: "\(reel.reelType)|\(reel.stillImageFileNames)") { await loadStills() }
         .sheet(item: $selectedFeaturedWork) { work in
             featuredWorkDetail(for: work)
         }
@@ -404,6 +463,32 @@ struct ReelDetailView: View {
         }
     }
 
+    /// Horizontally-scrolling stills; tapping one opens the full-screen viewer.
+    private var stillsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Stills")
+                .font(.title2)
+                .fontWeight(.bold)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(Array(stillImageURLs.enumerated()), id: \.offset) { index, url in
+                        if let image = UIImage(contentsOfFile: url.path) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 160, height: 120)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .onTapGesture {
+                                    fullScreenStartIndex = index
+                                    showImageViewer = true
+                                }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Note: Video player components (CustomVideoPlayerView, FullScreenVideoPlayer, etc.) 

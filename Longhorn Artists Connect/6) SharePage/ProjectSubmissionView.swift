@@ -17,11 +17,21 @@ import PDFKit
 /// - `castCrewCall`: poster + logline + shoot dates + cast/crew needed + assembled team.
 /// - `script`: a script PDF + genre + writer (+ optional logline). Thumbnail = first page.
 /// - `inDevelopment`: a flyer + writers + current cast & crew (no script).
+/// - `inPostProduction`: same fields as `inDevelopment`, for a project that's been shot.
 enum ProjectType: String, CaseIterable {
     case castCrewCall = "Cast & Crew Call"
     case script = "Script"
     case inDevelopment = "In-Development"
+    case inPostProduction = "In-Post-Production"
 }
+
+// A project's "Class or Org" field offers the same studios and production classes the
+// film form does, and stores the pick in `Submission.studio` exactly as films do.
+
+/// Stored in `shootDates` / `expectedReleaseDate` when the poster hasn't settled on a
+/// date yet. The schedule and release-date parsers don't recognise it, so it falls
+/// through every display path as the literal text "TBD".
+let projectDateTBDText = "TBD"
 
 /// Genres offered for a Script project (mirrors the Scripts collection's list).
 let projectScriptGenres = ["Action", "Comedy", "Drama", "Horror", "Mystery", "Romance", "Sci-Fi", "Thriller", "Western", "Documentary"]
@@ -44,15 +54,14 @@ enum ScriptThumbnail {
 struct ProjectSubmissionView: View {
     @Binding var title: String
     @Binding var logline: String
-    /// The selected `ProjectType` raw value.
-    @Binding var projectCategory: String
-    /// Writer(s) — used by Script and In-Development.
-    @Binding var writers: String
-    /// Genre — used by Script (stored in the submission's `genres`).
-    @Binding var projectGenre: String
-    @Binding var shootStartDate: Date
-    @Binding var shootEndDate: Date
-    @Binding var projectReleaseDate: Date
+    /// The organization or production class behind the project, stored in
+    /// `Submission.studio` exactly as films do. Empty for an independent project.
+    @Binding var studio: String
+    /// The shoot schedule: specific days, each with its own call and wrap time.
+    @Binding var shootDays: [ShootDay]
+    /// True when the shoot dates aren't set yet; the day editor is hidden and the post
+    /// stores "TBD" (see `projectDateTBDText`).
+    @Binding var shootDatesTBD: Bool
     @Binding var castNeeded: [String]
     @Binding var crewNeeded: [String]
     @Binding var castInfo: CastInfo
@@ -66,6 +75,10 @@ struct ProjectSubmissionView: View {
     /// replace the poster on the post's detail view and the poster is shown last, after
     /// them; the Discover feed still previews the poster.
     @Binding var slides: [UIImage]
+    /// Where to sign up for an audition (Cast & Crew Call).
+    @Binding var auditionURL: String
+    /// Who to reach out to, one free-form line each (every project type).
+    @Binding var contacts: [String]
 
     /// Live CloudKit upload state, set once the post is submitted.
     var uploadPhase: MediaUploadPhase? = nil
@@ -84,6 +97,7 @@ struct ProjectSubmissionView: View {
     @State private var showCrewNeededForm: Bool = false
     @State private var showCastAssembledForm: Bool = false
     @State private var showCrewAssembledForm: Bool = false
+    @State private var showContactsForm: Bool = false
 
     // Slide pickers (Photos + Files). Unlike the poster's, these are hosted here rather
     // than by the parent, so the create and edit forms both get them for free.
@@ -99,70 +113,36 @@ struct ProjectSubmissionView: View {
     /// appends, so slides land in the order they were picked rather than the order they
     /// happened to finish loading.
     @State private var lastSlideLoad: Task<Void, Never>?
+    /// The open poster crop editor, if any.
+    @State private var cropRequest: MediaCropRequest?
 
-    private var projectType: ProjectType? { ProjectType(rawValue: projectCategory) }
-
-    /// Category selector — its own section; the rest of the form stays hidden until a
-    /// category is chosen.
-    private var typeMenu: some View {
-        Menu {
-            ForEach(ProjectType.allCases, id: \.self) { kind in
-                Button {
-                    projectCategory = kind.rawValue
-                } label: {
-                    HStack {
-                        Text(kind.rawValue)
-                        if projectCategory == kind.rawValue {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Text("Category")
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(projectCategory.isEmpty ? "Select Category" : projectCategory)
-                    .foregroundStyle(Color.brandOrange)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
-            }
-        }
-        .buttonStyle(.plain)
-    }
+    /// Studios offered for an Org Project — the same list the film form shows.
+    private let availableStudios = ["Collective", "Incubator", "Beyond Frame Productions", "DKA", "Black Lens"]
 
     var body: some View {
         List {
-            // Category first, and on its own until it's chosen: the rest of the form
-            // stays hidden until then.
-            Section("Category") { typeMenu }
-
-            if let type = projectType {
-                Section("Upload") {
-                    if let uploadPhase {
-                        MediaUploadStatusView(phase: uploadPhase, onRetry: onRetryUpload)
-                    } else {
-                        posterRow(label: "poster")
-                        slideStrip
-                        slidePickerRow
-                        if loadingSlideBatches > 0 {
-                            HStack {
-                                ProgressView().padding(.trailing, 8)
-                                Text("Loading slides…").foregroundStyle(.secondary)
-                            }
+            Section("Upload") {
+                if let uploadPhase {
+                    MediaUploadStatusView(phase: uploadPhase, onRetry: onRetryUpload)
+                } else {
+                    posterRow(label: "poster")
+                    scriptRow
+                    slideStrip
+                    slidePickerRow
+                    if loadingSlideBatches > 0 {
+                        HStack {
+                            ProgressView().padding(.trailing, 8)
+                            Text("Loading slides…").foregroundStyle(.secondary)
                         }
                     }
                 }
+            }
 
-                if uploadPhase == nil {
-                    switch type {
-                    case .castCrewCall:  castCrewCallSections
-                    case .script:        scriptSections
-                    case .inDevelopment: inDevelopmentSections
-                    }
-                }
+            if uploadPhase == nil {
+                detailsSection
+                teamNeededSection
+                assembledTeamSection
+                contactsSection
             }
         }
         .scrollContentBackground(.hidden)
@@ -180,6 +160,9 @@ struct ProjectSubmissionView: View {
         }
         .navigationDestination(isPresented: $showCrewAssembledForm) {
             CrewFormView(crew: $crewInfo)
+        }
+        .navigationDestination(isPresented: $showContactsForm) {
+            ProjectContactsFormView(contacts: $contacts)
         }
         .navigationDestination(isPresented: $showSlideReorderForm) {
             PhotoReorderView(images: $slides, navigationTitle: "Reorder Slides")
@@ -200,42 +183,100 @@ struct ProjectSubmissionView: View {
                 showSlideFilePicker = false
             }
         }
+        .mediaCropper($cropRequest)
     }
 
     // MARK: - Per-Type Sections
 
-    @ViewBuilder private var castCrewCallSections: some View {
+    /// Title, logline, class/org, and the shoot schedule.
+    private var detailsSection: some View {
         Section("Details") {
             TextField("Title", text: $title, axis: .vertical)
-            TextField("Logline", text: $logline, axis: .vertical)
+            TextField("Logline/Description", text: $logline, axis: .vertical)
                 .lineLimit(3...6)
-            DatePicker("Shoot Start", selection: $shootStartDate, displayedComponents: .date)
-            DatePicker("Shoot End", selection: $shootEndDate, displayedComponents: .date)
-            DatePicker("Expected Release", selection: $projectReleaseDate, displayedComponents: .date)
-        }
-        teamNeededSection
-        assembledTeamSection
-    }
-
-    @ViewBuilder private var scriptSections: some View {
-        Section("Details") {
-            TextField("Title", text: $title, axis: .vertical)
-            scriptRow
-            genreMenu
-            TextField("Writer", text: $writers, axis: .vertical)
-            TextField("Logline (optional)", text: $logline, axis: .vertical)
-                .lineLimit(3...6)
+            studioOrClassMenu
+            // The day editor gives way to a TBD switch when the shoot isn't scheduled.
+            Toggle("Shoot Dates TBD", isOn: $shootDatesTBD)
+                .tint(Color.brandOrange)
+            if !shootDatesTBD {
+                shootDayFields
+            }
         }
     }
 
-    @ViewBuilder private var inDevelopmentSections: some View {
-        Section("Details") {
-            TextField("Title", text: $title, axis: .vertical)
-            TextField("Writers", text: $writers, axis: .vertical)
-            TextField("Logline (optional)", text: $logline, axis: .vertical)
-                .lineLimit(3...6)
+    // MARK: - Shoot Days
+
+    /// The shoot schedule editor: one row per shoot day, each a "Shoot Day N" header over
+    /// a single Date / Start "to" End line, in the same shape as the event form's
+    /// Showings. Any row can be removed (a call with no dates set yet is still worth
+    /// posting), and "Add Shoot Day" appends another.
+    @ViewBuilder
+    private var shootDayFields: some View {
+        ForEach($shootDays) { $day in
+            // Header and pickers share one row so no separator falls between them.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Shoot Day \(dayNumber(of: day))")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        shootDays.removeAll { $0.id == day.id }
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Date, then start "to" end. The Date picker moves both of this day's
+                // timestamps onto the chosen day (see `ShootDay.day`), so date and times
+                // can't fall out of step.
+                HStack(spacing: 6) {
+                    DatePicker("Date", selection: $day.day, displayedComponents: .date)
+                        .labelsHidden()
+                    Spacer(minLength: 0)
+                    DatePicker("Start Time", selection: $day.date, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                    Text("to")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    DatePicker("End Time", selection: $day.end, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                }
+            }
         }
-        assembledTeamSection
+
+        Button {
+            addShootDay()
+        } label: {
+            Label("Add Shoot Day", systemImage: "plus.circle.fill")
+                .foregroundStyle(Color.brandOrange)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The day's 1-based position in the schedule, for its header. Looked up by id rather
+    /// than captured as an index so removing a row can't leave a stale number behind.
+    private func dayNumber(of day: ShootDay) -> Int {
+        (shootDays.firstIndex { $0.id == day.id } ?? 0) + 1
+    }
+
+    /// Appends a shoot day. The first defaults to today, 8:00 AM to 4:00 PM; each one
+    /// after that is the previous day plus one, at the same start and end times — the
+    /// usual shape of a shoot, so adding a day is a single tap.
+    private func addShootDay() {
+        let calendar = Calendar.current
+        guard let last = shootDays.last else {
+            let firstCall = calendar.date(bySettingHour: 8, minute: 0, second: 0, of: Date()) ?? Date()
+            shootDays.append(ShootDay(date: firstCall))
+            return
+        }
+        let next = calendar.date(byAdding: .day, value: 1, to: last.date) ?? last.date
+        let nextEnd = calendar.date(byAdding: .day, value: 1, to: last.end) ?? last.end
+        shootDays.append(ShootDay(date: next, end: nextEnd))
     }
 
     // MARK: - Reusable Rows
@@ -257,19 +298,21 @@ struct ProjectSubmissionView: View {
                             .foregroundStyle(Color.brandOrange)
                     }
                     Spacer()
-                    HStack(spacing: 12) {
-                        Button { showProjectImagePicker = true } label: {
-                            Label("Photos", systemImage: "photo.stack").labelStyle(.iconOnly)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.primary)
-
-                        Button { showProjectImageDocumentPicker = true } label: {
-                            Label("Files", systemImage: "folder").labelStyle(.iconOnly)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.primary)
-                    }
+                    UploadPickerButtons(
+                        hasSelection: selectedProjectImageData != nil,
+                        onPhotos: { showProjectImagePicker = true },
+                        onFiles: { showProjectImageDocumentPicker = true },
+                        onCrop: selectedProjectImageData.flatMap(UIImage.init).map { image in
+                            {
+                                cropRequest = .image(image) { cropped in
+                                    if let data = cropped.jpegData(compressionQuality: 0.9) {
+                                        selectedProjectImageData = data
+                                    }
+                                }
+                            }
+                        },
+                        onRemove: { selectedProjectImageData = nil }
+                    )
                 }
             }
         }
@@ -279,6 +322,8 @@ struct ProjectSubmissionView: View {
     /// two-button layout as the poster row above, but multi-select.
     private var slidePickerRow: some View {
         HStack {
+            Image(systemName: "photo.on.rectangle.angled")
+                .foregroundStyle(.secondary)
             Text(slides.isEmpty ? "Select slides" : "Add more slides")
                 .foregroundStyle(.primary)
             if !slides.isEmpty {
@@ -411,7 +456,7 @@ struct ProjectSubmissionView: View {
         HStack {
             Image(systemName: "doc.text")
                 .foregroundStyle(.secondary)
-            Text(selectedProjectScriptURL == nil ? "Select script (PDF)" : "Script attached")
+            Text(selectedProjectScriptURL == nil ? "Select script" : "Script attached")
                 .foregroundStyle(.primary)
             if selectedProjectScriptURL != nil {
                 Image(systemName: "checkmark.circle.fill")
@@ -419,32 +464,32 @@ struct ProjectSubmissionView: View {
                     .foregroundStyle(Color.brandOrange)
             }
             Spacer()
-            Button { showProjectScriptPicker = true } label: {
-                Label("Files", systemImage: "folder").labelStyle(.iconOnly)
-            }
-            .buttonStyle(.bordered)
-            .tint(.primary)
+            UploadPickerButtons(
+                hasSelection: selectedProjectScriptURL != nil,
+                onFiles: { showProjectScriptPicker = true },
+                onRemove: { selectedProjectScriptURL = nil }
+            )
         }
     }
 
-    /// Genre menu (Script projects).
-    private var genreMenu: some View {
+    /// The "Class or Org" menu: the organizations and production classes the film form
+    /// offers, in two sections, plus "None" for an independent project. The pick becomes
+    /// the card's badge and the "Class" / "Org" Details row.
+    private var studioOrClassMenu: some View {
         Menu {
-            ForEach(projectScriptGenres, id: \.self) { g in
-                Button {
-                    projectGenre = g
-                } label: {
-                    HStack {
-                        Text(g)
-                        if projectGenre == g { Image(systemName: "checkmark") }
-                    }
-                }
+            Section("Organizations") {
+                ForEach(availableStudios, id: \.self) { option in studioOption(option) }
             }
+            Section("Classes") {
+                ForEach(ProductionClassCatalog.names, id: \.self) { option in studioOption(option) }
+            }
+            Button("None") { studio = "" }
         } label: {
             HStack {
-                Text("Genre").foregroundStyle(.primary)
+                Text("Class/Org").foregroundStyle(.primary)
                 Spacer()
-                Text(projectGenre.isEmpty ? "Select Genre" : projectGenre)
+                Text(studio.isEmpty ? "None" : studio)
+                    .lineLimit(1)
                     .foregroundStyle(Color.brandOrange)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption)
@@ -452,6 +497,18 @@ struct ProjectSubmissionView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// One row of the Class or Org menu, checked when it's the current pick.
+    private func studioOption(_ option: String) -> some View {
+        Button {
+            studio = option
+        } label: {
+            HStack {
+                Text(option)
+                if studio == option { Image(systemName: "checkmark") }
+            }
+        }
     }
 
     private var teamNeededSection: some View {
@@ -476,6 +533,30 @@ struct ProjectSubmissionView: View {
                     Text("Crew Needed").foregroundStyle(.primary)
                     Spacer()
                     Text(crewNeeded.isEmpty ? "Add" : "\(crewNeeded.count) role\(crewNeeded.count == 1 ? "" : "s")")
+                        .foregroundStyle(Color.brandOrange)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(Color.brandOrange)
+                }
+            }
+            .buttonStyle(.plain)
+
+            // Audition sign-up link (Cast & Crew Call) — lives with the roles it's for.
+            TextField("Audition Link", text: $auditionURL, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+        }
+    }
+
+    /// Who to reach out to — pushed to its own page like Cast/Crew Needed.
+    private var contactsSection: some View {
+        Section("Contact") {
+            Button {
+                showContactsForm = true
+            } label: {
+                HStack {
+                    Text("Contacts").foregroundStyle(.primary)
+                    Spacer()
+                    Text(contacts.isEmpty ? "Add" : "\(contacts.count) contact\(contacts.count == 1 ? "" : "s")")
                         .foregroundStyle(Color.brandOrange)
                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(Color.brandOrange)
                 }
@@ -540,26 +621,13 @@ struct ProjectEditView: View {
     @State private var edited: Submission
     @State private var castInfo: CastInfo
     @State private var crewInfo: CrewInfo
-    @State private var shootStartDate: Date
-    @State private var shootEndDate: Date
-    @State private var projectReleaseDate: Date
+    @State private var shootDays: [ShootDay]
+    @State private var shootDatesTBD: Bool
     @State private var selectedProjectImageData: Data?
     @State private var selectedProjectScriptURL: URL?
     @State private var slides: [UIImage]
-
-    /// Matches the "MMM d, yyyy" format the creation form writes into `shootDates` /
-    /// `expectedReleaseDate` so re-editing round-trips consistently.
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "MMM d, yyyy"
-        return formatter
-    }()
-
-    /// Parses one "MMM d, yyyy" date, defaulting to now for loose/legacy values.
-    private static func parseDate(_ string: String) -> Date {
-        dateFormatter.date(from: string.trimmingCharacters(in: .whitespaces)) ?? Date()
-    }
+    @State private var auditionURL: String
+    @State private var contacts: [String]
 
     init(submission: Submission, onSave: @escaping (Submission) -> Void) {
         self.submission = submission
@@ -568,32 +636,29 @@ struct ProjectEditView: View {
         _castInfo = State(initialValue: CastInfo(orderedEntries: submission.orderedCast))
         _crewInfo = State(initialValue: CrewInfo(orderedEntries: submission.orderedCrew))
 
-        // `shootDates` is stored as "start - end"; split it back into the two pickers.
-        let parts = submission.shootDates.components(separatedBy: " - ")
-        _shootStartDate = State(initialValue: Self.parseDate(parts.first ?? ""))
-        _shootEndDate = State(initialValue: Self.parseDate(parts.count > 1 ? parts[1] : (parts.first ?? "")))
-        _projectReleaseDate = State(initialValue: Self.parseDate(submission.expectedReleaseDate))
+        // Rebuild the shoot-day rows from the stored schedule. A post from before the
+        // day list existed carries a "start - end" range; that becomes two rows (or one
+        // when start and end were the same day) so it can be edited into real days.
+        let shootDays: [ShootDay]
+        switch submission.shootSchedule {
+        case .days(let days)?:
+            // A day stored before wrap times existed gets the default end.
+            shootDays = days.map { ShootDay(date: $0.start, end: $0.end) }
+        case .range(let start, let end)?:
+            let dates = (end.map { Calendar.current.isDate($0, inSameDayAs: start) } ?? true) ? [start] : [start, end ?? start]
+            shootDays = dates.map { ShootDay(date: $0) }
+        case nil:
+            shootDays = []
+        }
+        _shootDays = State(initialValue: shootDays)
+        _shootDatesTBD = State(initialValue: submission.shootDates == projectDateTBDText)
 
         _selectedProjectImageData = State(initialValue: submission.thumbnailData)
         _selectedProjectScriptURL = State(initialValue: submission.scriptURL)
         // Restore the slideshow from its persisted media-cache copies.
         _slides = State(initialValue: submission.projectSlideURLs.compactMap { UIImage(contentsOfFile: $0.path) })
-    }
-
-    /// The project type is stored in `projectType`.
-    private var categoryBinding: Binding<String> {
-        Binding(
-            get: { edited.projectType },
-            set: { edited.projectType = $0 }
-        )
-    }
-
-    /// Script genre is stored in the submission's `genres`.
-    private var genreBinding: Binding<String> {
-        Binding(
-            get: { edited.genres.first ?? "" },
-            set: { edited.genres = $0.isEmpty ? [] : [$0] }
-        )
+        _auditionURL = State(initialValue: submission.projectAuditionURL ?? "")
+        _contacts = State(initialValue: submission.projectContacts ?? [])
     }
 
     // The poster/script pickers are presented by the parent in the create flow, so the
@@ -610,12 +675,9 @@ struct ProjectEditView: View {
             ProjectSubmissionView(
                 title: $edited.title,
                 logline: $edited.logline,
-                projectCategory: categoryBinding,
-                writers: $edited.writers,
-                projectGenre: genreBinding,
-                shootStartDate: $shootStartDate,
-                shootEndDate: $shootEndDate,
-                projectReleaseDate: $projectReleaseDate,
+                studio: $edited.studio,
+                shootDays: $shootDays,
+                shootDatesTBD: $shootDatesTBD,
                 castNeeded: $edited.castNeeded,
                 crewNeeded: $edited.crewNeeded,
                 castInfo: $castInfo,
@@ -626,6 +688,8 @@ struct ProjectEditView: View {
                 showProjectImageDocumentPicker: $showProjectImageDocumentPicker,
                 showProjectScriptPicker: $showProjectScriptPicker,
                 slides: $slides,
+                auditionURL: $auditionURL,
+                contacts: $contacts,
                 isEditing: true
             )
             .navigationTitle("Edit Project")
@@ -677,11 +741,15 @@ struct ProjectEditView: View {
     private func save() {
         guard !edited.title.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         // Fold the pickers back into the stored string fields, matching the creation form.
-        edited.shootDates = Self.dateFormatter.string(from: shootStartDate) + " - " + Self.dateFormatter.string(from: shootEndDate)
-        edited.expectedReleaseDate = Self.dateFormatter.string(from: projectReleaseDate)
+        edited.shootDates = shootDatesTBD ? projectDateTBDText : ShootSchedule.text(from: shootDays)
+        // The form no longer edits the expected release, so an older post keeps its value.
         // Drop empty role/position rows before saving.
         edited.castNeeded.removeAll { $0.trimmingCharacters(in: .whitespaces).isEmpty }
         edited.crewNeeded.removeAll { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let trimmedAudition = auditionURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        edited.projectAuditionURL = trimmedAudition.isEmpty ? nil : trimmedAudition
+        let filledContacts = contacts.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        edited.projectContacts = filledContacts.isEmpty ? nil : filledContacts
         edited.orderedCast = castInfo.toOrderedEntries()
         edited.orderedCrew = crewInfo.toOrderedEntries()
 
@@ -716,12 +784,7 @@ struct ProjectEditView: View {
 #Preview {
     @Previewable @State var title = ""
     @Previewable @State var logline = ""
-    @Previewable @State var projectCategory = ""
-    @Previewable @State var writers = ""
-    @Previewable @State var projectGenre = ""
-    @Previewable @State var shootStartDate = Date()
-    @Previewable @State var shootEndDate = Date().addingTimeInterval(7 * 24 * 60 * 60)
-    @Previewable @State var projectReleaseDate = Date()
+    @Previewable @State var shootDays: [ShootDay] = []
     @Previewable @State var castNeeded: [String] = []
     @Previewable @State var crewNeeded: [String] = []
     @Previewable @State var castInfo = CastInfo()
@@ -732,17 +795,18 @@ struct ProjectEditView: View {
     @Previewable @State var showProjectImageDocumentPicker = false
     @Previewable @State var showProjectScriptPicker = false
     @Previewable @State var slides: [UIImage] = []
+    @Previewable @State var auditionURL = ""
+    @Previewable @State var contacts: [String] = []
+    @Previewable @State var studio = ""
+    @Previewable @State var shootDatesTBD = false
 
     NavigationStack {
         ProjectSubmissionView(
             title: $title,
             logline: $logline,
-            projectCategory: $projectCategory,
-            writers: $writers,
-            projectGenre: $projectGenre,
-            shootStartDate: $shootStartDate,
-            shootEndDate: $shootEndDate,
-            projectReleaseDate: $projectReleaseDate,
+            studio: $studio,
+            shootDays: $shootDays,
+            shootDatesTBD: $shootDatesTBD,
             castNeeded: $castNeeded,
             crewNeeded: $crewNeeded,
             castInfo: $castInfo,
@@ -752,7 +816,9 @@ struct ProjectEditView: View {
             showProjectImagePicker: $showProjectImagePicker,
             showProjectImageDocumentPicker: $showProjectImageDocumentPicker,
             showProjectScriptPicker: $showProjectScriptPicker,
-            slides: $slides
+            slides: $slides,
+            auditionURL: $auditionURL,
+            contacts: $contacts
         )
         .navigationTitle("Project")
         .navigationBarTitleDisplayMode(.inline)

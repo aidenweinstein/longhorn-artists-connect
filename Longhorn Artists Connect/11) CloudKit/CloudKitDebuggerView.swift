@@ -46,6 +46,11 @@ struct CloudKitDebuggerView: View {
                     StatusRow(label: "Environment", value: debugger.environment)
                 }
 
+                // MARK: - CloudKit Schema
+                Section("CloudKit Schema") {
+                    SchemaGapReportView()
+                }
+
                 // MARK: - Storage
                 Section("Storage") {
                     StorageDiagnostics()
@@ -205,6 +210,16 @@ private enum DeviceInfo {
 /// `get-task-allow`, i.e. a build run from Xcode). Ad-Hoc, Enterprise, TestFlight,
 /// and App Store builds all talk to the **Production** environment.
 enum CloudKitEnvironmentDetector {
+    /// Whether this build's native `CKContainer` talks to the Development environment.
+    /// Resolved once — the provisioning profile can't change while the app runs.
+    static let isDevelopment: Bool = current == "Development"
+
+    /// Prefix for every on-device cache of CloudKit data. Development gets its own
+    /// namespace so a Debug build never shows posts cached by a TestFlight/App Store
+    /// build on the same device (and vice versa); Production keeps the unprefixed
+    /// names so existing installs keep their caches.
+    static var localCachePrefix: String { isDevelopment ? "dev_" : "" }
+
     /// "Development" or "Production", based on the embedded provisioning profile.
     static var current: String {
         #if targetEnvironment(simulator)

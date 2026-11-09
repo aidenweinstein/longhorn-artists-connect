@@ -30,8 +30,6 @@ enum DesignCategory: String, CaseIterable, Identifiable {
 struct DesignSubmissionView: View {
     @Binding var title: String
     @Binding var designDescription: String
-    /// Which kind of design this is — a `DesignCategory` raw value.
-    @Binding var category: String
     /// The year the piece was made/released.
     @Binding var releaseYear: String
     /// The picked images. The first doubles as the post thumbnail.
@@ -53,6 +51,10 @@ struct DesignSubmissionView: View {
     /// to label the picker.
     var isEditing: Bool = false
 
+    /// The video's playback crop (`VideoCrop` string). Applied by the player, so cropping
+    /// never re-encodes the video.
+    var videoCrop: Binding<String?> = .constant(nil)
+
     @State private var pickerItems: [PhotosPickerItem] = []
     /// Picker batches still loading. Library photos can take seconds to come down from
     /// iCloud, so more than one batch can be in flight at once.
@@ -61,12 +63,13 @@ struct DesignSubmissionView: View {
     /// appends, so images land in the order they were picked rather than the order they
     /// happened to finish loading.
     @State private var lastLoad: Task<Void, Never>?
-    /// Camera-roll (Photos) and Files pickers for the images.
+    /// Camera-roll (Photos) and Files pickers for the images (the Photos picker also
+    /// accepts the optional video).
     @State private var showPhotoPicker = false
     @State private var showFilePicker = false
-    /// Files picker for the optional video.
-    @State private var showVideoFilePicker = false
     @State private var isLoadingVideo = false
+    /// The open video crop editor, if any.
+    @State private var cropRequest: MediaCropRequest?
     /// Drives the pushed Credits subpage.
     @State private var showCreditsForm = false
     /// Drives the pushed Reorder subpage.
@@ -74,54 +77,50 @@ struct DesignSubmissionView: View {
 
     private var isLoadingImages: Bool { loadingBatchCount > 0 }
 
+    /// How many pieces of media are attached: the images plus the video, if any.
+    private var mediaCount: Int { images.count + (videoURL == nil ? 0 : 1) }
+
     var body: some View {
         List {
-            // Category first, and on its own until it's chosen: the rest of the form
-            // stays hidden until then.
-            Section("Category") { categoryMenu }
-
-            if !category.isEmpty {
-                Section("Upload") {
-                    if let uploadPhase {
-                        MediaUploadStatusView(phase: uploadPhase, onRetry: onRetryUpload)
-                    } else {
-                        imageGallery
-                        imagePickerRow
-                        if isLoadingImages {
-                            HStack {
-                                ProgressView().padding(.trailing, 8)
-                                Text("Loading images…").foregroundStyle(.secondary)
-                            }
+            Section("Upload") {
+                if let uploadPhase {
+                    MediaUploadStatusView(phase: uploadPhase, onRetry: onRetryUpload)
+                } else {
+                    imageGallery
+                    imagePickerRow
+                    if isLoadingImages || isLoadingVideo {
+                        HStack {
+                            ProgressView().padding(.trailing, 8)
+                            Text("Loading media…").foregroundStyle(.secondary)
                         }
-                        videoRow
                     }
                 }
+            }
 
-                if uploadPhase == nil {
-                    Section("Details") {
-                        TextField("Title", text: $title, axis: .vertical)
+            if uploadPhase == nil {
+                Section("Details") {
+                    TextField("Title", text: $title, axis: .vertical)
 
-                        TextField("Description", text: $designDescription, axis: .vertical)
-                            .lineLimit(4, reservesSpace: true)
+                    TextField("Description", text: $designDescription, axis: .vertical)
+                        .lineLimit(4, reservesSpace: true)
 
-                        ReleaseYearPicker(releaseYear: $releaseYear)
+                    ReleaseYearPicker(releaseYear: $releaseYear)
 
-                        Button {
-                            showCreditsForm = true
-                        } label: {
-                            HStack {
-                                Text("Credits")
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                Text(credits.summary.isEmpty ? "Add" : "Edited")
-                                    .foregroundStyle(Color.brandOrange)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(Color.brandOrange)
-                            }
+                    Button {
+                        showCreditsForm = true
+                    } label: {
+                        HStack {
+                            Text("Credits")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text(credits.summary.isEmpty ? "Add" : "Edited")
+                                .foregroundStyle(Color.brandOrange)
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(Color.brandOrange)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -142,9 +141,11 @@ struct DesignSubmissionView: View {
         }
         // `.ordered` numbers the picks and hands them back in tap order, so the numbered
         // selection order becomes the order they appear in the post. `nil` is the
-        // documented way to ask for the system maximum (0 isn't a defined value).
+        // documented way to ask for the system maximum (0 isn't a defined value). Videos
+        // are accepted too: a picked video becomes the post's (single) video.
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItems,
-                      maxSelectionCount: nil, selectionBehavior: .ordered, matching: .images)
+                      maxSelectionCount: nil, selectionBehavior: .ordered,
+                      matching: .any(of: [.images, .videos]))
         .onChange(of: pickerItems) { _, newItems in
             loadImages(from: newItems)
         }
@@ -155,51 +156,17 @@ struct DesignSubmissionView: View {
                 showFilePicker = false
             }
         }
-        .sheet(isPresented: $showVideoFilePicker) {
-            DocumentPicker(contentTypes: [.movie, .video, .mpeg4Movie, .quickTimeMovie]) { url in
-                setVideo(url)
-            } onCancel: {
-                showVideoFilePicker = false
-            }
-        }
+        .mediaCropper($cropRequest)
     }
 
-    /// The design category picker, matching the inline menus used elsewhere in the forms.
-    private var categoryMenu: some View {
-        Menu {
-            ForEach(DesignCategory.allCases) { option in
-                Button {
-                    category = option.rawValue
-                } label: {
-                    HStack {
-                        Text(option.rawValue)
-                        if category == option.rawValue { Image(systemName: "checkmark") }
-                    }
-                }
-            }
-        } label: {
-            HStack {
-                Text("Category")
-                    .foregroundStyle(.primary)
-                Spacer()
-                Text(category.isEmpty ? "Select Category" : category)
-                    .foregroundStyle(Color.brandOrange)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(Color.brandOrange)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// "Select images" header row: label, count, and Photos + Files pickers — matching the
-    /// two-button layout used by the other submission views.
+    /// "Select image(s)/video(s)" header row: label, count, and Photos + Files pickers —
+    /// matching the two-button layout used by the other submission views.
     private var imagePickerRow: some View {
         HStack {
-            Label(images.isEmpty ? "Select images" : "Add more images", systemImage: "photo")
+            Label(mediaCount == 0 ? "Select image(s)/video(s)" : "Add more", systemImage: "photo")
                 .foregroundStyle(.primary)
-            if !images.isEmpty {
-                Text("\(images.count)")
+            if mediaCount > 0 {
+                Text("\(mediaCount)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.brandOrange)
             }
@@ -227,48 +194,80 @@ struct DesignSubmissionView: View {
         }
     }
 
-    /// The optional video row: its first frame (once picked) plus a Files picker, and a
-    /// remove button so a wrongly-picked video can be cleared.
+    /// The picked video's tile in the gallery strip: its first frame (with the playback
+    /// crop applied, so it shows what the player will) under a play badge, with Crop and
+    /// Remove controls. Sits after the images since the model holds a single video.
     @ViewBuilder
-    private var videoRow: some View {
-        HStack {
-            UploadRowThumbnail(image: videoFirstFrame, placeholderSystemName: "video")
-            Text(videoURL == nil ? "Select video" : (videoURL?.lastPathComponent ?? "Video"))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            if isLoadingVideo {
-                ProgressView()
-            } else if videoURL != nil {
+    private var videoTile: some View {
+        if let url = videoURL {
+            let frame = videoFirstFrame.map { frame in
+                VideoCrop(videoCrop.wrappedValue).map { ImageCropper.crop(frame, to: $0.rect) } ?? frame
+            }
+            Group {
+                if let frame {
+                    Image(uiImage: frame)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(.systemGray5))
+                        .frame(width: 120)
+                        .overlay { Image(systemName: "video").foregroundStyle(.secondary) }
+                }
+            }
+            .frame(height: 120)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .topLeading) {
+                Image(systemName: "play.fill")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.black.opacity(0.6)))
+                    .padding(4)
+            }
+            .overlay(alignment: .topTrailing) {
                 Button {
                     videoURL = nil
                     videoFirstFrame = nil
+                    videoCrop.wrappedValue = nil
                 } label: {
                     Image(systemName: "minus.circle.fill")
                         .foregroundStyle(.red)
+                        .background(Circle().fill(.white))
                 }
                 .buttonStyle(.plain)
-            } else {
+                .padding(4)
+            }
+            .overlay(alignment: .bottomTrailing) {
                 Button {
-                    showVideoFilePicker = true
+                    cropRequest = .playbackCrop(
+                        preview: videoFirstFrame,
+                        load: { url },
+                        current: VideoCrop(videoCrop.wrappedValue)
+                    ) { crop in
+                        videoCrop.wrappedValue = crop?.encoded
+                    }
                 } label: {
-                    Label("Files", systemImage: "folder")
-                        .labelStyle(.iconOnly)
+                    Image(systemName: "crop")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.black.opacity(0.6)))
                 }
-                .buttonStyle(.bordered)
-                .tint(.primary)
+                .buttonStyle(.plain)
+                .padding(4)
             }
         }
     }
 
     /// Horizontal strip of chosen images, each shown at its real aspect ratio (fixed
-    /// height, variable width), numbered at the top-left, and removable at the top-right.
+    /// height, variable width), numbered at the top-left, and removable at the top-right,
+    /// followed by the video tile when a video is picked.
     /// Reordering is done on a dedicated pushed screen via the "Reorder" button, since
     /// drag-to-reorder doesn't work reliably inside this `List`-hosted horizontal strip.
     @ViewBuilder
     private var imageGallery: some View {
-        if !images.isEmpty {
+        if mediaCount > 0 {
             VStack(alignment: .leading, spacing: 6) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -300,6 +299,8 @@ struct DesignSubmissionView: View {
                                     .padding(4)
                                 }
                         }
+
+                        videoTile
                     }
                     .padding(.vertical, 4)
                 }
@@ -318,9 +319,11 @@ struct DesignSubmissionView: View {
         }
     }
 
-    /// Stores the picked video and grabs its first frame for the row's preview.
+    /// Stores the picked video and grabs its first frame for the row's preview. A new
+    /// video starts uncropped.
     private func setVideo(_ url: URL) {
         videoURL = url
+        videoCrop.wrappedValue = nil
         isLoadingVideo = true
         Task {
             let frame = await VideoThumbnailGenerator.generateThumbnail(from: url, at: 0)
@@ -338,15 +341,37 @@ struct DesignSubmissionView: View {
     /// decoded into index-aligned slots so one that fails to load can't shift the rest;
     /// and the batch waits on any batch still in flight, so a slow iCloud download picked
     /// first still lands ahead of a quick one picked afterwards.
+    ///
+    /// A picked video isn't an image: it's copied out of the library and becomes the
+    /// post's single video (replacing any earlier pick), with the images loading as usual.
     private func loadImages(from items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
+        let videoItems = items.filter { $0.isVideo }
+        let imageItems = items.filter { !$0.isVideo }
+
+        // Only the last video picked can be kept, since the post holds one.
+        if let videoItem = videoItems.last {
+            isLoadingVideo = true
+            Task {
+                let movie = try? await videoItem.loadTransferable(type: VideoTransferable.self)
+                await MainActor.run {
+                    isLoadingVideo = false
+                    if let movie { setVideo(movie.url) }
+                }
+            }
+        }
+
+        guard !imageItems.isEmpty else {
+            pickerItems = []
+            return
+        }
         loadingBatchCount += 1
         let previous = lastLoad
         lastLoad = Task {
             await previous?.value
 
-            var loaded = [UIImage?](repeating: nil, count: items.count)
-            for (index, item) in items.enumerated() {
+            var loaded = [UIImage?](repeating: nil, count: imageItems.count)
+            for (index, item) in imageItems.enumerated() {
                 if let data = try? await item.loadTransferable(type: Data.self) {
                     loaded[index] = UIImage(data: data)
                 }
@@ -378,6 +403,13 @@ struct DesignSubmissionView: View {
                 loadingBatchCount -= 1
             }
         }
+    }
+}
+
+private extension PhotosPickerItem {
+    /// Whether the picked item is a video rather than a still image.
+    var isVideo: Bool {
+        supportedContentTypes.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
     }
 }
 
@@ -451,13 +483,13 @@ struct DesignEditView: View {
             DesignSubmissionView(
                 title: $edited.title,
                 designDescription: $edited.details,
-                category: $edited.designCategory,
                 releaseYear: $edited.releaseYear,
                 images: $images,
                 videoURL: $videoURL,
                 videoFirstFrame: $videoFirstFrame,
                 credits: $credits,
-                isEditing: true
+                isEditing: true,
+                videoCrop: $edited.videoCrop
             )
             .navigationTitle("Edit Design")
             .navigationBarTitleDisplayMode(.inline)
@@ -525,8 +557,14 @@ struct DesignDetailView: View {
     init(design: Submission, liked: Binding<Bool>) {
         self.passedDesign = design
         self._liked = liked
+        // Open the player at the video's known shape (from a previous load or the
+        // poster's dimensions) so it doesn't snap from 16:9 later.
+        self._videoAspectRatio = State(initialValue: VideoAspectCache.shared.displayAspect(for: design))
     }
 
+    /// The video's width ÷ height (after any playback crop), used to size the inline
+    /// player to the post's real shape. `nil` until known (falls back to 16:9).
+    @State private var videoAspectRatio: CGFloat?
     @State private var galleryImages: [UIImage] = []
     @State private var currentIndex = 0
     /// The resolved playable video (a local copy, or a streaming CDN URL).
@@ -579,10 +617,13 @@ struct DesignDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 6) {
+                            // Up to three lines, shrinking rather than truncating so every
+                            // word of the title is always visible.
                             Text(design.title)
                                 .font(.system(size: 28, weight: .bold))
-                                .minimumScaleFactor(0.6)
-                                .lineLimit(2)
+                                .minimumScaleFactor(0.5)
+                                .lineLimit(3)
+                                .fixedSize(horizontal: false, vertical: true)
 
                             // Category on the left, release year pinned to the row's
                             // right edge.
@@ -646,11 +687,14 @@ struct DesignDetailView: View {
         // still works.
         .presentationDragIndicator(.hidden)
         .task { loadGallery() }
+        .onAppear { PostAnalytics.shared.record(.open, for: design) }
         .sheet(item: $selectedPortfolioName) { person in
             PersonProfileView(name: person.name)
+                .onAppear { PostAnalytics.shared.record(.profileVisit, for: design) }
         }
         .sheet(isPresented: $showSendMessage) {
             SendPostMessageView(post: design)
+                .onAppear { PostAnalytics.shared.record(.message, for: design) }
         }
         .sheet(isPresented: $showReportSheet) {
             ReportContentView(post: design)
@@ -705,21 +749,26 @@ struct DesignDetailView: View {
 
     /// Swipeable, paged gallery of the post's images.
     private var gallery: some View {
-        TabView(selection: $currentIndex) {
-            ForEach(Array(galleryImages.enumerated()), id: \.offset) { index, image in
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity)
-                    .tag(index)
+        VStack(spacing: 0) {
+            TabView(selection: $currentIndex) {
+                ForEach(Array(galleryImages.enumerated()), id: \.offset) { index, image in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity)
+                        .tag(index)
+                }
             }
+            // The page dots sit beneath the artwork (below) instead of over it.
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(maxWidth: .infinity)
+            // Size the gallery to the current image's own aspect ratio so it displays at the
+            // same shape it was submitted — no letterboxing / black bars.
+            .aspectRatio(currentAspectRatio, contentMode: .fit)
+            .animation(.default, value: currentIndex)
+
+            GalleryPageDots(count: galleryImages.count, currentIndex: currentIndex)
         }
-        .tabViewStyle(.page(indexDisplayMode: galleryImages.count > 1 ? .automatic : .never))
-        .frame(maxWidth: .infinity)
-        // Size the gallery to the current image's own aspect ratio so it displays at the
-        // same shape it was submitted — no letterboxing / black bars.
-        .aspectRatio(currentAspectRatio, contentMode: .fit)
-        .animation(.default, value: currentIndex)
     }
 
     /// The video with a heading, shown below the description when the post also has
@@ -747,13 +796,19 @@ struct DesignDetailView: View {
             )
             // Recreate the player after an edit replaces the video.
             .id(videoReloadToken)
-            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            // Size the player to the video's real shape rather than forcing 16:9.
+            .aspectRatio(videoAspectRatio ?? (16.0 / 9.0), contentMode: .fit)
             .frame(maxWidth: .infinity)
             .clipped()
+            .task(id: videoReloadToken) {
+                if let ratio = await VideoAspectCache.shared.learn(design, from: AVURLAsset(url: videoURL)) {
+                    videoAspectRatio = ratio
+                }
+            }
         } else if let streamStatus {
-            VideoUnavailableView(status: streamStatus, tintColor: tintColor, detail: streamDebug)
+            VideoUnavailableView(status: streamStatus, tintColor: tintColor, detail: streamDebug, thumbnailData: design.thumbnailData)
         } else {
-            VideoStreamingLoadingView(tintColor: tintColor)
+            VideoStreamingLoadingView(tintColor: tintColor, aspectRatio: videoAspectRatio ?? (16.0 / 9.0))
                 .task { await resolveVideo() }
         }
     }
@@ -902,7 +957,6 @@ struct DesignDetailView: View {
 #Preview("Design Submission") {
     @Previewable @State var title = ""
     @Previewable @State var designDescription = ""
-    @Previewable @State var category = ""
     @Previewable @State var releaseYear = "2026"
     @Previewable @State var images: [UIImage] = []
     @Previewable @State var videoURL: URL?
@@ -913,7 +967,6 @@ struct DesignDetailView: View {
         DesignSubmissionView(
             title: $title,
             designDescription: $designDescription,
-            category: $category,
             releaseYear: $releaseYear,
             images: $images,
             videoURL: $videoURL,

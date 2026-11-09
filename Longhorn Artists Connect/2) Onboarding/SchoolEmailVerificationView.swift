@@ -17,6 +17,10 @@ struct SchoolEmailVerificationView: View {
     /// Label for the secondary action. "Skip for now" reads right during
     /// onboarding; "Cancel" is what you want when opened from Edit Profile.
     var dismissTitle: String = "Skip for now"
+    /// The school being verified. Onboarding passes the school picked a few
+    /// pages earlier (it isn't saved to `userSchool` until the profile is);
+    /// everywhere else falls back to the stored school.
+    var school: String? = nil
 
     // @Observable, so reading it in `body` is enough for invalidation — no
     // property wrapper needed for a shared instance the view doesn't own.
@@ -30,9 +34,29 @@ struct SchoolEmailVerificationView: View {
     @State private var errorMessage: String?
     @State private var didSucceed = false
 
-    private var canSendCode: Bool {
+    /// UT Austin students must verify with their `@my.utexas.edu` address, so
+    /// the domain is fixed and they only type the part before it. An empty
+    /// stored school is a pre-multi-school account, which was always UT.
+    private var fixedDomain: String? {
+        let name = school ?? UserDefaults.standard.string(forKey: "userSchool") ?? ""
+        return (name.isEmpty || name == UserProfileModel.utSchoolName) ? "my.utexas.edu" : nil
+    }
+
+    /// The address the code is sent to: the typed prefix plus the fixed domain
+    /// when there is one, otherwise whatever was typed.
+    private var fullEmail: String {
         let trimmed = email.trimmingCharacters(in: .whitespaces)
-        return trimmed.contains("@") && trimmed.contains(".") && !verification.isBusy
+        guard let fixedDomain else { return trimmed }
+        return trimmed.isEmpty ? "" : "\(trimmed)@\(fixedDomain)"
+    }
+
+    private var canSendCode: Bool {
+        guard !verification.isBusy else { return false }
+        if fixedDomain != nil {
+            return !email.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        let trimmed = email.trimmingCharacters(in: .whitespaces)
+        return trimmed.contains("@") && trimmed.contains(".")
     }
 
     private var canConfirm: Bool {
@@ -94,13 +118,27 @@ struct SchoolEmailVerificationView: View {
         VStack(alignment: .leading, spacing: 12) {
             // `axis: .vertical` keeps iOS from drawing its autofill box behind
             // single-line fields (same workaround as the other forms).
-            TextField("you@school.edu", text: $email, axis: .vertical)
-                .lineLimit(1)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.emailAddress)
-                .textContentType(.emailAddress)
-                .padding(.horizontal, 16)
+            HStack(spacing: 0) {
+                TextField(fixedDomain == nil ? "you@school.edu" : "eid", text: $email, axis: .vertical)
+                    .lineLimit(1)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.emailAddress)
+                    .textContentType(fixedDomain == nil ? .emailAddress : .username)
+                    .onChange(of: email) { _, newValue in
+                        // With a fixed domain only the part before "@" is
+                        // editable — a pasted full address keeps its prefix.
+                        guard fixedDomain != nil, let at = newValue.firstIndex(of: "@") else { return }
+                        email = String(newValue[..<at])
+                    }
+
+                if let fixedDomain {
+                    Text("@\(fixedDomain)")
+                        .foregroundStyle(.secondary)
+                        .layoutPriority(1)
+                }
+            }
+            .padding(.horizontal, 16)
                 .padding(.vertical, 14)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -117,7 +155,7 @@ struct SchoolEmailVerificationView: View {
 
     private var codeEntry: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("We sent a code to \(email.trimmingCharacters(in: .whitespaces)).")
+            Text("We sent a code to \(fullEmail).")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -208,9 +246,7 @@ struct SchoolEmailVerificationView: View {
     private func sendCode() async {
         errorMessage = nil
         do {
-            pending = try await verification.requestCode(
-                email: email.trimmingCharacters(in: .whitespaces)
-            )
+            pending = try await verification.requestCode(email: fullEmail)
             code = ""
         } catch {
             errorMessage = error.localizedDescription

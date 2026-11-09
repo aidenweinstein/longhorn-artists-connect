@@ -331,13 +331,15 @@ class SecurityManager {
                 }
             }
             
-            if let location = additionalFields["eventLocation"] as? String {
+            // Event location is optional; sanitize only when provided.
+            if let location = additionalFields["eventLocation"] as? String,
+               !location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if validateAndSanitizeText(
                     location,
                     maxLength: SecurityConstants.TextLengthLimits.unlimited,
                     fieldName: "location"
                 ) == nil {
-                    errors.append("Event location is required")
+                    errors.append("Invalid event location")
                 }
             }
             
@@ -355,9 +357,11 @@ class SecurityManager {
             
         case .reel:
             // Validate reel-specific fields
-            if let reelType = additionalFields["reelType"] as? String {
-                let validTypes = ["Acting", "Cinematography", "Editing", "Directing", "Music/Sound", "Other"]
-                if !validTypes.contains(reelType) {
+            // The form no longer asks for a reel type, so new posts carry an empty one; the
+            // names older posts stored are still accepted so editing them doesn't fail.
+            if let reelType = additionalFields["reelType"] as? String, !reelType.isEmpty {
+                let legacyTypes = ["Acting", "Cinematography", "Editing", "Directing", "Music/Sound", "Other"]
+                if !ReelSubmissionView.reelCategories.contains(reelType) && !legacyTypes.contains(reelType) {
                     errors.append("Invalid reel type")
                 }
             }

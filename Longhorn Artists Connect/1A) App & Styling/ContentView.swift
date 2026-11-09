@@ -17,6 +17,9 @@ struct ContentView: View {
     // True for accounts created via the "I'm an Industry Professional" onboarding flow.
     // These are restricted like guests for sharing (no Share tab) but keep the Network tab.
     @AppStorage("isIndustryProfessional") private var isIndustryProfessional: Bool = false
+    // The school a moderator is viewing/posting as (Moderate → Schools). Changing it
+    // rebuilds the tabs so every header, pill and asset picks up that school's theme.
+    @AppStorage(SchoolScope.moderatorSchoolKey) private var moderatorSchool: String = ""
 
     // Tracks foreground/background transitions so we can resync when the app becomes
     // active. Silent CloudKit pushes on the public database are best-effort and get
@@ -131,6 +134,12 @@ struct ContentView: View {
                 .tag("portfolio")
                 .tabItem { Image(systemName: "person.crop.circle") }
         }
+        .id(moderatorSchool)                            // Re-theme everything on a moderator school switch
+        .onChange(of: moderatorSchool) {
+            // Refetch so the feeds show the newly picked school's posts (once
+            // `SchoolScope.isFilteringEnabled` is on).
+            Task { await SubmissionStore_3_2.shared.syncWithCloudKit() }
+        }
         .transaction { $0.animation = nil }             // Disable tab switch animation
         // No scrollbars anywhere in the app. This is an environment value, so it reaches
         // every ScrollView / List / TextEditor in all five tabs *and* in the sheets and
@@ -147,7 +156,12 @@ struct ContentView: View {
             // deleted on other devices show up even if the push notification never
             // arrived.
             if newPhase == .active {
-                Task { await SubmissionStore_3_2.shared.syncWithCloudKit() }
+                Task {
+                    await SubmissionStore_3_2.shared.syncWithCloudKit()
+                    // Silent pushes are best-effort, so also look for new casting /
+                    // crew calls matching the user's tags on every foreground sync.
+                    await RoleCallNotifier.noticeOpenRoles(in: SubmissionStore_3_2.shared.visibleApprovedSubmissions)
+                }
                 // Reconcile the home-screen badge with the real unread total. CloudKit
                 // only ever increments the badge on message delivery, so without this it
                 // lingered on the icon even after every message had been read. Guests
@@ -155,6 +169,9 @@ struct ContentView: View {
                 if !isGuestUser {
                     Task { MessageStore.shared.syncApplicationBadge() }
                 }
+                // Top the event reminders back up: iOS caps pending notifications, so
+                // later events only get scheduled once earlier reminders have fired.
+                Task { await EventReminderScheduler.reschedule(for: SubmissionStore_3_2.shared.visibleApprovedSubmissions) }
             } else if newPhase == .background {
                 // Reclaim disk every time the app backgrounds, not just at launch. Video
                 // and audio stream from the CDN and aren't downloaded for playback, so
@@ -181,11 +198,38 @@ struct ContentView: View {
             // appears and the only way forward is to tap "Update".
             await versionChecker.check()
         }
+        // Event reminders live in their own tiny view so that observing the submission
+        // store doesn't re-evaluate this root view (and with it all five tabs) on every
+        // store change — that re-render on each sync/like/upload tick made the whole app
+        // feel sluggish.
+        .background { EventReminderCoordinator() }
+        .task {
+            // Weekly "<show> is Live!" notifications — see LiveStreams.swift.
+            await LiveStreamNotifications.schedule()
+        }
         .alert("A new version is available!", isPresented: $versionChecker.updateAvailable) {
             Button("Update") {
                 versionChecker.openAppStore()
             }
         }
+    }
+}
+
+// MARK: - Event Reminder Coordinator
+
+/// Invisible view that keeps the on-device event reminders in step with the events
+/// feed. It's the only thing at the root that observes the submission store, so a
+/// store change re-evaluates just this view rather than the whole tab bar.
+private struct EventReminderCoordinator: View {
+    @ObservedObject private var submissionStore = SubmissionStore_3_2.shared
+
+    var body: some View {
+        Color.clear
+            .task(id: EventReminderScheduler.signature(for: submissionStore.visibleApprovedSubmissions)) {
+                // Every user gets reminders 3 days, 1 day and 1 hour before each event.
+                // Re-runs whenever an event is added, edited or removed.
+                await EventReminderScheduler.reschedule(for: submissionStore.visibleApprovedSubmissions)
+            }
     }
 }
 

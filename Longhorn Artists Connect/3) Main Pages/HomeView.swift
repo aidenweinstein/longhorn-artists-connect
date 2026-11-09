@@ -38,19 +38,22 @@ struct HomeView_1: View {
     }
 
     // MARK: - Feed Mode
-    /// Each category cycles through three modes when its icon is re-tapped:
-    /// normal (chronological strip) → fire (trending) → saved (your saved + liked) → normal.
-    /// The highlight bubble behind the icon reflects the mode.
+    /// Re-tapping the selected category's icon toggles it between the normal feed and
+    /// "connections only" — just posts by or crediting people you're connected with.
+    /// The highlight bubble behind the icon reflects the mode. (`fire` and `saved` are
+    /// the retired trending / saved modes; nothing switches into them any more.)
     enum FeedMode: Hashable {
         case normal
         case fire
         case saved
+        case connections
 
         var next: FeedMode {
             switch self {
-            case .normal: return .fire
-            case .fire:   return .saved
-            case .saved:  return .normal
+            case .normal:      return .connections
+            case .connections: return .normal
+            case .fire:        return .saved
+            case .saved:       return .normal
             }
         }
     }
@@ -70,6 +73,16 @@ struct HomeView_1: View {
     @State private var feedSeed: UInt64 = 0
     @State private var seenSnapshot: Set<UUID> = []
 
+    // Set after the first `onAppear`. The view stays alive inside the TabView, so
+    // `onAppear` fires again every time the user switches back to Home; without this
+    // guard each tab switch would re-roll the ordering and reshuffle the feed.
+    @State private var hasLoadedFeed = false
+
+    // The `feedTaskID` whose trending like counts were last fetched. `.task(id:)`
+    // re-runs on every re-appear too, so this lets the fetch skip when the category and
+    // mode haven't actually changed since the last run.
+    @State private var lastLikeFetchID: String?
+
     // Pull-to-refresh count for this visit. Once it reaches
     // `ContentRecommender.refreshesBeforeFullRandom` the normal feed stops ranking and
     // serves posts in a completely random order, re-rolled on every further refresh.
@@ -81,9 +94,28 @@ struct HomeView_1: View {
     // `reloadFeedOrdering()` on appear / pull-to-refresh, and after the trending fetch.
     @State private var likeSnapshot: [UUID: Int] = [:]
 
+    // While a pull-to-refresh is in flight the feed keeps showing exactly what was on
+    // screen when the pull started. The fresh ordering (and anything the sync brought
+    // in) is swapped in only when the refresh ends and the spinner goes away — like
+    // Instagram — instead of the feed re-sorting under the spinner while it can't scroll.
+    @State private var refreshFreeze: RefreshFreeze?
+
+    private struct RefreshFreeze {
+        let selection: Category
+        let mode: FeedMode
+        let posts: [Submission]
+    }
+
     // Directory profiles, so a name search can surface people (shown above posts).
     @ObservedObject private var userManager = UserProfileManager.shared
     @State private var selectedSearchUser: DirectoryUser?
+
+    // Private connections, for the "connections only" feed mode.
+    @ObservedObject private var connections = ConnectionsManager.shared
+
+    // Student orgs, so a name search can surface them too (shown between people and posts).
+    @ObservedObject private var orgStore: OrganizationStore = .shared
+    @State private var selectedSearchOrg: Organization?
 
     // MARK: - Toolbar Format Per Screen Size
     /// Tunable toolbar item sizes and positions for the Home page.
@@ -102,7 +134,7 @@ struct HomeView_1: View {
         var logoHeight: CGFloat
         // iPad-only knobs (default to no-ops so iPhone layout is unaffected):
         /// Extra horizontal/vertical nudge applied to the logo.
-        var logoOffsetX: CGFloat = 0
+        var logoOffsetX: CGFloat = 1
         var logoOffsetY: CGFloat = 0
         /// Fixed length (width) of the pill capsule. `nil` sizes it to its content.
         var pillLength: CGFloat? = nil
@@ -131,12 +163,12 @@ struct HomeView_1: View {
     // MARK: - Per-Element Toolbar Tuning (affects every screen size at once)
     // Nexus asset (the wordmark logo).
     private var nexusSize: CGFloat { 1.6 }      // size multiplier
-    private var nexusOffsetX: CGFloat { -7 }     // + = right
+    private var nexusOffsetX: CGFloat { -3.6 }     // + = right
     private var nexusOffsetY: CGFloat { -2 }     // + = down
     // Toggle bar (the category pill / search bar).
-    private var toggleSize: CGFloat { 0.95 }
-    private var toggleOffsetX: CGFloat { 13 }
-    private var toggleOffsetY: CGFloat { -3 }
+    private var toggleSize: CGFloat { 0.9 }
+    private var toggleOffsetX: CGFloat { 10 }
+    private var toggleOffsetY: CGFloat { -2.8 }
     private var togglePadding: CGFloat { 0 }    // space reserved around it
 
     /// The per-device format, universally scaled by `toolbarSizeMultiplier`, with the
@@ -158,10 +190,12 @@ struct HomeView_1: View {
             return ToolbarFormat(toolbarScale: 1.09, pillOffsetX: -10, pillOffsetY: -2, logoHeight: 29, barHeight: 52)
         case .size440x956: // iPhone 16 Pro Max, 17 Pro Max
             return ToolbarFormat(toolbarScale: 1.12, pillOffsetX: -10, pillOffsetY: -2, logoHeight: 29, barHeight: 53)
+        // iPad: the orange bar spans the screen, but its contents stay iPhone-sized and
+        // centered (see `ScreenSizeFormat.toolbarContentMaxWidth`), so these match the phone.
         case .iPad11: // iPad Pro 11", iPad Air 11"
-            return ToolbarFormat(toolbarScale: 1.35, pillOffsetX: -12, pillOffsetY: -7, logoHeight: 35, logoOffsetX: 0, logoOffsetY: -10, pillLength: nil, barHeight: 66)
+            return ToolbarFormat(toolbarScale: 1.02, pillOffsetX: -9, pillOffsetY: -2, logoHeight: 27, barHeight: 50)
         case .iPad13: // iPad Pro 13", iPad Air 13"
-            return ToolbarFormat(toolbarScale: 1.55, pillOffsetX: -14, pillOffsetY: -7, logoHeight: 41, logoOffsetX: 0, logoOffsetY: -10, pillLength: nil, barHeight: 72)
+            return ToolbarFormat(toolbarScale: 1.02, pillOffsetX: -9, pillOffsetY: -2, logoHeight: 27, barHeight: 50)
         }
     }
 
@@ -175,9 +209,12 @@ struct HomeView_1: View {
     /// - `feedHorizontalPadding`: insets the whole feed from the screen edges.
     ///   0 = full-bleed cards; larger values make the cards narrower. Because
     ///   the post cards are width-driven, this is the main size knob for them.
+    /// - `columnSpacing`: horizontal gap between feed columns on iPad. The iPhone feed
+    ///   is a single column, so it has no effect there.
     private struct FeedFormat {
         var postSpacing: CGFloat
         var feedHorizontalPadding: CGFloat
+        var columnSpacing: CGFloat = 0
     }
 
     /// Adjust the values in each case to tune the feed for that screen size.
@@ -191,10 +228,12 @@ struct HomeView_1: View {
             return FeedFormat(postSpacing: 0, feedHorizontalPadding: 0)
         case .size440x956: // iPhone 16 Pro Max, 17 Pro Max
             return FeedFormat(postSpacing: 0, feedHorizontalPadding: 0)
+        // iPad shows two columns of posts in portrait and three in landscape (see
+        // `FeedColumns`); the cards themselves stay iPhone-sized.
         case .iPad11: // iPad Pro 11", iPad Air 11"
-            return FeedFormat(postSpacing: 0, feedHorizontalPadding: 0)
+            return FeedFormat(postSpacing: 0, feedHorizontalPadding: 0, columnSpacing: 0)
         case .iPad13: // iPad Pro 13", iPad Air 13"
-            return FeedFormat(postSpacing: 0, feedHorizontalPadding: 0)
+            return FeedFormat(postSpacing: 0, feedHorizontalPadding: 0, columnSpacing: 0)
         }
     }
 
@@ -226,12 +265,25 @@ struct HomeView_1: View {
                 // Live upload banner: shows while a just-posted film/music/reel is
                 // still uploading to CloudKit, then disappears once it lands.
                 HomeUploadBanner()
-                feedContent
+                // Moderators only: fields the deployed CloudKit schema is missing.
+                SchemaGapBanner()
+                // Live shows (e.g. Longhorn Late Night) — see LiveStreams.swift.
+                LiveStreamBanner()
+                // The feed takes the rest of the page. Its width decides how many
+                // columns of posts it shows: one on iPhone, two or three on iPad.
+                GeometryReader { geo in
+                    feedContent(width: geo.size.width)
+                }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 if startInSearchMode { isSearching = true }
+                // Only roll the feed ordering on the first appearance. Switching tabs
+                // and coming back keeps whatever order was already on screen; a fresh
+                // order is pull-to-refresh's job.
+                guard !hasLoadedFeed else { return }
+                hasLoadedFeed = true
                 reloadFeedOrdering()
             }
             .task { await userManager.fetchAllUsers() }
@@ -243,6 +295,11 @@ struct HomeView_1: View {
                     UserPortfolioView(user: UserProfile(directoryUser: user), portfolioOrder: user.portfolioOrder)
                 }
             }
+            // Org pages present from the bottom (no back button), matching the Organizations list.
+            .sheet(item: $selectedSearchOrg) { org in
+                NavigationStack { OrganizationPageView(organization: org) }
+                    .presentationDragIndicator(.hidden)
+            }
         }
     }
 
@@ -251,6 +308,9 @@ struct HomeView_1: View {
         toolbarContent
             .frame(height: 44 * toolbarScale)
             .padding(.horizontal, 12 * toolbarScale)
+            // iPad: keep the logo + pill iPhone-sized and centered while the orange bar
+            // behind them still runs edge to edge. `nil` (no limit) on iPhone.
+            .frame(maxWidth: ScreenSizeFormat.toolbarContentMaxWidth)
             .padding(.vertical, 6 * toolbarScale)
             // Fixed header height (uniform across all five pages) with the orange bleeding
             // up behind the status bar / Dynamic Island. Content taller than the bar just
@@ -261,15 +321,28 @@ struct HomeView_1: View {
     }
 
 // SCROLLABLE FEED
+    /// The feed laid out for `width` points: one column on iPhone, two or three on
+    /// iPad (see `FeedColumns`). Every column lives in the same scroll view, so they
+    /// all scroll together.
     @ViewBuilder
-    private var feedContent: some View {
+    private func feedContent(width: CGFloat) -> some View {
+        let columns = FeedColumns.count(forWidth: width)
+        // Handed to each card so its first frame is already the right height, instead
+        // of starting at full-screen width and snapping once it has measured itself.
+        let columnWidth = FeedColumns.columnWidth(
+            totalWidth: width,
+            count: columns,
+            spacing: feedFormat.columnSpacing,
+            horizontalPadding: feedFormat.feedHorizontalPadding
+        )
         if isSearching && searchText.isEmpty {
             searchPlaceholder
         } else if isSearching {
-            // Search results: matching profiles first, then matching posts.
+            // Search results: matching profiles first, then orgs, then matching posts.
             let profiles = matchingProfiles
+            let orgs = matchingOrganizations
             let posts = postsForSelection
-            if profiles.isEmpty && posts.isEmpty {
+            if profiles.isEmpty && orgs.isEmpty && posts.isEmpty {
                 List {
                     Text(emptyStateMessage)
                         .foregroundStyle(.secondary)
@@ -278,15 +351,17 @@ struct HomeView_1: View {
                 .refreshable { await refreshSubmissions() }
             } else {
                 ScrollView {
-                    LazyVStack(spacing: feedFormat.postSpacing) {
+                    feedGrid(columns: columns) {
                         ForEach(profiles) { user in
                             searchProfileRow(user)
                         }
+                        ForEach(orgs) { org in
+                            searchOrganizationRow(org)
+                        }
                         ForEach(posts) { post in
-                            HomePostCard(post: post, showTypeIcon: selection == .all)
+                            HomePostCard(post: post, showTypeIcon: selection == .all, estimatedWidth: columnWidth)
                         }
                     }
-                    .padding(.horizontal, feedFormat.feedHorizontalPadding)
                 }
                 .scrollIndicators(.hidden)
                 // Keep the feed at full height while the search keyboard is up, so it
@@ -294,7 +369,7 @@ struct HomeView_1: View {
                 .ignoresSafeArea(.keyboard, edges: .bottom)
                 .refreshable { await refreshSubmissions() }
             }
-        } else if postsForSelection.isEmpty {
+        } else if displayedPosts.isEmpty {
             List {
                 Text(emptyStateMessage)
                     .foregroundStyle(.secondary)
@@ -303,12 +378,11 @@ struct HomeView_1: View {
             .refreshable { await refreshSubmissions() }
         } else {
             ScrollView {
-                LazyVStack(spacing: feedFormat.postSpacing) {
-                    ForEach(postsForSelection) { post in
-                        HomePostCard(post: post, showTypeIcon: selection == .all)
+                feedGrid(columns: columns) {
+                    ForEach(displayedPosts) { post in
+                        HomePostCard(post: post, showTypeIcon: selection == .all, estimatedWidth: columnWidth)
                     }
                 }
-                .padding(.horizontal, feedFormat.feedHorizontalPadding)
             }
             .scrollIndicators(.hidden)
             // Trending mode needs authoritative like counts; fetch them for the posts
@@ -318,6 +392,29 @@ struct HomeView_1: View {
         }
     }
 
+    /// The feed's layout: `columns` equal-width, top-aligned columns of cards, inset
+    /// from the screen edges by the feed padding. With one column this is exactly the
+    /// old single stack of full-width cards.
+    private func feedGrid<Content: View>(columns: Int, @ViewBuilder content: () -> Content) -> some View {
+        LazyVGrid(
+            columns: FeedColumns.gridItems(count: columns, spacing: feedFormat.columnSpacing),
+            spacing: feedFormat.postSpacing
+        ) {
+            content()
+        }
+        .padding(.horizontal, feedFormat.feedHorizontalPadding)
+    }
+
+    /// What the normal (non-search) feed shows: the snapshot frozen at the start of a
+    /// pull-to-refresh while that refresh is still running for this category and mode,
+    /// otherwise the live ordering.
+    private var displayedPosts: [Submission] {
+        if let freeze = refreshFreeze, freeze.selection == selection, freeze.mode == currentMode {
+            return freeze.posts
+        }
+        return postsForSelection
+    }
+
     /// Re-runs the trending like-count fetch when the selected category or its mode changes.
     private var feedTaskID: String { "\(selection.rawValue)|\(currentMode)" }
 
@@ -325,6 +422,10 @@ struct HomeView_1: View {
     /// CloudKit so the trending sort reflects real cross-user engagement.
     private func refreshVisibleLikeCountsIfNeeded() async {
         guard currentMode == .fire else { return }
+        // `.task(id:)` also re-runs when the tab is re-shown. Skip the fetch (and the
+        // reorder it can cause) unless the category or mode actually changed.
+        guard lastLikeFetchID != feedTaskID else { return }
+        lastLikeFetchID = feedTaskID
         for post in postsForSelection {
             await store.refreshLikeCount(for: post.id)
         }
@@ -359,9 +460,13 @@ struct HomeView_1: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(user.fullName)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(user.fullName)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        UserVerifiedBadge(userID: user.id)
+                            .font(.subheadline)
+                    }
                     if !user.rolesString.isEmpty {
                         Text(user.rolesString)
                             .font(.caption)
@@ -387,6 +492,36 @@ struct HomeView_1: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, 4)
+    }
+
+    /// A tappable org card shown in search results (between profiles and posts). Uses the
+    /// same card and height as the Organizations list, and opens the org's page.
+    private func searchOrganizationRow(_ org: Organization) -> some View {
+        Button {
+            selectedSearchOrg = org
+        } label: {
+            OrganizationCard(organization: org)
+                .frame(maxWidth: .infinity)
+                .frame(height: 96)
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 4)
+    }
+
+    /// Orgs whose name matches the search query (exact → contains → similar).
+    private var matchingOrganizations: [Organization] {
+        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+
+        let orgs = orgStore.organizations
+        let exact = orgs.filter { $0.name.lowercased() == q }
+        let contains = orgs.filter { $0.name.lowercased() != q && $0.name.lowercased().contains(q) }
+        let similar = orgs
+            .filter { o in !exact.contains(where: { $0.id == o.id }) && !contains.contains(where: { $0.id == o.id }) }
+            .filter { levenshteinDistance($0.name.lowercased(), q) <= 2 }
+            .sorted { levenshteinDistance($0.name.lowercased(), q) < levenshteinDistance($1.name.lowercased(), q) }
+
+        return exact + contains + similar
     }
 
     /// Directory profiles whose name matches the search query (exact → contains →
@@ -432,6 +567,9 @@ struct HomeView_1: View {
             }
         }
         .frame(maxWidth: isSearching ? .infinity : toolbarFormat.pillLength)
+        // Pin the pre-scale height so that, after `scaleEffect(toggleSize)`, the pill
+        // renders at the app-wide toolbar pill height every other page matches.
+        .frame(height: ScreenSizeFormat.toolbarPillHeight / toggleSize)
         // The horizontal nudge is meant for the narrow filter pill; applying it to
         // the full-width search bar pushes its left edge too far out, so skip it
         // while searching to keep both ends evenly inset.
@@ -483,8 +621,7 @@ struct HomeView_1: View {
 
 // NEXUS LOGO
     private var nexusLogo: some View {
-        Image("Nexus")
-            .resizable()
+        SchoolAssetImage("Nexus")
             .scaledToFill()
             .frame(height: toolbarFormat.logoHeight)
             .offset(x: 5, y: -1)
@@ -538,9 +675,14 @@ struct HomeView_1: View {
                 }
                 .onEnded { value in
                     let index = nearestCategoryIndex(forX: value.location.x)
-                    // Tapping selects the category. Re-tapping the current one is a no-op
-                    // (the trending / saved feed modes were removed).
-                    selection = Category.allCases[index]
+                    let tapped = Category.allCases[index]
+                    // Tapping selects the category. Re-tapping the current one toggles
+                    // it between the normal feed and "connections only".
+                    if tapped == selection {
+                        categoryModes[tapped] = currentMode == .connections ? .normal : .connections
+                    } else {
+                        selection = tapped
+                    }
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         pillDragX = nil
                     }
@@ -578,6 +720,19 @@ struct HomeView_1: View {
         switch currentMode {
         case .normal:
             Capsule().fill(Color.pillBackground)
+        case .connections:
+            // Same pill with a small "people" badge on its shoulder, so the category
+            // icon stays readable and the badge says whose posts these are.
+            Capsule()
+                .fill(Color.pillBackground)
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 7 * toolbarScale, weight: .bold))
+                        .foregroundStyle(Color.brandOrange)
+                        .padding(3 * toolbarScale)
+                        .background(Circle().fill(.white))
+                        .offset(x: 4 * toolbarScale, y: -4 * toolbarScale)
+                }
         case .fire:
             Capsule()
                 .fill(
@@ -624,7 +779,7 @@ struct HomeView_1: View {
     private var searchPlaceholder: some View {
         VStack {
             Spacer()
-            Text("Search for a specific artist, project, genre, etc...")
+            Text("Search for a specific artist, project, org, genre, etc...")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -698,23 +853,50 @@ struct HomeView_1: View {
             // After a few refreshes, drop the ranking and serve a completely random
             // order so repeated refreshing keeps surfacing different posts.
             if refreshCount >= ContentRecommender.refreshesBeforeFullRandom {
-                return ContentRecommender.shuffle(posts, seed: feedSeed)
+                return ContentRecommender.shuffle(posts, id: { $0.id }, seed: feedSeed)
             }
             // Default feed: recommendation ranking — most-liked first, ties randomized,
             // already-seen posts sunk to the bottom (see Algorithms.swift).
-            return ContentRecommender.rank(
+            let ranked = ContentRecommender.rank(
                 posts,
                 id: { $0.id },
                 likeCount: orderingLikeCount,
                 seenIDs: seenSnapshot,
                 seed: feedSeed
             )
+            // On All, lead with the kind of work the viewer's tags are about (films
+            // for film tags, performances for actors, music for musicians). No
+            // matching tags leaves the ranking as is.
+            if selection == .all {
+                return CreativeGroup.recommend(ranked, for: CreativeGroup.mine)
+            }
+            return ranked
         case .fire:
             // Trending: likes decayed by age, so newer popular posts beat old ones.
             return posts.sorted { trendingScore($0) > trendingScore($1) }
         case .saved:
             // Everything you've saved (any collection) plus everything you've liked.
             return posts.filter { isSaved($0) }.sorted { $0.createdDate > $1.createdDate }
+        case .connections:
+            // Posts made by, or crediting, someone you're connected with — newest first.
+            return posts.filter(isFromConnection).sorted { $0.createdDate > $1.createdDate }
+        }
+    }
+
+    /// Whether a post was posted by, or credits, one of the user's connections.
+    /// Matches by linked profile ID where a credit has one, else by name — the same
+    /// rules the Collaborators stats use.
+    private var isFromConnection: (Submission) -> Bool {
+        let connected = connections.connectedUsers(in: userManager.allUsers)
+        guard !connected.isEmpty else { return { _ in false } }
+        let ids = Set(connected.map(\.messagingUserID))
+        let names = Set(connected.map { Collaborator.nameKey(for: $0.fullName) })
+        return { post in
+            if names.contains(Collaborator.nameKey(for: post.submittedBy)) { return true }
+            return post.creditEntries.contains { entry in
+                if let id = Collaborator.normalizedProfileID(entry.profileID), ids.contains(id) { return true }
+                return names.contains(Collaborator.nameKey(for: entry.name))
+            }
         }
     }
 
@@ -794,6 +976,11 @@ struct HomeView_1: View {
     private var emptyStateMessage: String {
         if !searchText.isEmpty { return "No results found." }
         if currentMode == .saved { return "No saved posts yet. Like or bookmark posts to see them here." }
+        if currentMode == .connections {
+            return connections.connectedIDs.isEmpty
+                ? "No connections yet. Connect with people from their profile to see their posts here."
+                : "No posts from your connections yet. Tap the icon again to see everything."
+        }
         switch selection {
         case .all:         return "No posts."
         case .film:        return "No films."
@@ -804,12 +991,25 @@ struct HomeView_1: View {
         }
     }
 
-    /// Syncs with CloudKit, then waits 0.5s so the spinner doesn't flash too fast.
+    /// Pull-to-refresh. Freezes the feed as it currently appears, syncs with CloudKit
+    /// (waiting at least 0.5s so the spinner doesn't flash), and only then — as the
+    /// spinner is dismissed and the feed is scrollable again — swaps in the new ordering.
+    /// Reordering up front made the posts shuffle under the spinner mid-refresh.
     private func refreshSubmissions() async {
+        if searchText.isEmpty {
+            refreshFreeze = RefreshFreeze(selection: selection, mode: currentMode, posts: postsForSelection)
+        }
         refreshCount += 1
-        reloadFeedOrdering()
         await store.syncWithCloudKit()
         try? await Task.sleep(nanoseconds: 500_000_000)
+        // Swap without animating, so the new feed simply appears rather than the old
+        // cards visibly sliding into their new positions.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            reloadFeedOrdering()
+            refreshFreeze = nil
+        }
     }
 
     /// Re-rolls the recommendation ordering for a fresh page load: a new random seed for
@@ -882,5 +1082,33 @@ private struct RibbonTail: Shape {
     let _ = (ScreenSizeFormat.previewOverride = .size440x956)
     HomeView_1()
 }
+
+#Preview("Home iPad 11\" portrait", traits: .fixedLayout(width: 834, height: 1194)) {
+    let _ = (ScreenSizeFormat.previewOverride = .iPad11)
+    HomeView_1()
+}
+
+#Preview("Home iPad 11\" landscape", traits: .fixedLayout(width: 1194, height: 834)) {
+    let _ = (ScreenSizeFormat.previewOverride = .iPad11)
+    HomeView_1()
+}
+
+// TEMP-VERIFY-START
+#Preview("TEMP iPad grid portrait", traits: .fixedLayout(width: 834, height: 1194)) {
+    let _ = (ScreenSizeFormat.previewOverride = .iPad11)
+    let _ = (SubmissionStore_3_2.shared.approvedSubmissions = ["Sample Film A", "Sample Film B", "Sample Film C"].map {
+        Submission(id: UUID(), type: .film, title: $0, details: "", isApproved: true, submittedBy: "Preview")
+    })
+    HomeView_1()
+}
+
+#Preview("TEMP iPad grid landscape", traits: .fixedLayout(width: 1194, height: 834)) {
+    let _ = (ScreenSizeFormat.previewOverride = .iPad11)
+    let _ = (SubmissionStore_3_2.shared.approvedSubmissions = ["Sample Film A", "Sample Film B", "Sample Film C"].map {
+        Submission(id: UUID(), type: .film, title: $0, details: "", isApproved: true, submittedBy: "Preview")
+    })
+    HomeView_1()
+}
+// TEMP-VERIFY-END
 
 #endif

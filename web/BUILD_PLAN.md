@@ -69,6 +69,8 @@ web/
 │   │   ├── credits.ts
 │   │   └── records.ts
 │   ├── moderation.ts
+│   ├── profileStyles.ts              ← base profiles + public-page listings
+│   ├── now.ts                        ← the Now page's matching
 │   ├── ranking.ts
 │   ├── likes.ts
 │   ├── seen.ts
@@ -78,6 +80,8 @@ web/
 │   ├── globals.css
 │   ├── page.tsx                          /
 │   ├── discover/page.tsx                 /discover
+│   ├── now/page.tsx                      /now   (first page of Discover in the app)
+│   ├── people/page.tsx                   /people?tab=everyone|actors|filmmakers|musicians
 │   ├── film/[id]/page.tsx
 │   ├── music/[id]/page.tsx
 │   ├── reel/[id]/page.tsx
@@ -106,12 +110,18 @@ web/
 │   ├── PostGrid.tsx
 │   ├── CreditList.tsx
 │   ├── AssetImage.tsx
-│   └── VideoPlayer.tsx
+│   ├── VideoPlayer.tsx
+│   ├── ActorSheet.tsx                ← headshot + stats + reel + resume (Actor/Dancer tags)
+│   ├── Filmography.tsx               ← credits grouped by job + stills grid (film tags)
+│   ├── Discography.tsx               ← streaming links, songs, albums & EPs, shows (music tags)
+│   └── PeopleGrid.tsx                ← large photo cards, 2–3 across, for /people
 └── test/
     ├── sign.test.ts
     ├── decode.test.ts
     ├── credits.test.ts
     ├── moderation.test.ts
+    ├── profileStyles.test.ts
+    ├── now.test.ts
     └── ranking.test.ts
 ```
 
@@ -186,7 +196,8 @@ groupings, so a schema change is a two-file edit with an obvious diff.
 
 | Export | Signature |
 |---|---|
-| `RecordTypes` | `const` object: `film`, `music`, `reel`, `project`, `event`, `photography`, `design`, `legacySubmission`, `postLike`, `moderationAction`, `moderationEdit`, `flag`, `userProfile`, `verification`, `organization`, `orgContentLink`, `conversation`, `message` |
+| `RecordTypes` | `const` object: `film`, `music`, `reel`, `project`, `event`, `photography`, `design`, `legacySubmission`, `postLike`, `moderationAction`, `moderationEdit`, `flag`, `userProfile`, `verification`, `creativeProfile`, `organization`, `orgContentLink`, `conversation`, `message` |
+| `CreativeGroup` | `"Actor" \| "Filmmaker" \| "Musician"` — derived from `UserProfile.userTypes`, never stored. Port the tag→group table from `13) Profile Styles/CreativeGroup.swift` (`tags`) verbatim: Actor = Actor, Dancer; Musician = Musician, Singer, Composer; Filmmaker = Director, Producer, Writer, Editor, Cinematographer, Sound Mixer, Animator, VFX Artist. |
 | `LIVE_SUBMISSIONS` | `readonly string[]` — the seven postable types |
 | `ALL_SUBMISSIONS` | `LIVE_SUBMISSIONS` + `legacySubmission` |
 | `PostType` | `"film" \| "music" \| "reel" \| "photography" \| "design" \| "project" \| "event"` — the URL segment union |
@@ -275,6 +286,7 @@ Photography `:980`, Design `:1172`, Project `:1376`, Event `:1708`).
 | `decodeProject` | `(r: CKRecord) => Project \| null` |
 | `decodeEvent` | `(r: CKRecord) => Event \| null` |
 | `decodeUserProfile` | `(r: CKRecord) => UserProfile \| null` |
+| `decodeCreativeProfile` | `(r: CKRecord) => CreativeProfile \| null` — `details` (JSON string → `CreativeDetails`, every key optional, mirrors the `decodeIfPresent` initializers in `CreativeGroup.swift`; `musician.streamingLinks` is a `{ [service]: url }` map), `headshot` (asset), `updatedAt`. Record name `CreativeProfile_<userRecordName>`. |
 | `decodeOrganization` | `(r: CKRecord) => Organization \| null` |
 | `decodePost` | `(r: CKRecord) => Post \| null` | dispatches on `recordType` |
 
@@ -297,6 +309,48 @@ removed post must be unreachable, not merely unlisted.
 
 If `fetchModerationState` throws, **fail closed** — serve stale cache or an
 error, never an unmoderated feed.
+
+## lib/profileStyles.ts
+
+Parity with `13) Profile Styles/CreativeGroup.swift` and
+`CreativeProfileStore.swift`. There is **no profile type to pick and no moderator
+queue**: a person's role tags (`UserProfile.userTypes`) put them in zero or more
+groups — Actor, Filmmaker, Musician — and each group unlocks a section on their
+profile and a tab on `/people`. The optional `CreativeProfile` record only carries
+the extra details (headshot, Actors Access stats, streaming links…); a person with
+an Actor tag and no record still gets an actor section built from their credits.
+
+**Sync with the app is automatic**: both read the same `UserProfile.userTypes` and
+`CreativeProfile` records, so whoever is on the app's Actors tab is on the web's.
+
+| Export | Signature | Does |
+|---|---|---|
+| `groupsFor` | `(userTypes: string[]) => Set<CreativeGroup>` | The tag→group table from `CreativeGroup.tags`. |
+| `fetchCreativeProfiles` | `() => Promise<Map<string, CreativeProfile>>` | `queryAll` over `CreativeProfile`, keyed by raw user record name (strip `UserProfile_` / `CreativeProfile_`, per `CreativeProfileStore.rawUserID`). |
+| `peopleFor` | `(tab: "everyone" \| CreativeGroup, directory: UserProfile[], profiles) => Array<{ user; profile? }>` | Students (not guests) in the viewer's school scope whose tags fall in the group; Everyone = all. Sorted by last name. Mirrors `DirectoryTab.includes` + `NetworkDirectoryView.groupStudents`. |
+| `resumeLines` | `(details, name, userID, posts) => ResumeLine[]` | Actor: cast credits on Nexus posts + typed-in `details.actor.resume`, grouped by category in the order `StyledProfileSection.actorResume` uses. |
+| `filmography` | `(name, userID, posts) => Array<{ role; items }>` | Filmmaker: every credit grouped by job, biggest group first, cast credits under "Actor". |
+| `discography` | `(details, name, userID, posts) => { links; songs; records; shows }` | Musician: `details.musician.streamingLinks` as buttons (add `https://` when the scheme is missing, per `MusicianDetails.url(for:)`); music posts under their name / artist name or crediting them; `EP` / `Album` split out; upcoming events they're in the lineup of. |
+
+Credit matching uses the same rule as the app (`PersonMatcher.make`): linked
+`profileID` when the credit has one, else normalised name — see `credits.ts`.
+
+## lib/now.ts
+
+The Now page (`/now`) is per-viewer, so it is **never cached across users**.
+Port from `NowView.swift` and `ProfileStyle.swift`:
+
+| Export | Signature | Does |
+|---|---|---|
+| `parseCastRole` | `(wording: string) => CastRoleRequirements` | Port of `CastRoleRequirements.init(wording:)`: gender, age range ("18–25", "early 20s", "25+", "22yo", "teen"), ethnicity groups, skills. Keep the tables in one place and copy them verbatim. |
+| `roleFits` | `(req, actor: ActorDetails) => boolean` | Port of `fits(_:)`: blank actor fields don't rule them out; skills do. |
+| `actorNow` | `(viewer, posts) => { shooting; matchingRoles }` | Shown when the viewer has an Actor/Dancer tag. Projects they're cast in; open Cast & Crew Call roles that fit. Auditions are device-local in the app (`UserDefaults`), so on web use `localStorage` — same shape as `seen.ts`. |
+| `filmmakerNow` | `(viewer, posts) => { inProduction; crewOpenings }` | Shown for film tags. Projects they posted or are credited on; open calls whose `crewNeeded` matches their role tags (port `RoleCallNotifier.matchingOpenRoles`). |
+| `musicianNow` | `(viewer, posts) => { shows; composerOpenings; gigs }` | Shown for music tags. Upcoming events they're in; roles matching `NowView.isMusicRole`; events matching `NowView.gigPattern` or categorised Concert / Artist Mixer. |
+| `recommendForGroups` | `(groups: Set<CreativeGroup>, ranked: Post[]) => Post[]` | Port of `CreativeGroup.recommend`: up to three posts any of the viewer's groups prefers, then one other, repeating; empty set → unchanged. Applied to the Home feed's "All" tab only. |
+
+A viewer with tags in several groups sees every matching block, in the order
+Actor, Filmmaker, Musician — same as `NowView.myGroups`.
 
 ## lib/ranking.ts
 
@@ -338,6 +392,12 @@ The only module the pages import. Everything above is an implementation detail.
 | `getProfile` | `(userRecordName: string) => Promise<{ profile: UserProfile; posts: Post[] } \| null>` | 5m |
 | `getStudios` | `() => Promise<Organization[]>` | 5m |
 | `getStudio` | `(id: string) => Promise<{ org: Organization; posts: Post[] } \| null>` | 5m |
+| `getPeople` | `(tab: "everyone" \| CreativeGroup) => Promise<Array<{ user: UserProfile; profile?: CreativeProfile }>>` | 5m |
+| `getNow` | `(viewer: UserProfile & { details; tags }) => Promise<NowPage>` | none (per viewer) |
+
+`getProfile` also returns the person's `CreativeProfile` (if any) so `/u/[id]` can
+render the sections their tags unlock — actor sheet, filmography, discography —
+exactly where the app places it: under the bio, above the posts.
 
 Each fans out over the relevant record types, decodes, then runs
 `filterAndApply` before returning. `getPost` returns `null` for a removed post so
@@ -381,8 +441,14 @@ Four rules, the first from the access policy and the rest from
 | `/design/[id]` | `app/design/[id]/page.tsx` | `H) DesignSubmissionView.swift` |
 | `/project/[id]` | `app/project/[id]/page.tsx` | `5) DiscoverPage/A1) ProjectCard.swift` |
 | `/event/[id]` | `app/event/[id]/page.tsx` | `B1) EventCard.swift` |
-| `/u/[userRecordName]` | `app/u/[userRecordName]/page.tsx` | `E) PortfolioView.swift` |
+| `/u/[userRecordName]` | `app/u/[userRecordName]/page.tsx` | `E) PortfolioView.swift` + `13) Profile Styles/StyledProfileSection.swift` |
 | `/studios`, `/studios/[id]` | `app/studios/…` | `Collective Studios.swift`, `E3) StudioPageView.swift` |
+| `/now` | `app/now/page.tsx` | `13) Profile Styles/NowView.swift` — the viewer's current work and openings; per-viewer, uncached |
+| `/people` | `app/people/page.tsx` | `7) NetworkPage/NetworkDirectoryView.swift` + `13) Profile Styles/DirectoryPeopleGrid.swift` — Everyone / Actors / Filmmakers / Musicians tabs; large photo cards, 2 across on phones, 3 on wider screens; Actors tab prefers the uploaded headshot |
+
+Tags and the extra details are edited in the app (`2) Onboarding/TagsView.swift`,
+`13) Profile Styles/CreativeDetailsEditorView.swift`). The web reads them; it
+doesn't offer the editor (see "Deliberately not in Phase 1").
 
 Every detail page returns `notFound()` when `getPost` gives `null`.
 
@@ -441,7 +507,9 @@ Each step is verifiable before the next, so a wrong assumption surfaces early.
 | 10 | `/` and one card component | home feed renders |
 | 11 | Remaining six cards + detail pages | all routes render |
 | 12 | `/u/[…]`, `/studios` | profiles honour `portfolioOrder` |
-| 13 | `SCHEMA.md`, `robots.ts` | `Disallow: /` served |
+| 13 | `profileStyles.ts` + tests, `ActorSheet` / `Filmography` / `Discography` / `PeopleGrid`, `/people` | the Actors tab on web lists exactly the users the app's Actors tab lists (same tags, same school scope) |
+| 14 | `now.ts` + tests (role parsing cases copied from `CreativeGroup.swift`), `/now` | the same casting line matches the same actor on web and in the app |
+| 15 | `SCHEMA.md`, `robots.ts` | `Disallow: /` served |
 
 Two risks worth naming:
 

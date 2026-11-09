@@ -2,8 +2,9 @@
 //  TagsView.swift
 //  Longhorn Artists Connect
 //
-//  Onboarding's final step for UT students: "Choose Your Tags", where the user
-//  picks the roles that describe them before entering the app.
+//  Onboarding's final step for students: "Choose Your Tags", where the user picks
+//  the roles that describe them before entering the app. Tags also decide which
+//  extra profile options they get — see CreativeGroup.swift.
 //  Extracted from OnboardingView.swift.
 //
 
@@ -37,7 +38,7 @@ struct TagsView: View {
                                 .foregroundStyle(Color.brandOrange)
                         }
 
-                        Text("Describe yourself. Select at least one tag.")
+                        Text("Describe yourself. Select at least one tag. Actor, film and music tags unlock more profile options.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -126,4 +127,18 @@ struct UserTypeButton: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+#Preview("Tags") {
+    NavigationStack {
+        TagsView(profileModel: UserProfileModel(), onComplete: {})
+    }
+}
+
+#Preview("User Type Button") {
+    VStack {
+        UserTypeButton(type: .actor, isSelected: false, onTap: {})
+        UserTypeButton(type: .director, isSelected: true, onTap: {})
+    }
+    .padding()
 }
