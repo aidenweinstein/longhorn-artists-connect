@@ -37,39 +37,10 @@
   --color-pill-active: var(--pill-active);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-display: var(--font-pragmatica), var(--font-geist-sans), system-ui, sans-serif;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
-}
-
-/* Headings use Pragmatica Extended Bold. Use the font-display class for anything else. */
-h1,
-h2 {
-  font-family: var(--font-display);
-  font-weight: 700;
-}
-
-/* Hover preview on feed cards */
-@keyframes preview-zoom {
-  from { transform: scale(1); }
-  to { transform: scale(1.12); }
-}
-@keyframes preview-progress {
-  from { width: 0%; }
-  to { width: 100%; }
-}
-.preview-zoom {
-  animation: preview-zoom 15s ease-out forwards;
-}
-.preview-progress {
-  animation-name: preview-progress;
-  animation-timing-function: linear;
-  animation-fill-mode: forwards;
-}
-@media (prefers-reduced-motion: reduce) {
-  .preview-zoom { animation: none; }
 }
