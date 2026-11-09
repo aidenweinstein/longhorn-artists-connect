@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
@@ -35,9 +36,10 @@ export default async function ShareSubmission(props: PageProps<"/share/[type]">)
   const { type } = await props.params;
   const Form = FORMS[type as keyof typeof FORMS];
   if (!Form) notFound();
+  // The forms read today's date (release-year menus), so render them per visit, not at build time.
   return (
     <Suspense fallback={null}>
-      <DynamicForm Form={Form} />
+      <Form />
     </Suspense>
   );
 }
