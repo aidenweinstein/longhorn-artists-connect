@@ -15,7 +15,6 @@ export default function ProfileView({
   note,
   emptyText,
   styled,
-  connections,
 }: {
   account: Account;
   posts: Post[];
@@ -28,12 +27,11 @@ export default function ProfileView({
   emptyText: string;
   /** The profile-style section (actor resume, filmography, discography): see StyledProfile. */
   styled?: React.ReactNode;
-  /** Mutual connections; left out (undefined) when unknown, e.g. for sample profiles. */
-  connections?: number;
 }) {
   const stats: [string, number][] = [
     ["Credits", posts.length],
-    ...(connections === undefined ? [] : ([["Connects", connections]] as [string, number][])),
+    // Connects are requested and accepted in the app; none exist yet to count.
+    ["Connects", 0],
     ["Collabs", collaborators(posts, account)],
   ];
   const school = account.school || schoolFallback;

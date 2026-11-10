@@ -6,7 +6,6 @@ import { getCreativeProfile } from "@/lib/cloudkit/creative";
 import { discoverItems } from "@/lib/content";
 import type { DiscoverItem, NexusEvent } from "@/lib/discoverContent";
 import SignOutButton from "@/components/SignOutButton";
-import { connectionCount } from "@/lib/cloudkit/connections";
 import { creditedPosts, currentAccount } from "@/lib/account";
 
 export default function Portfolio() {
@@ -42,11 +41,10 @@ async function Profile() {
     );
   }
 
-  const [posts, creative, items, connections] = await Promise.all([
+  const [posts, creative, items] = await Promise.all([
     creditedPosts(account),
     session.userRecordName ? getCreativeProfile(session.userRecordName) : Promise.resolve(null),
     discoverItems().catch((): DiscoverItem[] => []),
-    session.userRecordName ? connectionCount(session.userRecordName) : Promise.resolve(undefined),
   ]);
   const events = items.filter((i): i is NexusEvent => i.kind === "event");
   return (
@@ -54,7 +52,6 @@ async function Profile() {
       styled={<StyledProfile account={account} posts={posts} creative={creative} events={events} isOwn />}
       account={account}
       posts={posts}
-      connections={connections}
       displayName={session.email}
       schoolFallback={session.schoolName}
       actions={
