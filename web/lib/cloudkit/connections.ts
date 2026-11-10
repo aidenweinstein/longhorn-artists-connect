@@ -44,12 +44,15 @@ export async function connectionLists(me: string): Promise<{ connected: string[]
   };
 }
 
-/** How many people someone is connected to (both ways), or undefined when CloudKit can't say. */
-export async function connectionCount(user: string): Promise<number | undefined> {
+/**
+ * How many people someone is connected to (both ways). Zero when the count can't be
+ * read, e.g. the `Connection` record type isn't in this CloudKit environment yet.
+ */
+export async function connectionCount(user: string): Promise<number> {
   try {
     return (await connectionLists(user)).connected.length;
   } catch {
-    return undefined;
+    return 0;
   }
 }
 
