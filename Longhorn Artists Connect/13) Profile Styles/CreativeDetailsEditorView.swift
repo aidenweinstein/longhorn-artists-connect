@@ -2,50 +2,53 @@
 //  CreativeDetailsEditorView.swift
 //  Longhorn Artists Connect
 //
-//  The extra profile fields your tags unlock (see CreativeGroup.swift):
+//  The extra profile fields your tags unlock (see CreativeGroup.swift), as Form
+//  sections that drop straight into Edit Profile the moment a matching tag is
+//  picked (`CreativeDetailsFormSections`), plus a standalone sheet built from the
+//  same sections for the Edit buttons on the Portfolio section and the Now page
+//  (`CreativeDetailsEditorView`).
+//
 //  • Actor / Dancer tags — headshot, reel, Actors Access stats, skills, extra resume credits.
 //  • Musician / Singer / Composer tags — artist name, instruments, genres, availability,
-//    and links to streaming pages.
+//    and links to streaming pages (Spotify first).
 //  • Film tags — specialties, gear, open to crews.
 //
-//  Only the sections for the user's own groups appear. Saving keeps everything on this
-//  device immediately and uploads it to the person's `CreativeProfile` record.
+//  Everything shown here appears on the person's profile for anyone who looks
+//  (see StyledProfileSection).
 //
 
 import SwiftUI
 import PhotosUI
 import UIKit
 
-struct CreativeDetailsEditorView: View {
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject private var creative = CreativeProfileStore.shared
+// MARK: - Form Sections
+
+/// The tag-unlocked sections for a `Form`. Pass the tags being edited so the sections
+/// appear and disappear live as tags are toggled. The caller owns `details` and
+/// `headshot` and saves them with `CreativeProfileStore.update(details:headshot:)`
+/// (run `details.normalizedForSave()` first).
+struct CreativeDetailsFormSections: View {
+    /// The role tags being edited, by name — the sections follow these.
+    let tagNames: [String]
+    @Binding var details: CreativeDetails
+    @Binding var headshot: UIImage?
+
     @ObservedObject private var store = SubmissionStore_3_2.shared
 
     @AppStorage("userFirstName") private var firstName = ""
     @AppStorage("userLastName") private var lastName = ""
-    @AppStorage("userType") private var userTypeRaw = ""
 
-    @State private var details: CreativeDetails
-    @State private var headshot: UIImage?
     @State private var photoItem: PhotosPickerItem?
-    @State private var ageMinText: String
-    @State private var ageMaxText: String
-
-    init() {
-        let shared = CreativeProfileStore.shared
-        _details = State(initialValue: shared.myDetails)
-        _headshot = State(initialValue: shared.myHeadshot)
-        _ageMinText = State(initialValue: shared.myDetails.actor.ageMin.map { String($0) } ?? "")
-        _ageMaxText = State(initialValue: shared.myDetails.actor.ageMax.map { String($0) } ?? "")
-    }
+    @State private var ageMinText = ""
+    @State private var ageMaxText = ""
 
     private var myName: String {
         "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
     }
 
-    /// The groups the user's tags put them in, in display order.
+    /// The groups the tags put the user in, in display order.
     private var groups: [CreativeGroup] {
-        CreativeGroup.ordered(CreativeGroup.groups(forStoredTags: userTypeRaw))
+        CreativeGroup.ordered(CreativeGroup.groups(forTagNames: tagNames))
     }
 
     /// Performance and film posts this user is on, for the reel picker.
@@ -61,60 +64,37 @@ struct CreativeDetailsEditorView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if groups.isEmpty {
-                    Section {
-                        Text("Add tags like Actor, Director or Musician in Edit Profile to unlock more options here.")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                ForEach(groups) { group in
-                    switch group {
-                    case .actor: actorSections
-                    case .filmmaker: filmmakerSections
-                    case .musician: musicianSections
-                    }
+        Group {
+            ForEach(groups) { group in
+                switch group {
+                case .actor: actorSections
+                case .filmmaker: filmmakerSections
+                case .musician: musicianSections
                 }
             }
-            .navigationTitle("Profile details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .fontWeight(.semibold)
-                        .disabled(groups.isEmpty)
-                }
-            }
-            .onChange(of: photoItem) { _, item in
-                guard let item else { return }
-                Task {
-                    if let data = try? await item.loadTransferable(type: Data.self),
-                       let image = UIImage(data: data) {
-                        headshot = image
-                    }
+        }
+        .onAppear {
+            ageMinText = details.actor.ageMin.map { String($0) } ?? ""
+            ageMaxText = details.actor.ageMax.map { String($0) } ?? ""
+        }
+        .onChange(of: ageMinText) { _, text in
+            details.actor.ageMin = Int(text.trimmingCharacters(in: .whitespaces))
+        }
+        .onChange(of: ageMaxText) { _, text in
+            details.actor.ageMax = Int(text.trimmingCharacters(in: .whitespaces))
+        }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let image = UIImage(data: data) {
+                    headshot = image
                 }
             }
         }
     }
 
-    private func save() {
-        var final = details
-        final.actor.ageMin = Int(ageMinText.trimmingCharacters(in: .whitespaces))
-        final.actor.ageMax = Int(ageMaxText.trimmingCharacters(in: .whitespaces))
-        if let low = final.actor.ageMin, let high = final.actor.ageMax, low > high {
-            final.actor.ageMin = high
-            final.actor.ageMax = low
-        }
-        final.actor.resume.removeAll { $0.project.trimmingCharacters(in: .whitespaces).isEmpty }
-        creative.update(details: final, headshot: headshot)
-        dismiss()
-    }
-
-    // MARK: - Actor
+    // MARK: Actor
 
     @ViewBuilder
     private var actorSections: some View {
@@ -138,18 +118,20 @@ struct CreativeDetailsEditorView: View {
                     PhotosPicker(selection: $photoItem, matching: .images) {
                         Text(headshot == nil ? "Choose headshot" : "Change headshot")
                     }
+                    .buttonStyle(.borderless)
                     if headshot != nil {
                         Button("Remove", role: .destructive) {
                             headshot = nil
                             photoItem = nil
                         }
+                        .buttonStyle(.borderless)
                     }
                 }
             }
         } header: {
             Label("Actor · Headshot", systemImage: CreativeGroup.actor.symbol)
         } footer: {
-            Text("Unlocked by your \(CreativeGroup.actor.tagList) tag. Shown on your profile and on the Actors page of the directory.")
+            Text("Unlocked by your \(CreativeGroup.actor.tagList) tag. Shown on your profile and on the Actors tab of the directory.")
         }
 
         Section {
@@ -195,12 +177,12 @@ struct CreativeDetailsEditorView: View {
             }
             TextField("Based in", text: $details.actor.basedIn)
         } header: {
-            Text("Details")
+            Text("Actor · Details")
         } footer: {
             Text("Age, gender, look and skills decide which open roles show up for you on Now.")
         }
 
-        Section("Skills & training") {
+        Section("Actor · Skills & training") {
             TextField("Special skills (e.g. guitar, stage combat)", text: $details.actor.specialSkills, axis: .vertical)
             TextField("Languages", text: $details.actor.languages, axis: .vertical)
             TextField("Training", text: $details.actor.training, axis: .vertical)
@@ -228,14 +210,15 @@ struct CreativeDetailsEditorView: View {
             } label: {
                 Label("Add credit", systemImage: "plus")
             }
+            .buttonStyle(.borderless)
         } header: {
-            Text("More resume credits")
+            Text("Actor · More resume credits")
         } footer: {
             Text("Roles you're credited for on Nexus are added automatically. Add plays, commercials and anything else here.")
         }
     }
 
-    // MARK: - Filmmaker
+    // MARK: Filmmaker
 
     @ViewBuilder
     private var filmmakerSections: some View {
@@ -250,20 +233,10 @@ struct CreativeDetailsEditorView: View {
         }
     }
 
-    // MARK: - Musician
+    // MARK: Musician
 
     @ViewBuilder
     private var musicianSections: some View {
-        Section {
-            TextField("Artist or band name", text: $details.musician.artistName)
-            TextField("Instruments", text: $details.musician.instruments)
-            TextField("Genres", text: $details.musician.genres)
-        } header: {
-            Label("Musician", systemImage: CreativeGroup.musician.symbol)
-        } footer: {
-            Text("Unlocked by your \(CreativeGroup.musician.tagList) tag. Releases posted under this artist name, or crediting you, make up your discography.")
-        }
-
         Section {
             ForEach(StreamingService.allCases) { service in
                 HStack(spacing: 10) {
@@ -277,12 +250,22 @@ struct CreativeDetailsEditorView: View {
                 }
             }
         } header: {
-            Text("Streaming pages")
+            Label("Musician · Streaming pages", systemImage: CreativeGroup.musician.symbol)
         } footer: {
-            Text("Paste the link to your page on each service. They appear as buttons on your profile.")
+            Text("Unlocked by your \(CreativeGroup.musician.tagList) tag. Paste the link to your Spotify page (and any others); they appear as buttons on your profile.")
         }
 
-        Section("Available for") {
+        Section {
+            TextField("Artist or band name", text: $details.musician.artistName)
+            TextField("Instruments", text: $details.musician.instruments)
+            TextField("Genres", text: $details.musician.genres)
+        } header: {
+            Text("Musician · About")
+        } footer: {
+            Text("Releases posted under this artist name, or crediting you, make up your discography.")
+        }
+
+        Section("Musician · Available for") {
             Toggle("Live gigs", isOn: $details.musician.availableForGigs)
             Toggle("Session work", isOn: $details.musician.availableForSessions)
             Toggle("Scoring films", isOn: $details.musician.availableForScoring)
@@ -294,6 +277,77 @@ struct CreativeDetailsEditorView: View {
             get: { details.musician.link(for: service) },
             set: { details.musician.setLink($0, for: service) }
         )
+    }
+}
+
+extension CreativeDetails {
+    /// Tidies what the form produced before saving: a flipped age range is swapped
+    /// and blank resume rows are dropped.
+    func normalizedForSave() -> CreativeDetails {
+        var final = self
+        if let low = final.actor.ageMin, let high = final.actor.ageMax, low > high {
+            final.actor.ageMin = high
+            final.actor.ageMax = low
+        }
+        final.actor.resume.removeAll { $0.project.trimmingCharacters(in: .whitespaces).isEmpty }
+        return final
+    }
+}
+
+// MARK: - Standalone Sheet
+
+/// The same sections as their own sheet, for the Edit buttons on the Portfolio's
+/// tag-unlocked section and on Now. Uses the user's saved tags.
+struct CreativeDetailsEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var creative = CreativeProfileStore.shared
+
+    @AppStorage("userType") private var userTypeRaw = ""
+
+    @State private var details: CreativeDetails
+    @State private var headshot: UIImage?
+
+    init() {
+        let shared = CreativeProfileStore.shared
+        _details = State(initialValue: shared.myDetails)
+        _headshot = State(initialValue: shared.myHeadshot)
+    }
+
+    private var tagNames: [String] {
+        userTypeRaw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    private var hasGroups: Bool {
+        !CreativeGroup.groups(forTagNames: tagNames).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if !hasGroups {
+                    Section {
+                        Text("Add tags like Actor, Director or Musician in Edit Profile to unlock more options here.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                CreativeDetailsFormSections(tagNames: tagNames, details: $details, headshot: $headshot)
+            }
+            .navigationTitle("Profile details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        creative.update(details: details.normalizedForSave(), headshot: headshot)
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(!hasGroups)
+                }
+            }
+        }
     }
 }
 
