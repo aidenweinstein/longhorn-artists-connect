@@ -21,8 +21,8 @@ export default function Welcome() {
           label="Nexus"
           className="h-14 text-white sm:h-20"
         />
-        <p className="mt-6 max-w-md text-lg text-white/75 sm:text-xl">
-          Where student filmmakers, musicians, and artists connect with the industry.
+        <p className="mt-6 max-w-xl text-lg text-white/75 sm:text-xl">
+          The social hub for college creators. Share film, music, performance, design, and photography work with classmates and future collaborators.
         </p>
 
         <ul className="mt-10 flex flex-wrap justify-center gap-2">

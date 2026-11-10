@@ -8,6 +8,7 @@ import { schoolForPath } from "@/lib/schools";
 import MaskImage from "./MaskImage";
 import CategoryFilter from "./CategoryFilter";
 import PageActions from "./PageActions";
+import SubNav from "./SubNav";
 import { SearchGlyph } from "./icons";
 
 export default function TopBar() {
@@ -66,10 +67,11 @@ export default function TopBar() {
         </button>
       </form>
 
+      <SubNav />
+
       {page.actions && <PageActions kind={page.actions} />}
 
-      {/* Projects / Events filter Discover's calendar; their own pages are already one kind. */}
-      {page.filter && !/^\/discover\/(projects|events)(\/|$)/.test(pathname) && (
+      {page.filter && (
         <div className="shrink-0">
           <CategoryFilter set={page.filter} />
         </div>

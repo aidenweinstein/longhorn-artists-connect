@@ -6,6 +6,15 @@ export const CATEGORIES = [
   { id: "photography", label: "Photography", icon: "/brand/photography.png", ratio: 174 / 128 },
 ] as const;
 
+/** Which role tags (ROLE_TAGS in profileFields.ts) count as each category, for filtering people. */
+export const CATEGORY_ROLES: Record<string, readonly string[]> = {
+  film: ["Director", "Producer", "Writer", "Editor", "Cinematographer", "Sound Mixer", "VFX Artist"],
+  music: ["Composer", "Singer", "Musician", "Sound Mixer"],
+  performance: ["Actor", "Dancer"],
+  design: ["Graphic Designer", "Game Designer", "Painter", "Animator"],
+  photography: ["Photographer"],
+};
+
 export type CategoryId = (typeof CATEGORIES)[number]["id"];
 
 export function getCategory(id: string | undefined) {

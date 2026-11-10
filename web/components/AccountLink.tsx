@@ -4,14 +4,13 @@ import Avatar from "./Avatar";
 import { SignInGlyph } from "./icons";
 
 const base =
-  "flex flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-[11px] font-medium transition-colors lg:flex-row lg:gap-3 lg:px-3 lg:text-sm";
+  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors";
 
 /** Holds the spot while the session loads, so neither state flashes. */
 export function AccountPlaceholder() {
   return (
     <div aria-hidden className={base}>
       <span className="h-7 w-7 rounded-full bg-surface" />
-      <span className="h-3 w-12 rounded bg-surface lg:w-20" />
     </div>
   );
 }
@@ -20,8 +19,8 @@ export function AccountPlaceholder() {
 export function SignInLink() {
   return (
     <Link href="/signin" className={`${base} border border-brand/40 font-semibold text-brand hover:bg-brand/10`}>
-      <SignInGlyph className="h-6 w-6" />
-      <span>Sign in</span>
+      <SignInGlyph className="h-6 w-6 shrink-0" />
+      <span className="whitespace-nowrap opacity-0 transition-opacity duration-150 group-data-[open=true]/nav:opacity-100">Sign in</span>
     </Link>
   );
 }
@@ -33,14 +32,11 @@ export default async function AccountLink() {
   const { session, account } = current;
   const name = account?.name || session.email.split("@")[0];
   return (
-    <Link href="/portfolio" title={`Signed in as ${name}`} className={`${base} text-foreground hover:bg-surface`}>
+    <Link href="/portfolio" aria-label={`Your profile, ${name}`} title={`Signed in as ${name}`} className={`${base} text-foreground hover:bg-surface`}>
       <Avatar name={name} src={account?.imageUrl} size="sm" />
-      <span className="flex min-w-0 max-w-full flex-col text-center lg:text-left">
-        <span className="hidden text-[11px] leading-tight text-muted lg:block">Signed in as</span>
-        <span className="truncate font-semibold leading-tight">
-          <span className="lg:hidden">{name.split(" ")[0]}</span>
-          <span className="hidden lg:inline">{name}</span>
-        </span>
+      <span className="flex min-w-0 flex-col whitespace-nowrap opacity-0 transition-opacity duration-150 group-data-[open=true]/nav:opacity-100">
+        <span className="text-[11px] leading-tight text-muted">Signed in as</span>
+        <span className="truncate font-semibold leading-tight">{name}</span>
       </span>
     </Link>
   );
