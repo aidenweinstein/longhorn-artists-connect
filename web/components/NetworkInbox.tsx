@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { markReadAction, sendAction } from "@/app/(app)/network/actions";
+import { markReadAction, sendAction, startConversationAction } from "@/app/(app)/network/actions";
 import { personHref } from "@/lib/people";
 import Avatar from "./Avatar";
 import { ComposeGlyph } from "./icons";
@@ -35,6 +35,8 @@ export type OpenThread = {
   }[];
 };
 
+export type PickerPerson = { id: string; name: string; imageUrl?: string; roles: string; connected: boolean };
+
 /** How often an open inbox checks for new messages. */
 const REFRESH_MS = 15_000;
 
@@ -49,6 +51,7 @@ export default function NetworkInbox({
   openOnPhone,
   canSend,
   notice,
+  people,
 }: {
   threads: InboxThread[];
   open: OpenThread | null;
@@ -57,6 +60,8 @@ export default function NetworkInbox({
   canSend: boolean;
   /** Shown in the right pane when there's no thread to open (signed out, not linked, no messages yet). */
   notice?: { title: string; body: string; href?: string; cta?: string };
+  /** Who "New message" can start a conversation with. Without it the button is off. */
+  people?: PickerPerson[];
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState("");
@@ -103,14 +108,7 @@ export default function NetworkInbox({
       {/* Conversation list */}
       <ul className={`min-h-0 overflow-y-auto border-border md:block md:border-r ${openOnPhone ? "hidden" : "block"}`}>
         <li className="p-3">
-          {/* Starting a conversation from the website isn't connected yet; the tile holds its place. */}
-          <button
-            type="button"
-            className="flex h-11 w-full items-center justify-center gap-2 rounded-full bg-brand text-[15px] font-semibold text-white transition hover:brightness-110 active:scale-[0.99]"
-          >
-            <ComposeGlyph className="h-5 w-5" />
-            New message
-          </button>
+          <NewMessage people={people} />
         </li>
         {threads.length === 0 && (
           <li className="px-4 py-6 text-sm text-muted">
@@ -244,6 +242,94 @@ export default function NetworkInbox({
           <p className="m-auto text-muted">Select a conversation.</p>
         )}
       </section>
+    </div>
+  );
+}
+
+/** "New message": a button that opens a searchable list of people; picking one opens their thread. */
+function NewMessage({ people }: { people?: PickerPerson[] }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const q = query.trim().toLowerCase();
+  const matches = (people ?? []).filter((p) => !q || p.name.toLowerCase().includes(q) || p.roles.toLowerCase().includes(q)).slice(0, 60);
+
+  function pick(p: PickerPerson) {
+    setError(null);
+    start(async () => {
+      const res = await startConversationAction(p.id);
+      if (!res.ok) return setError(res.message);
+      setOpen(false);
+      setQuery("");
+      router.push(`/network?c=${encodeURIComponent(res.threadID)}`);
+    });
+  }
+
+  return (
+    <div ref={box} className="relative">
+      <button
+        type="button"
+        disabled={!people}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-11 w-full items-center justify-center gap-2 rounded-full bg-brand text-[15px] font-semibold text-white transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50"
+      >
+        <ComposeGlyph className="h-5 w-5" />
+        New message
+      </button>
+      {open && (
+        <div role="dialog" aria-label="New message" className="absolute inset-x-0 top-full z-30 mt-2 overflow-hidden rounded-2xl border border-border bg-background shadow-xl">
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search people"
+            className="w-full border-b border-border bg-transparent px-4 py-3 text-sm outline-none"
+          />
+          {error && <p className="px-4 pt-2 text-sm text-red-500">{error}</p>}
+          <ul className="max-h-80 overflow-y-auto p-1">
+            {matches.length === 0 && <li className="px-3 py-4 text-sm text-muted">No one found.</li>}
+            {matches.map((p) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => pick(p)}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-surface disabled:opacity-60"
+                >
+                  <Avatar name={p.name} src={p.imageUrl} size="feed" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold">{p.name}</span>
+                    {p.roles && <span className="block truncate text-xs text-muted">{p.roles}</span>}
+                  </span>
+                  {p.connected && <span className="shrink-0 rounded-full bg-brand/15 px-2 py-0.5 text-xs font-medium text-brand">Connected</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,8 @@
-import NetworkInbox, { type InboxThread, type OpenThread } from "@/components/NetworkInbox";
+import NetworkInbox, { type InboxThread, type OpenThread, type PickerPerson } from "@/components/NetworkInbox";
 import { currentAccount } from "@/lib/account";
 import { isCloudKitConfigured } from "@/lib/cloudkit/client";
 import { profileDirectory } from "@/lib/cloudkit/content";
+import { connectionLists } from "@/lib/cloudkit/connections";
 import { messagesIn, threadsFor } from "@/lib/cloudkit/messages";
 import { CONVERSATIONS } from "@/lib/mockConversations";
 
@@ -70,6 +71,12 @@ export default async function Network(props: PageProps<"/network">) {
   }
   const directory = await profileDirectory().catch(() => []);
   const people = new Map(directory.map((p) => [p.id.replace(/^UserProfile_/, ""), p]));
+  const connected = new Set((await connectionLists(me).catch(() => ({ connected: [] as string[] }))).connected);
+  // Everyone the visitor can start a conversation with, their connections first.
+  const picker: PickerPerson[] = directory
+    .filter((p) => p.id.replace(/^UserProfile_/, "") !== me)
+    .map((p) => ({ id: p.id, name: p.name, imageUrl: p.imageUrl, roles: p.roles.join(", "), connected: connected.has(p.id.replace(/^UserProfile_/, "")) }))
+    .sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name));
 
   const threads: InboxThread[] = summaries.map((t) => {
     const person = people.get(t.otherUserID);
@@ -83,6 +90,15 @@ export default async function Network(props: PageProps<"/network">) {
       unread: t.unread,
     };
   });
+
+  // A thread started from a profile or the picker has no messages yet, so it isn't in the list: add it.
+  if (wanted && !threads.some((t) => t.id === wanted.toUpperCase())) {
+    const fresh = await messagesIn(me, wanted).catch(() => null);
+    if (fresh) {
+      const person = people.get(fresh.other);
+      threads.unshift({ id: wanted.toUpperCase(), name: person?.name || "Nexus member", imageUrl: person?.imageUrl, profileID: person?.id, lastMessage: "", time: "", unread: 0 });
+    }
+  }
 
   const openID = (wanted && threads.find((t) => t.id === wanted.toUpperCase())?.id) || threads[0]?.id;
   let open: OpenThread | null = null;
@@ -101,6 +117,6 @@ export default async function Network(props: PageProps<"/network">) {
   }
 
   if (failed) return <Notice title="Couldn't load messages" body="Your messages couldn't be loaded right now. Try again in a moment." />;
-  if (threads.length === 0) return <Notice title="No messages yet" body="Start a conversation from someone's profile in the Nexus app and it shows up here." />;
-  return <NetworkInbox threads={threads} open={open} openOnPhone={!!wanted} canSend />;
+  if (threads.length === 0) return <NetworkInbox threads={[]} open={null} openOnPhone={false} canSend people={picker} notice={{ title: "No messages yet", body: "Press New message, or open someone's portfolio and press Message." }} />;
+  return <NetworkInbox threads={threads} open={open} openOnPhone={!!wanted} canSend people={picker} />;
 }
