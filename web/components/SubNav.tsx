@@ -14,9 +14,9 @@ const typeIcon = (id: "project" | "event") => {
 };
 
 const DISCOVER_TABS: Tab[] = [
-  { href: "/discover", label: "Calendar" },
   { href: "/discover/projects", label: "Projects", icon: typeIcon("project") },
   { href: "/discover/events", label: "Events", icon: typeIcon("event") },
+  { href: "/discover/calendar", label: "Calendar" },
   { href: "/discover/organizations", label: "Organizations" },
 ];
 
