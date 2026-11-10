@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { asset, lookup, modify, num, queryWhere, str, updateFields, type CKRecord } from "./client";
 
 /*
@@ -164,41 +163,4 @@ export async function markRead(me: string, threadID: string): Promise<void> {
   if (unread.length) {
     await updateFields("Conversation", thread.record.recordName, { unreadCount: { value: 0, type: "INT64" } }).catch(() => null);
   }
-}
-
-/**
- * The thread ID both people always share: an MD5 of their sorted user record names,
- * stamped as a v5-style UUID. This must match `Conversation.deterministicID` in the app
- * so a thread started here is the same one the app opens.
- */
-export function threadIDFor(a: string, b: string): string {
-  const key = [raw(a), raw(b)].sort().join("|");
-  const bytes = createHash("md5").update(key, "utf8").digest();
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const h = bytes.toString("hex");
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`.toUpperCase();
-}
-
-/** Opens the thread with someone, creating its record first when this is the first message. Returns its ID. */
-export async function startThread(me: string, other: string): Promise<string> {
-  const user = raw(me);
-  const them = raw(other);
-  if (!them || them === user) throw new Error("You can't message yourself.");
-  const id = threadIDFor(user, them);
-  if (!(await lookup(id))) {
-    await modify([
-      {
-        kind: "save",
-        recordType: "Conversation",
-        recordName: id,
-        fields: {
-          participant1UserID: { value: user, type: "STRING" },
-          participant2UserID: { value: them, type: "STRING" },
-          unreadCount: { value: 0, type: "INT64" },
-        },
-      },
-    ]);
-  }
-  return id;
 }

@@ -1,6 +1,5 @@
-import SavedPosts from "@/components/SavedPosts";
+import ComingSoon from "@/components/ComingSoon";
 
-/** Saved posts. They live in the visitor's browser, so the page loads them there. */
 export default function Playlists() {
-  return <SavedPosts />;
+  return <ComingSoon title="Playlists" body="Your saved collections will show up here once you're signed in." />;
 }
