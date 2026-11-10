@@ -4,16 +4,17 @@
 // a small header, a rounded card of rows, and an optional footer note. Chosen values
 // show in the brand color, like the app's orange menu labels.
 
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 
 const rowBase = "flex min-h-12 items-center gap-3 px-4 py-2.5";
 const input = "w-full bg-transparent px-4 py-3 text-[15px] outline-none placeholder:text-muted";
 
 export function Section({ title, footer, children }: { title?: string; footer?: ReactNode; children: ReactNode }) {
   return (
-    <section>
+    // The Category picker sits across the top; everything else flows into two columns.
+    <section className={title === "Category" ? "relative z-10 lg:col-span-2" : undefined}>
       {title && <h3 className="mb-1.5 px-4 font-sans text-xs font-semibold uppercase tracking-wide text-muted">{title}</h3>}
-      <div className="divide-y divide-border overflow-hidden rounded-2xl bg-surface">{children}</div>
+      <div className={`divide-y divide-border rounded-2xl bg-surface ${title === "Category" ? "" : "overflow-hidden"}`}>{children}</div>
       {footer && <p className="mt-1.5 px-4 text-xs text-muted">{footer}</p>}
     </section>
   );
@@ -97,6 +98,8 @@ export function SelectRow({
   placeholder?: string;
 }) {
   const id = useId();
+  // The Category choice at the top of each form is a styled dropdown instead of the native menu.
+  if (label === "Category") return <Dropdown label={label} value={value} options={options} onChange={onChange} placeholder={placeholder} />;
   return (
     <Row label={label} htmlFor={id}>
       <select
@@ -116,6 +119,94 @@ export function SelectRow({
       </select>
       <ChevronUpDown />
     </Row>
+  );
+}
+
+/** A styled dropdown: a button showing the choice, and a floating list to pick from. */
+function Dropdown({
+  label,
+  value,
+  options,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const listID = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={box} className="relative p-2">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listID}
+        onClick={() => setOpen((o) => !o)}
+        className={`flex w-full items-center justify-between gap-3 rounded-xl bg-background px-4 py-3 text-left text-[15px] font-medium ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+          open ? "ring-brand" : "ring-border hover:ring-brand/50"
+        }`}
+      >
+        <span className={value ? "text-foreground" : "text-muted"}>{value || placeholder}</span>
+        <svg viewBox="0 0 12 12" className={`h-3 w-3 shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`} aria-hidden>
+          <path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        </svg>
+      </button>
+      {open && (
+        <ul
+          id={listID}
+          role="listbox"
+          aria-label={label}
+          className="absolute inset-x-2 top-full z-30 mt-1 max-h-72 overflow-auto rounded-xl border border-border bg-background p-1 shadow-xl"
+        >
+          {options.map((o) => {
+            const on = o === value;
+            return (
+              <li key={o} role="option" aria-selected={on}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange(o);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-[15px] transition ${
+                    on ? "bg-brand/10 font-semibold text-brand" : "hover:bg-surface"
+                  }`}
+                >
+                  {o}
+                  {on && (
+                    <svg viewBox="0 0 12 12" className="h-3.5 w-3.5 shrink-0" aria-hidden>
+                      <path d="M2.5 6.5l2.5 2.5 4.5-5.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -277,9 +368,87 @@ function Thumb({ file, url, icon }: { file?: File; url?: string; icon: ReactNode
   return <span className={box}>{icon}</span>;
 }
 
+/** True when a dropped file fits an <input accept> list (".pdf", "image/*", "application/pdf"). */
+function matchesAccept(file: File, accept: string) {
+  const rules = accept.split(",").map((r) => r.trim().toLowerCase()).filter(Boolean);
+  if (!rules.length) return true;
+  const name = file.name.toLowerCase();
+  const type = file.type.toLowerCase();
+  return rules.some((r) => (r.startsWith(".") ? name.endsWith(r) : r.endsWith("/*") ? type.startsWith(r.slice(0, -1)) : type === r));
+}
+
 /**
- * Picks one file. Shows "Select <noun>" until chosen, then the file with a remove button.
- * `noun` is lowercase, like the app ("video", "thumbnail", "poster").
+ * A large target you can click or drop files onto. Files that don't match `accept` are
+ * ignored on drop, the same as the file picker would filter them.
+ */
+function DropZone({
+  accept,
+  multiple,
+  onFiles,
+  icon,
+  title,
+  hint,
+  compact,
+}: {
+  accept: string;
+  multiple?: boolean;
+  onFiles: (f: File[]) => void;
+  icon: ReactNode;
+  title: string;
+  hint?: string;
+  compact?: boolean;
+}) {
+  const [over, setOver] = useState(false);
+  const [rejected, setRejected] = useState(false);
+  return (
+    <label
+      onDragEnter={(e) => {
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        const dropped = Array.from(e.dataTransfer.files);
+        const ok = dropped.filter((f) => matchesAccept(f, accept));
+        setRejected(dropped.length > 0 && ok.length === 0);
+        if (ok.length) onFiles(multiple ? ok : ok.slice(0, 1));
+      }}
+      className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed px-4 text-center transition focus-within:ring-2 focus-within:ring-brand ${
+        compact ? "min-h-28 py-5" : "min-h-52 py-10"
+      } ${over ? "border-brand bg-brand/10" : "border-foreground/20 hover:border-brand/60 hover:bg-foreground/5"}`}
+    >
+      <span className={`flex items-center justify-center rounded-full bg-brand/15 text-brand ${compact ? "h-10 w-10" : "h-14 w-14"}`}>{icon}</span>
+      <span className="text-[15px] font-medium">{over ? "Drop to add" : title}</span>
+      <span className="text-sm text-muted">
+        {rejected ? "That file type isn't accepted here." : hint ?? (over ? "" : "Drag and drop, or click to browse")}
+      </span>
+      <input
+        type="file"
+        accept={accept}
+        multiple={multiple}
+        aria-label={title}
+        className="sr-only"
+        onChange={(e) => {
+          setRejected(false);
+          onFiles(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+      />
+    </label>
+  );
+}
+
+/**
+ * Picks one file. Shows a drop area until chosen, then a large preview with Replace and
+ * Remove. `noun` is lowercase, like the app ("video", "thumbnail", "poster").
  */
 export function FileRow({
   noun,
@@ -298,28 +467,52 @@ export function FileRow({
 }) {
   const files = useMemo(() => (file ? [file] : []), [file]);
   const [url] = usePreviews(files);
+  const title = `${optional ? "Add" : "Select"} ${noun}`;
   return (
-    <div className={rowBase}>
-      <Thumb file={file ?? undefined} url={url} icon={icon} />
-      <div className="min-w-0 flex-1">
-        <p className="text-[15px]">
-          {file ? `${noun[0].toUpperCase()}${noun.slice(1)} selected` : `Select ${noun}`}
-          {optional && !file && <span className="text-muted"> (optional)</span>}
-        </p>
-        {file && <p className="truncate text-xs text-muted">{file.name} · {formatSize(file.size)}</p>}
-      </div>
+    <div className="p-3">
       {file ? (
-        <button type="button" onClick={() => onChange(null)} className="text-sm text-muted hover:text-foreground">
-          Remove
-        </button>
+        <div className="overflow-hidden rounded-2xl bg-foreground/5">
+          {url && file.type.startsWith("image/") && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={url} alt="" className="max-h-72 w-full object-contain" />
+          )}
+          {url && file.type.startsWith("video/") && (
+            <video src={url} controls playsInline preload="metadata" className="max-h-72 w-full bg-black" />
+          )}
+          {url && file.type.startsWith("audio/") && <audio src={url} controls className="w-full p-3" />}
+          <div className="flex items-center gap-3 px-4 py-3">
+            {!file.type.match(/^(image|video|audio)\//) && <Thumb icon={icon} />}
+            <div className="min-w-0 flex-1">
+              <p className="text-[15px] font-medium">{`${noun[0].toUpperCase()}${noun.slice(1)} selected`}</p>
+              <p className="truncate text-xs text-muted">{file.name} · {formatSize(file.size)}</p>
+            </div>
+            <label className="cursor-pointer text-sm font-medium text-brand hover:underline focus-within:ring-2 focus-within:ring-brand">
+              Replace
+              <input
+                type="file"
+                accept={accept}
+                aria-label={`Replace ${noun}`}
+                className="sr-only"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onChange(f);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            <button type="button" onClick={() => onChange(null)} className="text-sm text-muted hover:text-foreground">
+              Remove
+            </button>
+          </div>
+        </div>
       ) : (
-        <PickButton accept={accept} onPick={(fs) => onChange(fs[0] ?? null)} label={`Choose ${noun}`} />
+        <DropZone accept={accept} onFiles={(fs) => onChange(fs[0] ?? null)} icon={icon} title={title} hint={optional ? "Optional · drag and drop, or click to browse" : undefined} />
       )}
     </div>
   );
 }
 
-/** Picks several files in order — photos, slides, stills. They can be reordered and removed. */
+/** Picks several files in order: photos, slides, stills. They can be reordered and removed. */
 export function FilesRow({
   noun,
   accept,
@@ -343,24 +536,30 @@ export function FilesRow({
     onChange(next);
   };
   return (
-    <div>
-      <div className={rowBase}>
-        <Thumb icon={icon} />
-        <p className="flex-1 text-[15px]">
-          {files.length ? `${files.length} ${noun} selected` : `Select ${noun}`}
-          {optional && !files.length && <span className="text-muted"> (optional)</span>}
-        </p>
-        <PickButton accept={accept} multiple onPick={(fs) => onChange([...files, ...fs])} label={files.length ? "Add more" : `Choose ${noun}`} />
-      </div>
+    <div className="space-y-3 p-3">
+      <DropZone
+        accept={accept}
+        multiple
+        compact={files.length > 0}
+        onFiles={(fs) => onChange([...files, ...fs])}
+        icon={icon}
+        title={files.length ? `${files.length} ${noun} selected · add more` : `${optional ? "Add" : "Select"} ${noun}`}
+        hint={!files.length && optional ? "Optional · drag and drop, or click to browse" : undefined}
+      />
       {files.length > 0 && (
-        <ol className="flex gap-2 overflow-x-auto px-4 pb-3">
+        <ol className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-5">
           {files.map((f, i) => (
-            <li key={`${f.name}-${f.lastModified}-${i}`} className="group relative shrink-0">
+            <li key={`${f.name}-${f.lastModified}-${i}`} className="group relative aspect-square">
               {f.type.startsWith("video/") ? (
-                <video src={urls[i]} muted playsInline preload="metadata" className="h-24 w-24 rounded-lg object-cover" />
-              ) : (
+                <video src={urls[i]} muted playsInline preload="metadata" className="h-full w-full rounded-lg object-cover" />
+              ) : f.type.startsWith("image/") ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={urls[i]} alt={f.name} className="h-24 w-24 rounded-lg object-cover" />
+                <img src={urls[i]} alt={f.name} className="h-full w-full rounded-lg object-cover" />
+              ) : (
+                <span className="flex h-full w-full flex-col items-center justify-center gap-1 rounded-lg bg-foreground/10 px-2 text-center text-xs text-muted">
+                  {icon}
+                  <span className="line-clamp-2 break-all">{f.name}</span>
+                </span>
               )}
               <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 text-[11px] font-semibold text-white">{i + 1}</span>
               <div className="absolute inset-x-1 bottom-1 flex justify-between opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
@@ -387,25 +586,6 @@ function ThumbButton({ label, onClick, disabled, children }: { label: string; on
     >
       {children}
     </button>
-  );
-}
-
-function PickButton({ accept, multiple, onPick, label }: { accept: string; multiple?: boolean; onPick: (f: File[]) => void; label: string }) {
-  return (
-    <label className="cursor-pointer rounded-full bg-brand/15 px-3 py-1 text-sm font-medium text-brand hover:bg-brand/25 focus-within:ring-2 focus-within:ring-brand">
-      {multiple ? label.replace(/^Choose .*/, "Choose") : "Choose"}
-      <input
-        type="file"
-        accept={accept}
-        multiple={multiple}
-        aria-label={label}
-        className="sr-only"
-        onChange={(e) => {
-          onPick(Array.from(e.target.files ?? []));
-          e.target.value = "";
-        }}
-      />
-    </label>
   );
 }
 

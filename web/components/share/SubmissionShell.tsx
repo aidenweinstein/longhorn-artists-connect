@@ -23,7 +23,7 @@ export default function SubmissionShell({
 
   return (
     <form
-      className="mx-auto max-w-xl space-y-6 pb-24"
+      className="w-full space-y-6 pb-24"
       onSubmit={(e) => {
         e.preventDefault();
         setTried(true);
@@ -43,7 +43,7 @@ export default function SubmissionShell({
       </header>
       <h1 className="text-3xl font-bold">{title}</h1>
 
-      {children}
+      <div className="grid gap-6 lg:grid-cols-2 lg:items-start">{children}</div>
 
       <div aria-live="polite" className="text-sm">
         {!ready && <p className="px-4 text-muted">To post, add: {missing.join(", ")}.</p>}
