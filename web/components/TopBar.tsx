@@ -1,32 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { usePathname } from "next/navigation";
 import { pageForPath } from "@/lib/pages";
 import { schoolForPath } from "@/lib/schools";
 import MaskImage from "./MaskImage";
 import CategoryFilter from "./CategoryFilter";
 import PageActions from "./PageActions";
-import { SearchGlyph } from "./icons";
+import SearchBox from "./SearchBox";
 
 export default function TopBar() {
   const pathname = usePathname();
-  const params = useSearchParams();
-  const router = useRouter();
   const page = pageForPath(pathname);
   const school = schoolForPath(pathname);
   const barColor = school?.color ?? "var(--brand)";
-  const [query, setQuery] = useState(params.get("q") ?? "");
-
-  function onSearch(e: FormEvent) {
-    e.preventDefault();
-    const next = new URLSearchParams(params.toString());
-    if (query.trim()) next.set("q", query.trim());
-    else next.delete("q");
-    const qs = next.toString();
-    router.push(qs ? `${pathname}?${qs}` : pathname);
-  }
 
   return (
     <header
@@ -49,22 +36,7 @@ export default function TopBar() {
         />
       </Link>
 
-      <form onSubmit={onSearch} role="search" className="flex flex-1 justify-end max-w-2xl sm:min-w-[120px] sm:justify-start">
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search"
-          className="hidden h-10 min-w-0 flex-1 rounded-l-full sm:block border border-white/25 bg-black/20 px-5 text-[15px] text-brand-foreground outline-none placeholder:text-brand-foreground/65 focus:border-brand-foreground/80"
-        />
-        <button
-          type="submit"
-          aria-label="Search"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border sm:w-16 sm:rounded-l-none sm:border-l-0 border-white/25 bg-white/15 text-brand-foreground hover:bg-white/25"
-        >
-          <SearchGlyph className="h-5 w-5" />
-        </button>
-      </form>
+      <SearchBox />
 
       {page.actions && <PageActions kind={page.actions} />}
 

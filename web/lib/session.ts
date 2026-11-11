@@ -29,6 +29,11 @@ function sign(payload: string): string {
   return createHmac("sha256", secret()).update(payload).digest("base64url");
 }
 
+/** An HMAC of `value` under the session secret, for tokens handed to the browser. */
+export function signValue(value: string): string {
+  return sign(value);
+}
+
 export function encodeSession(session: Session): string {
   const payload = Buffer.from(JSON.stringify(session)).toString("base64url");
   return `${payload}.${sign(payload)}`;

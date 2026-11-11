@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { EVENT_CATEGORIES, eventRules, type EventCategory } from "@/lib/shareOptions";
+import { image } from "@/lib/shareUpload";
 import { DateRow, FileRow, Section, SelectRow, TextArea, TextInput } from "../FormKit";
 import SubmissionShell from "../SubmissionShell";
 
@@ -26,29 +27,77 @@ export default function EventForm() {
   const [applicationLink, setApplicationLink] = useState("");
   const [ticketLink, setTicketLink] = useState("");
 
-  const rules = category ? eventRules(category) : null;
+  // No category yet: the general fields every event has (a date, time and place).
+  const rules = category
+    ? eventRules(category)
+    : { ...eventRules("Showcase"), lineupLabel: undefined as string | undefined };
 
-  const missing = rules
-    ? ([
-        !title.trim() && "title",
-        !host.trim() && "host",
-        rules.usesDateTime && !day && "date",
-        rules.usesDateRange && !startDate && "start date",
-        rules.usesShowings && !showings.some((s) => s.day) && "a showing date",
-        rules.showsLocation && !location.trim() && "location",
-      ].filter(Boolean) as string[])
-    : ["category"];
+  const missing = [
+    !title.trim() && "title",
+    !host.trim() && "host",
+    rules.usesDateTime && !day && "date",
+    rules.usesDateRange && !startDate && "start date",
+    rules.usesShowings && !showings.some((s) => s.day) && "a showing date",
+    rules.showsLocation && !location.trim() && "location",
+  ].filter(Boolean) as string[];
+
+  // Local date + time from the form → epoch ms in the poster's time zone.
+  const at = (date: string, time = "00:00") => (date ? new Date(`${date}T${time || "00:00"}:00`).getTime() : 0);
+  /** An end before the start means it runs past midnight. */
+  const after = (start: number, end: number) => (end && end <= start ? end + 86_400_000 : end);
 
   const updateShowing = (i: number, patch: Partial<Showing>) => setShowings((all) => all.map((s, j) => (j === i ? { ...s, ...patch } : s)));
 
   return (
-    <SubmissionShell title="Event" missing={missing}>
+    <SubmissionShell
+      type="event"
+      title="Event"
+      missing={missing}
+      draft={() => {
+        const shows = rules.usesShowings
+          ? showings.filter((x) => x.day).map((x) => {
+              const a = at(x.day, x.start);
+              return [a, after(a, at(x.day, x.end))] as const;
+            })
+          : [];
+        let startAt = 0;
+        let endAt = 0;
+        if (rules.usesDateRange) {
+          startAt = at(startDate);
+          endAt = endDate ? at(endDate, "23:59") : 0;
+        } else if (rules.usesShowings) {
+          startAt = shows[0]?.[0] ?? 0;
+          endAt = shows.at(-1)?.[1] ?? 0;
+        } else {
+          startAt = at(day, startTime);
+          endAt = after(startAt, at(day, endTime));
+        }
+        return {
+          type: "event",
+          text: {
+            title,
+            host,
+            description,
+            category,
+            location: rules.showsLocation ? location : "",
+            lineup: rules.lineupLabel ? lineup : "",
+            expectations: rules.showsExpectations ? expectations : "",
+            applicationURL: rules.showsApplicationLink ? applicationLink : "",
+            ticketsURL: rules.showsTicketLink ? ticketLink : "",
+          },
+          lists: { showings: shows.map(([a, b]) => `${a}|${b}`) },
+          credits: {},
+          numbers: { startAt, endAt },
+          flags: {},
+          files: { eventFlyer: flyer ? [image(flyer, 1600)] : [] },
+        };
+      }}
+    >
       <Section title="Category">
         <SelectRow label="Category" value={category} options={EVENT_CATEGORIES} placeholder="Select Category" onChange={(v) => setCategory(v as EventCategory)} />
       </Section>
 
-      {rules && (
-        <>
+      <>
           <Section title="Upload">
             <FileRow noun="flyer" accept="image/*" file={flyer} onChange={setFlyer} optional />
           </Section>
@@ -105,8 +154,7 @@ export default function EventForm() {
               {rules.showsTicketLink && <TextInput type="url" value={ticketLink} onChange={setTicketLink} placeholder="Ticket Link" />}
             </Section>
           )}
-        </>
-      )}
+      </>
     </SubmissionShell>
   );
 }

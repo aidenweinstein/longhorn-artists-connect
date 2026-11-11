@@ -148,6 +148,12 @@ function reel(r: CKRecord): Post {
 }
 
 function equipment(r: CKRecord) {
+  // Current posts store "Label: value" entries in photographyGear (app and website).
+  const gear = list(r, "photographyGear").flatMap((entry) => {
+    const i = entry.indexOf(": ");
+    return i > 0 ? [{ label: entry.slice(0, i), value: entry.slice(i + 2) }] : [];
+  });
+  if (gear.length) return gear;
   try {
     const e = JSON.parse(str(r, "photographyEquipment") || "{}") as Record<string, string>;
     const rows = [["Camera", e.camera], ["Lens", e.lens], ["Lighting", e.lighting], ["Filters", e.filters]]
@@ -210,6 +216,7 @@ function project(r: CKRecord): Project {
     logline: str(r, "projectDescription"),
     postedBy: str(r, "submittedBy"),
     shootDates: str(r, "projectShootDatesText") || undefined,
+    studio: str(r, "projectStudio").trim() || undefined,
     castNeeded,
     crewNeeded,
     posterUrl: asset(r, "projectPoster", "media.jpg"),
@@ -288,9 +295,13 @@ async function removedIDs(): Promise<Set<string>> {
 const visible = (removed: Set<string>) => (r: CKRecord) =>
   num(r, "isApproved") === 1 && !removed.has(r.recordName.toUpperCase());
 
+/** Tag on the feed caches, so a post made on the website shows up right away. */
+export const POSTS_TAG = "posts";
+
 export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set<string> }> {
   "use cache";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
+  cacheTag(POSTS_TAG);
 
   const [removed, people, films, musics, reels, photos, designs] = await Promise.all([
     removedIDs(),
@@ -321,6 +332,7 @@ export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set
 export async function getDiscoverItems(): Promise<(Project | NexusEvent)[]> {
   "use cache";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
+  cacheTag(POSTS_TAG);
 
   const [removed, projects, events] = await Promise.all([
     removedIDs(),

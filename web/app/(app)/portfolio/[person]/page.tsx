@@ -6,7 +6,7 @@ import { getCreativeProfile } from "@/lib/cloudkit/creative";
 import { discoverItems } from "@/lib/content";
 import type { DiscoverItem, NexusEvent } from "@/lib/discoverContent";
 import SignOutButton from "@/components/SignOutButton";
-import { creditedPosts, currentAccount, personAccount } from "@/lib/account";
+import { collaboratorsFor, creditedPosts, currentAccount, personAccount } from "@/lib/account";
 import { sampleAccount, sampleById, sampleCreative } from "@/lib/sampleProfiles";
 
 /** Anyone's portfolio, opened by clicking their name anywhere on the site. */
@@ -49,9 +49,11 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
     discoverItems().catch((): DiscoverItem[] => []),
   ]);
   const events = items.filter((i): i is NexusEvent => i.kind === "event");
+  const collaborators = await collaboratorsFor(posts, account);
 
   return (
     <ProfileView
+      collaborators={collaborators}
       styled={<StyledProfile account={account} posts={posts} creative={creative} events={events} isOwn={isMe} />}
       account={account}
       posts={posts}

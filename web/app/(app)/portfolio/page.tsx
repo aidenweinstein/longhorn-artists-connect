@@ -6,7 +6,7 @@ import { getCreativeProfile } from "@/lib/cloudkit/creative";
 import { discoverItems } from "@/lib/content";
 import type { DiscoverItem, NexusEvent } from "@/lib/discoverContent";
 import SignOutButton from "@/components/SignOutButton";
-import { creditedPosts, currentAccount } from "@/lib/account";
+import { collaboratorsFor, creditedPosts, currentAccount } from "@/lib/account";
 
 export default function Portfolio() {
   return (
@@ -47,8 +47,10 @@ async function Profile() {
     discoverItems().catch((): DiscoverItem[] => []),
   ]);
   const events = items.filter((i): i is NexusEvent => i.kind === "event");
+  const collaborators = await collaboratorsFor(posts, account);
   return (
     <ProfileView
+      collaborators={collaborators}
       styled={<StyledProfile account={account} posts={posts} creative={creative} events={events} isOwn />}
       account={account}
       posts={posts}

@@ -40,7 +40,7 @@ export const RECORDING_ROLES = ["Vocalist", "Lead Guitar", "Rhythm Guitar", "Bas
 export const PRODUCTION_ROLES = ["Producer", "Mixer", "Engineer"];
 export const STREAMING_SERVICES = ["Spotify", "Apple Music", "YouTube Music", "SoundCloud"];
 
-export const PERFORMANCE_CATEGORIES = ["Acting Reel", "Dancing Reel", "Actor Showcase", "Dance Showcase"];
+export const PERFORMANCE_CATEGORIES = ["Acting Reel", "Dancing Reel", "Actor Showcase", "Dance Showcase", "Theatre Show"];
 
 export const DESIGN_CATEGORIES = ["Graphic", "Magazine", "Drawing", "Painting", "Modeling"];
 

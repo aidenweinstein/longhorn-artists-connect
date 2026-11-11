@@ -9,6 +9,8 @@ export type Project = {
   logline: string;
   postedBy: string;
   shootDates?: string;
+  /** The organization or production class behind the project; empty for an independent one. */
+  studio?: string;
   castNeeded: string[];
   crewNeeded: string[];
   posterUrl?: string;

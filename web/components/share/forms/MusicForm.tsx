@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { MUSIC_CATEGORIES, MUSIC_GENRES, PRODUCTION_ROLES, RECORDING_ROLES, STREAMING_SERVICES, releaseYears } from "@/lib/shareOptions";
-import { AudioIcon, DisclosureRow, FileRow, FilesRow, MultiSelectRow, Section, SelectRow, SubField, TextInput, ToggleRow, VideoIcon, filledCredits, seedCredits, subInput } from "../FormKit";
+import { MUSIC_CATEGORIES, MUSIC_GENRES, PRODUCTION_ROLES, RECORDING_ROLES, STREAMING_SERVICES } from "@/lib/shareOptions";
+import { extension, image, mediaDuration, raw } from "@/lib/shareUpload";
+import { useReleaseYears, AudioIcon, DisclosureRow, FileRow, FilesRow, MultiSelectRow, Section, SelectRow, SubField, TextInput, ToggleRow, VideoIcon, filledCredits, seedCredits, subInput } from "../FormKit";
 import SubmissionShell from "../SubmissionShell";
 
 export default function MusicForm() {
+  const years = useReleaseYears();
   const [category, setCategory] = useState("");
   const [tracks, setTracks] = useState<File[]>([]);
   const [cover, setCover] = useState<File | null>(null);
@@ -22,18 +24,50 @@ export default function MusicForm() {
 
   const multiTrack = category === "EP" || category === "Album";
   const showsStreamingLinks = category !== "Performance";
-  const showsLyrics = category === "Song";
+  // No category yet behaves like a single Song.
+  const showsLyrics = category === "Song" || category === "";
   const hasCredits = filledCredits(recording).length + filledCredits(production).length > 0;
 
   const missing = [
-    !category && "category",
     !tracks.length && (multiTrack ? "tracks" : "audio file"),
     !title.trim() && "title",
     !artist.trim() && "artist",
   ].filter(Boolean) as string[];
 
   return (
-    <SubmissionShell title="Music" missing={missing}>
+    <SubmissionShell
+      type="music"
+      title="Music"
+      missing={missing}
+      draft={async () => {
+        const [lead, ...rest] = tracks;
+        return {
+          type: "music",
+          text: {
+            title,
+            artist,
+            category,
+            releaseYear: year,
+            lyrics: showsLyrics ? lyrics : "",
+            audioExt: lead ? extension(lead, "m4a") : "m4a",
+            spotify: showsStreamingLinks ? links["Spotify"] ?? "" : "",
+            appleMusic: showsStreamingLinks ? links["Apple Music"] ?? "" : "",
+            youtubeMusic: showsStreamingLinks ? links["YouTube Music"] ?? "" : "",
+            soundcloud: showsStreamingLinks ? links["SoundCloud"] ?? "" : "",
+          },
+          lists: { genres, trackExts: rest.map((t) => extension(t, "m4a")) },
+          credits: { recording: filledCredits(recording), production: filledCredits(production) },
+          numbers: { audioDuration: (lead && (await mediaDuration(lead))) || 0 },
+          flags: { explicit },
+          files: {
+            musicAudio: lead ? [raw(lead)] : [],
+            musicTracks: multiTrack ? rest.map(raw) : [],
+            musicCover: cover ? [image(cover, 1000)] : [],
+            musicVideo: musicVideo ? [raw(musicVideo)] : [],
+          },
+        };
+      }}
+    >
       <Section title="Category">
         <SelectRow
           label="Category"
@@ -48,8 +82,7 @@ export default function MusicForm() {
         />
       </Section>
 
-      {category && (
-        <>
+      <>
           <Section title="Upload" footer={multiTrack ? "Tracks play in this order. The first is the lead track." : undefined}>
             {multiTrack ? (
               <TrackList tracks={tracks} onChange={setTracks} />
@@ -64,7 +97,7 @@ export default function MusicForm() {
             <TextInput value={title} onChange={setTitle} placeholder="Title" />
             <TextInput value={artist} onChange={setArtist} placeholder="Artist" />
             <MultiSelectRow label="Genres" values={genres} options={MUSIC_GENRES} onChange={setGenres} />
-            <SelectRow label="Release Year" value={year} options={releaseYears()} onChange={setYear} />
+            <SelectRow label="Release Year" value={year} options={years} onChange={setYear} />
             <DisclosureRow label="Credits" edited={hasCredits}>
               <p className="pt-1 text-xs font-semibold uppercase tracking-wide text-muted">Recording</p>
               <InlineCredits credits={recording} onChange={setRecording} placeholder="Role (e.g., Lead Vocals, Guitar)" />
@@ -105,8 +138,7 @@ export default function MusicForm() {
               )}
             </Section>
           )}
-        </>
-      )}
+      </>
     </SubmissionShell>
   );
 }

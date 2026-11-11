@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { AGE_RATINGS, CREW_ROLES, FILM_CATEGORIES, FILM_GENRES, FILM_STUDIOS, PRODUCTION_CLASSES, releaseYears, type FilmCategory } from "@/lib/shareOptions";
-import { CreditsRow, FileRow, FilesRow, ListRow, MoreRows, MultiSelectRow, Section, Segmented, SelectRow, TextArea, TextInput, ToggleRow, VideoIcon, seedCredits } from "../FormKit";
+import { AGE_RATINGS, CREW_ROLES, FILM_CATEGORIES, FILM_GENRES, FILM_STUDIOS, PRODUCTION_CLASSES, type FilmCategory } from "@/lib/shareOptions";
+import { image, mediaDuration, raw, videoFrame } from "@/lib/shareUpload";
+import { useReleaseYears, CreditsRow, FileRow, FilesRow, ListRow, MoreRows, MultiSelectRow, Section, Segmented, SelectRow, TextArea, TextInput, ToggleRow, VideoIcon, filledCredits, seedCredits } from "../FormKit";
 import SubmissionShell from "../SubmissionShell";
 
 export default function FilmForm() {
+  const years = useReleaseYears();
   const [category, setCategory] = useState<FilmCategory | "">("");
   const [studio, setStudio] = useState("");
   const [video, setVideo] = useState<File | null>(null);
@@ -25,14 +27,36 @@ export default function FilmForm() {
   const studioField = category === "Org Project" ? "Studio" : category === "Class Project" ? "Class" : null;
 
   const missing = [
-    !category && "category",
     !video && "video",
     !title.trim() && "title",
     studioField && !studio && studioField.toLowerCase(),
   ].filter(Boolean) as string[];
 
   return (
-    <SubmissionShell title="Film" missing={missing}>
+    <SubmissionShell
+      type="film"
+      title="Film"
+      missing={missing}
+      draft={async () => {
+        // No thumbnail picked: the video's first frame, as the app does.
+        const poster = thumbnail ?? (video ? await videoFrame(video) : undefined);
+        return {
+          type: "film",
+          text: { title, logline, studio, releaseYear: year, ageRating: rating },
+          lists: { genres, cast },
+          credits: { crew: filledCredits(crew) },
+          numbers: { videoDuration: (video && (await mediaDuration(video))) || 0 },
+          flags: { festivalBound },
+          files: {
+            filmVideo: video ? [raw(video)] : [],
+            filmThumbnail: poster ? [image(poster, 1000)] : [],
+            filmTrailer: trailer ? [raw(trailer)] : [],
+            filmBTS: bts.map((f) => image(f)),
+            filmStills: stills.map((f) => image(f)),
+          },
+        };
+      }}
+    >
       <Section title="Category">
         <SelectRow
           label="Category"
@@ -46,44 +70,40 @@ export default function FilmForm() {
         />
       </Section>
 
-      {category && (
-        <>
-          <Section title="Upload" footer="Films upload at full original quality.">
-            <FileRow noun="video" accept="video/*" file={video} onChange={setVideo} icon={<VideoIcon />} />
-            <FileRow noun="thumbnail" accept="image/*" file={thumbnail} onChange={setThumbnail} optional />
-            <MoreRows>
-              <FileRow noun="trailer" accept="video/*" file={trailer} onChange={setTrailer} icon={<VideoIcon />} optional />
-              <FilesRow noun="BTS photos" accept="image/*" files={bts} onChange={setBts} optional />
-              <FilesRow noun="stills" accept="image/*" files={stills} onChange={setStills} optional />
-            </MoreRows>
-          </Section>
+      <Section title="Upload" footer="Films upload at full original quality.">
+        <FileRow noun="video" accept="video/*" file={video} onChange={setVideo} icon={<VideoIcon />} />
+        <FileRow noun="thumbnail" accept="image/*" file={thumbnail} onChange={setThumbnail} optional />
+        <MoreRows>
+          <FileRow noun="trailer" accept="video/*" file={trailer} onChange={setTrailer} icon={<VideoIcon />} optional />
+          <FilesRow noun="BTS photos" accept="image/*" files={bts} onChange={setBts} optional />
+          <FilesRow noun="stills" accept="image/*" files={stills} onChange={setStills} optional />
+        </MoreRows>
+      </Section>
 
-          <Section title="Details">
-            <TextInput value={title} onChange={setTitle} placeholder="Title" />
-            {studioField && (
-              <SelectRow
-                label={studioField}
-                value={studio}
-                options={studioField === "Studio" ? FILM_STUDIOS : PRODUCTION_CLASSES}
-                onChange={setStudio}
-              />
-            )}
-            <TextArea value={logline} onChange={setLogline} placeholder="Logline" maxLength={500} />
-            <MultiSelectRow label="Genres" values={genres} options={FILM_GENRES} onChange={setGenres} />
-            <SelectRow label="Release Year" value={year} options={releaseYears()} onChange={setYear} />
-            <ListRow label="Cast" items={cast} onChange={setCast} placeholder="Actor name" addLabel="Add cast member" />
-            <CreditsRow label="Crew" credits={crew} onChange={setCrew} />
-            <Segmented label="Age Rating" value={rating} options={AGE_RATINGS} onChange={setRating} />
-          </Section>
+      <Section title="Details">
+        <TextInput value={title} onChange={setTitle} placeholder="Title" />
+        {studioField && (
+          <SelectRow
+            label={studioField}
+            value={studio}
+            options={studioField === "Studio" ? FILM_STUDIOS : PRODUCTION_CLASSES}
+            onChange={setStudio}
+          />
+        )}
+        <TextArea value={logline} onChange={setLogline} placeholder="Logline" maxLength={500} />
+        <MultiSelectRow label="Genres" values={genres} options={FILM_GENRES} onChange={setGenres} />
+        <SelectRow label="Release Year" value={year} options={years} onChange={setYear} />
+        <ListRow label="Cast" items={cast} onChange={setCast} placeholder="Actor name" addLabel="Add cast member" />
+        <CreditsRow label="Crew" credits={crew} onChange={setCrew} />
+        <Segmented label="Age Rating" value={rating} options={AGE_RATINGS} onChange={setRating} />
+      </Section>
 
-          <Section
-            title="Other"
-            footer="Keeps the actual film private while still showing thumbnail, logline, credits, etc. You can edit the post at any time to make it public when it's ready."
-          >
-            <ToggleRow label="Festival-Bound" checked={festivalBound} onChange={setFestivalBound} />
-          </Section>
-        </>
-      )}
+      <Section
+        title="Other"
+        footer="Keeps the actual film private while still showing thumbnail, logline, credits, etc. You can edit the post at any time to make it public when it's ready."
+      >
+        <ToggleRow label="Festival-Bound" checked={festivalBound} onChange={setFestivalBound} />
+      </Section>
     </SubmissionShell>
   );
 }

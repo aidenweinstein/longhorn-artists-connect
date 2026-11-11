@@ -1,7 +1,8 @@
 import Avatar from "./Avatar";
 import WorkStatusPill from "./WorkStatusPill";
 import ContentGrid from "./ContentGrid";
-import { collaborators } from "@/lib/account";
+import CollaboratorsStat from "./CollaboratorsStat";
+import { collaboratorList, type Collaborators } from "@/lib/account";
 import type { Account } from "@/lib/cloudkit/content";
 import type { Post } from "@/lib/mockContent";
 
@@ -15,6 +16,7 @@ export default function ProfileView({
   note,
   emptyText,
   styled,
+  collaborators,
 }: {
   account: Account;
   posts: Post[];
@@ -27,13 +29,16 @@ export default function ProfileView({
   emptyText: string;
   /** The profile-style section (actor resume, filmography, discography): see StyledProfile. */
   styled?: React.ReactNode;
+  /** Who they've worked with, checked against Nexus accounts (see collaboratorsFor). */
+  collaborators?: Collaborators;
 }) {
   const stats: [string, number][] = [
     ["Credits", posts.length],
     // Connects are requested and accepted in the app; none exist yet to count.
     ["Connects", 0],
-    ["Collabs", collaborators(posts, account)],
   ];
+  // Without a directory check, anyone linked to a profile counts as on Nexus.
+  const collabs = collaborators ?? collaboratorList(posts, account);
   const school = account.school || schoolFallback;
 
   return (
@@ -52,6 +57,12 @@ export default function ProfileView({
                     <dd className="text-xl font-bold leading-tight tabular-nums">{value}</dd>
                   </div>
                 ))}
+                <div>
+                  <dt className="sr-only">Collabs</dt>
+                  <dd>
+                    <CollaboratorsStat label="Collabs" collaborators={collabs} />
+                  </dd>
+                </div>
               </dl>
             </div>
             {actions}

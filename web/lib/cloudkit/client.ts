@@ -181,6 +181,56 @@ export async function uploadAsset(
   return { value: singleFile, type: "ASSETID" };
 }
 
+/**
+ * Upload URLs for assets the browser sends straight to Apple, one per token, in order.
+ * Each URL is bound to its record type, record name and field, so the receipt it
+ * returns can only be saved in that field of that record.
+ */
+export async function assetUploadURLs(
+  tokens: { recordType: string; recordName: string; fieldName: string }[],
+): Promise<string[]> {
+  if (!tokens.length) return [];
+  const res = await request<{ tokens?: { url?: string }[] }>("assets/upload", { tokens });
+  const urls = (res.tokens ?? []).map((t) => t.url ?? "");
+  if (urls.length !== tokens.length || urls.some((u) => !u)) throw new Error("CloudKit didn't return upload URLs.");
+  return urls;
+}
+
+/**
+ * Creates a new record (never overwrites one: CloudKit refuses if the name is taken).
+ *
+ * Mirrors the app's schema-gap rescue in CloudKitManager.save: when Production
+ * rejects a field it doesn't have yet, that field is dropped and the save retried,
+ * so a post still goes up without the newer extras. Fields in `required` are never
+ * dropped. Returns the fields that had to be left off.
+ */
+export async function createRecord(
+  recordType: string,
+  recordName: string,
+  fields: Record<string, CKField>,
+  required: readonly string[],
+): Promise<string[]> {
+  const current = { ...fields };
+  const dropped: string[] = [];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const res = await request<{ records?: { serverErrorCode?: string; reason?: string }[] }>("records/modify", {
+      operations: [{ operationType: "create", record: { recordType, recordName, fields: current } }],
+    });
+    const r = res.records?.[0];
+    if (!r?.serverErrorCode) return dropped;
+    const reason = r.reason ?? "";
+    // The longest matching name first, so "filmVideoCrop" isn't mistaken for "filmVideo".
+    const culprit = Object.keys(current)
+      .sort((a, b) => b.length - a.length)
+      .find((key) => new RegExp(`(^|[^A-Za-z0-9_])${key}([^A-Za-z0-9_]|$)`).test(reason));
+    if (!culprit || required.includes(culprit)) throw new Error(`CloudKit ${r.serverErrorCode}: ${reason}`);
+    console.warn(`[cloudkit] ${recordType} save left off ${culprit}: ${reason}`);
+    delete current[culprit];
+    dropped.push(culprit);
+  }
+  throw new Error("CloudKit kept rejecting this post.");
+}
+
 // MARK: - Field readers
 
 export function str(r: CKRecord, key: string): string {

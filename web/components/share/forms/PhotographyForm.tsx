@@ -1,13 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { PHOTO_EQUIPMENT, releaseYears } from "@/lib/shareOptions";
-import { CreditsRow, DisclosureRow, FilesRow, Section, SelectRow, SubField, TextArea, TextInput, subInput, type Credit } from "../FormKit";
+import { PHOTO_EQUIPMENT } from "@/lib/shareOptions";
+import { image } from "@/lib/shareUpload";
+import { useReleaseYears, CreditsRow, DisclosureRow, FilesRow, Section, SelectRow, SubField, TextArea, TextInput, subInput, type Credit } from "../FormKit";
 import SubmissionShell from "../SubmissionShell";
 
 type Equipment = Record<(typeof PHOTO_EQUIPMENT)[number]["key"], string>;
 
 export default function PhotographyForm() {
+  const years = useReleaseYears();
   const [photos, setPhotos] = useState<File[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -18,7 +20,28 @@ export default function PhotographyForm() {
   const missing = [!photos.length && "photos", !title.trim() && "title"].filter(Boolean) as string[];
 
   return (
-    <SubmissionShell title="Photography" missing={missing}>
+    <SubmissionShell
+      type="photography"
+      title="Photography"
+      missing={missing}
+      draft={() => ({
+        type: "photography",
+        text: { title, description, releaseYear: year },
+        // The app's photographyGear entries: "Label: value", "Other" for other equipment.
+        lists: {
+          gear: PHOTO_EQUIPMENT.filter((e) => equipment[e.key].trim()).map(
+            (e) => `${e.key === "accessories" ? "Other" : e.label}: ${equipment[e.key].trim()}`,
+          ),
+        },
+        credits: { credits: credits.filter((c) => c.name.trim()) },
+        numbers: {},
+        flags: {},
+        files: {
+          photographyImages: photos.map((f) => image(f)),
+          photographyThumbnail: photos[0] ? [image(photos[0], 1000)] : [],
+        },
+      })}
+    >
       <Section title="Upload" footer="The first photo is the cover.">
         <FilesRow noun="photos" accept="image/*" files={photos} onChange={setPhotos} />
       </Section>
@@ -26,7 +49,7 @@ export default function PhotographyForm() {
       <Section title="Details">
         <TextInput value={title} onChange={setTitle} placeholder="Title" />
         <TextArea value={description} onChange={setDescription} placeholder="Description" />
-        <SelectRow label="Release Year" value={year} options={releaseYears()} onChange={setYear} />
+        <SelectRow label="Release Year" value={year} options={years} onChange={setYear} />
         <CreditsRow label="Credits" credits={credits} onChange={setCredits} addLabel="Add credit" />
         <DisclosureRow label="Equipment" edited={Object.values(equipment).some((v) => v.trim())}>
           {PHOTO_EQUIPMENT.map((e) => (

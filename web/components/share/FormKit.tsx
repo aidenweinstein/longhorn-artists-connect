@@ -4,7 +4,19 @@
 // a small header, a rounded card of rows, and an optional footer note. Chosen values
 // show in the brand color, like the app's orange menu labels.
 
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { releaseYears } from "@/lib/shareOptions";
+
+const noYears: string[] = [];
+let yearsCache: string[] | null = null;
+const noSubscribe = () => () => {};
+/**
+ * The release-year menu's options. Read in the browser only: the year comes from the
+ * clock, which the server mustn't read while prerendering the Share pages.
+ */
+export function useReleaseYears(): string[] {
+  return useSyncExternalStore(noSubscribe, () => (yearsCache ??= releaseYears()), () => noYears);
+}
 
 const rowBase = "flex min-h-12 items-center gap-3 px-4 py-2.5";
 const input = "w-full bg-transparent px-4 py-3 text-[15px] outline-none placeholder:text-muted";
