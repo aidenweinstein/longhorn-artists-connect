@@ -8,6 +8,7 @@ import MaskImage from "./MaskImage";
 import CategoryFilter from "./CategoryFilter";
 import PageActions from "./PageActions";
 import SearchBox from "./SearchBox";
+import SubNav from "./SubNav";
 
 export default function TopBar() {
   const pathname = usePathname();
@@ -38,10 +39,11 @@ export default function TopBar() {
 
       <SearchBox />
 
+      <SubNav />
+
       {page.actions && <PageActions kind={page.actions} />}
 
-      {/* Projects / Events filter Discover's calendar; their own pages are already one kind. */}
-      {page.filter && !/^\/discover\/(projects|events)(\/|$)/.test(pathname) && (
+      {page.filter && (
         <div className="shrink-0">
           <CategoryFilter set={page.filter} />
         </div>

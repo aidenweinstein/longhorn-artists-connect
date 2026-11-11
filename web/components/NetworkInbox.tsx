@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { markReadAction, sendAction } from "@/app/(app)/network/actions";
 import { personHref } from "@/lib/people";
 import Avatar from "./Avatar";
+import { ComposeGlyph } from "./icons";
 
 export type InboxThread = {
   id: string;
@@ -101,6 +102,16 @@ export default function NetworkInbox({
     <div className="grid h-[calc(100dvh-7rem)] min-h-[420px] min-w-0 overflow-hidden rounded-2xl border border-border md:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
       {/* Conversation list */}
       <ul className={`min-h-0 overflow-y-auto border-border md:block md:border-r ${openOnPhone ? "hidden" : "block"}`}>
+        <li className="p-3">
+          {/* Starting a conversation from the website isn't connected yet; the tile holds its place. */}
+          <button
+            type="button"
+            className="flex h-11 w-full items-center justify-center gap-2 rounded-full bg-brand text-[15px] font-semibold text-white transition hover:brightness-110 active:scale-[0.99]"
+          >
+            <ComposeGlyph className="h-5 w-5" />
+            New message
+          </button>
+        </li>
         {threads.length === 0 && (
           <li className="px-4 py-6 text-sm text-muted">
             {/* On phones only this pane shows, so the notice goes here too. */}

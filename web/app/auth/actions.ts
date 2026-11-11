@@ -1,7 +1,7 @@
 "use server";
 
 import { cookies, headers } from "next/headers";
-import { SESSION_COOKIE, SESSION_MAX_AGE, encodeSession } from "@/lib/session";
+import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, encodeSession } from "@/lib/session";
 import { confirmCode, requestCode, type RequestResult } from "@/lib/verification";
 
 async function clientIP(): Promise<string> {
@@ -30,13 +30,7 @@ export async function confirmCodeAction(
     domainKind: result.domainKind,
     userRecordName: result.userRecordName,
     issuedAt: Math.floor(Date.now() / 1000),
-  }), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE,
-  });
+  }), SESSION_COOKIE_OPTIONS);
   return { ok: true };
 }
 

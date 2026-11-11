@@ -64,7 +64,7 @@ export default function SubmissionShell({
 
   return (
     <form
-      className="mx-auto max-w-xl space-y-6 pb-24"
+      className="w-full space-y-6 pb-24"
       onSubmit={(e) => {
         e.preventDefault();
         void post();
@@ -85,8 +85,9 @@ export default function SubmissionShell({
       </header>
       <h1 className="text-3xl font-bold">{title}</h1>
 
-      <fieldset disabled={busy} className="space-y-6">
-        {children}
+      {/* Disabled while posting, so nothing changes mid-upload. */}
+      <fieldset disabled={busy} className="min-w-0">
+        <div className="grid gap-6 lg:grid-cols-2 lg:items-start">{children}</div>
       </fieldset>
 
       <div aria-live="polite" className="space-y-3 text-sm">

@@ -1,7 +1,19 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE = "nexus_session";
-export const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
+/** Signed in for a year on this device; any visit after a week renews it (see proxy.ts), so regular use never expires. */
+export const SESSION_MAX_AGE = 60 * 60 * 24 * 365;
+/** A session older than this is re-issued with a fresh date the next time its owner visits. */
+export const SESSION_RENEW_AFTER = 60 * 60 * 24 * 7;
+
+/** Cookie settings shared by sign-in and renewal. maxAge makes it persist after the browser closes. */
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: SESSION_MAX_AGE,
+};
 
 /**
  * A web session proves control of a school email address. When the app already

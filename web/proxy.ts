@@ -1,16 +1,22 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, decodeSession } from "@/lib/session";
+import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, SESSION_RENEW_AFTER, decodeSession, encodeSession } from "@/lib/session";
 
 // Anyone without a valid sign-in (or guest pass) lands on the welcome page first.
 export function proxy(request: NextRequest) {
-  const signedIn = decodeSession(request.cookies.get(SESSION_COOKIE)?.value) !== null;
+  const session = decodeSession(request.cookies.get(SESSION_COOKIE)?.value);
+  const signedIn = session !== null;
   // Guest browsing is a development convenience only: the live site is sign-in only,
   // so real students' work is never visible to someone who hasn't verified.
   const guest = process.env.NODE_ENV !== "production" && request.cookies.has("nexus_guest");
   if (!signedIn && !guest) {
     return NextResponse.redirect(new URL("/welcome", request.url));
   }
-  return NextResponse.next();
+  const response = NextResponse.next();
+  // Keep people signed in while they use the site: re-issue an aging session with a fresh date.
+  if (session && Date.now() / 1000 - session.issuedAt > SESSION_RENEW_AFTER) {
+    response.cookies.set(SESSION_COOKIE, encodeSession({ ...session, issuedAt: Math.floor(Date.now() / 1000) }), SESSION_COOKIE_OPTIONS);
+  }
+  return response;
 }
 
 export const config = {
