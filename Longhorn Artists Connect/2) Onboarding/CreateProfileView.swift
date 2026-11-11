@@ -2,19 +2,19 @@
 //  CreateProfileView.swift
 //  Longhorn Artists Connect
 //
-//  The "Create Your Account" step of onboarding, in two variants:
-//    - `CreateProfileView`   — UT students: name, photo, major, graduation year.
-//    - `IndustryDetailsView` — industry professionals: name, photo, industry,
-//                              company, company role (no academics, and they
-//                              skip the tags step entirely).
-//  Both share `OnboardingProfilePicturePicker` for the profile photo.
+//  The "Create Your Account" step of onboarding. What it asks depends on the
+//  member's `SchoolRole`:
+//    - Student   — name, photo, major, class year (then the tags step).
+//    - Professor — name, photo, department.
+//    - Alumni    — name, photo, major, class year (past years).
+//  The photo picker is `OnboardingProfilePicturePicker`.
 //  Extracted from OnboardingView.swift.
 //
 
 import SwiftUI
 import PhotosUI
 
-// MARK: - Create Profile (UT Students)
+// MARK: - Create Profile
 
 struct CreateProfileView: View {
     @ObservedObject var profileModel: UserProfileModel
@@ -23,8 +23,11 @@ struct CreateProfileView: View {
     /// `completeOnboarding()` splits it into first/last name on save.
     @Binding var fullName: String
 
-    /// The onboarding page index, owned by `OnboardingView`.
-    @Binding var currentPage: Int
+    /// Student / Professor / Alumni — decides which fields are asked.
+    let role: SchoolRole
+
+    /// Moves on to the next step (tags for students, account creation otherwise).
+    let onNext: () -> Void
 
     /// Set when the typed name already has credited projects, which drives
     /// `OnboardingView`'s "Is this you?" sheet.
@@ -44,14 +47,21 @@ struct CreateProfileView: View {
     @ObservedObject private var store: SubmissionStore_3_2 = .shared
 
     // MARK: - Constants
-    private let availableYears = ["2026", "2027", "2028", "2029", "2030"]
+
+    /// Current students graduate this year or later; alumni already have.
+    private var availableYears: [String] {
+        let thisYear = Calendar.current.component(.year, from: Date())
+        let years = role == .alumni ? Array((1950...thisYear).reversed()) : Array(thisYear...(thisYear + 4))
+        return years.map(String.init)
+    }
 
     // MARK: - Validation
 
     private var isAccountDetailsValid: Bool {
         let nameValid = !fullName.trimmingCharacters(in: .whitespaces).isEmpty
-        let majorValid = !profileModel.major.isEmpty
-        let yearValid = !profileModel.graduationYear.isEmpty
+        // Professors put their department in `major`.
+        let majorValid = !profileModel.major.trimmingCharacters(in: .whitespaces).isEmpty
+        let yearValid = role == .professor || availableYears.contains(profileModel.graduationYear)
         let photoValid = profileModel.profileImage != nil
         return nameValid && majorValid && yearValid && photoValid
     }
@@ -103,69 +113,87 @@ struct CreateProfileView: View {
                     Divider()
                         .padding(.leading, 16)
 
-                    // Major selection *
-                    Button {
-                        showMajorSelection = true
-                    } label: {
+                    if role == .professor {
                         HStack(alignment: .center) {
-                            Text("Major")
+                            Text("Department")
                                 .font(.body)
                                 .foregroundStyle(.primary)
 
                             Spacer()
 
-                            Text(profileModel.major.isEmpty ? "Select" : profileModel.major)
-                                .foregroundStyle(.secondary)
-
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 4)
+                            TextField("", text: $profileModel.major, axis: .vertical)
+                                .lineLimit(1)
+                                .multilineTextAlignment(.trailing)
+                                .foregroundStyle(.primary)
+                                .autocorrectionDisabled()
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    } else {
+                        // Major selection *
+                        Button {
+                            showMajorSelection = true
+                        } label: {
+                            HStack(alignment: .center) {
+                                Text("Major")
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
 
-                    Divider()
-                        .padding(.leading, 16)
+                                Spacer()
 
-                    // Graduation Year
-                    Menu {
-                        ForEach(availableYears, id: \.self) { year in
-                            Button {
-                                profileModel.graduationYear = year
-                            } label: {
-                                HStack {
-                                    Text(year)
-                                    if profileModel.graduationYear == year {
-                                        Image(systemName: "checkmark")
+                                Text(profileModel.major.isEmpty ? "Select" : profileModel.major)
+                                    .foregroundStyle(.secondary)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.leading, 4)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        Divider()
+                            .padding(.leading, 16)
+
+                        // Graduation Year
+                        Menu {
+                            ForEach(availableYears, id: \.self) { year in
+                                Button {
+                                    profileModel.graduationYear = year
+                                } label: {
+                                    HStack {
+                                        Text(year)
+                                        if profileModel.graduationYear == year {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
-                        }
-                    } label: {
-                        HStack(alignment: .center) {
-                            Text("Class of")
-                                .font(.body)
-                                .foregroundStyle(.primary)
+                        } label: {
+                            HStack(alignment: .center) {
+                                Text("Class of")
+                                    .font(.body)
+                                    .foregroundStyle(.primary)
 
-                            Spacer()
+                                Spacer()
 
-                            HStack(spacing: 4) {
-                                Text(profileModel.graduationYear.isEmpty ? "Select" : profileModel.graduationYear)
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 4) {
+                                    Text(profileModel.graduationYear.isEmpty ? "Select" : profileModel.graduationYear)
+                                        .foregroundStyle(.secondary)
 
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 // Card fill in light mode only. In dark mode the grouped-background
                 // grey reads as an unwanted bubble around the fields, so drop it and let
@@ -185,13 +213,12 @@ struct CreateProfileView: View {
                         // Show "Is this you?" sheet
                         existingUserMatch = ExistingUserMatch(name: fullNameTrimmed, projects: existingProjects)
                     } else {
-                        withAnimation {
-                            currentPage += 1
-                        }
+                        onNext()
                     }
 
                 } label: {
-                    Text("Next")
+                    // Only students have another step (tags).
+                    Text(role == .student ? "Next" : "Create Account")
                         .font(.headline)
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -263,121 +290,6 @@ struct CreateProfileView: View {
         }
 
         return projects
-    }
-}
-
-// MARK: - Industry Professional Details
-
-struct IndustryDetailsView: View {
-    @ObservedObject var profileModel: UserProfileModel
-
-    /// Raw "First Last" input, owned by `OnboardingView`.
-    @Binding var fullName: String
-
-    /// Opens the crop/zoom adjuster, presented by `OnboardingView`.
-    @Binding var showImageAdjustment: Bool
-
-    /// Saves the profile and finishes onboarding.
-    let onComplete: () -> Void
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    // MARK: - Validation
-
-    /// Industry-professional account details are complete when the name, all three
-    /// industry fields, and a profile photo are provided.
-    private var isIndustryDetailsValid: Bool {
-        let nameValid = !fullName.trimmingCharacters(in: .whitespaces).isEmpty
-        let industryValid = !profileModel.industry.trimmingCharacters(in: .whitespaces).isEmpty
-        let companyValid = !profileModel.company.trimmingCharacters(in: .whitespaces).isEmpty
-        let roleValid = !profileModel.companyRole.trimmingCharacters(in: .whitespaces).isEmpty
-        let photoValid = profileModel.profileImage != nil
-        return nameValid && industryValid && companyValid && roleValid && photoValid
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // Header
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Create Your Account")
-                        .font(.title)
-                        .fontWeight(.bold)
-
-                    Text("Automatically saves with Apple ID")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 24)
-
-                // Profile Picture Section
-                OnboardingProfilePicturePicker(
-                    profileModel: profileModel,
-                    showImageAdjustment: $showImageAdjustment
-                )
-
-                // Form fields
-                VStack(spacing: 0) {
-                    industryField(title: "First & Last Name", text: $fullName)
-
-                    Divider().padding(.leading, 16)
-
-                    industryField(title: "Industry", text: $profileModel.industry)
-
-                    Divider().padding(.leading, 16)
-
-                    industryField(title: "Company", text: $profileModel.company)
-
-                    Divider().padding(.leading, 16)
-
-                    industryField(title: "Company Role", text: $profileModel.companyRole)
-                }
-                // Card fill in light mode only (matches CreateProfileView).
-                .background(colorScheme == .dark ? Color.clear : Color(uiColor: .secondarySystemGroupedBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                Spacer(minLength: 60)
-
-                // Create Account button — industry pros skip the tags step.
-                Button {
-                    onComplete()
-                } label: {
-                    Text("Create Account")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(isIndustryDetailsValid ? Color.brandOrange : Color.gray)
-                        .cornerRadius(12)
-                }
-                .disabled(!isIndustryDetailsValid)
-            }
-            .padding(.horizontal, 24)
-        }
-        // The whole page fits on screen, so keep it fixed like CreateProfileView.
-        .scrollDisabled(true)
-    }
-
-    /// A single labeled text field row for the industry account-details card.
-    /// Uses `axis: .vertical` so single-line fields don't get iOS's autofill fill
-    /// drawn behind them.
-    private func industryField(title: String, text: Binding<String>) -> some View {
-        HStack(alignment: .center) {
-            Text(title)
-                .font(.body)
-                .foregroundStyle(.primary)
-
-            Spacer()
-
-            TextField("", text: text, axis: .vertical)
-                .lineLimit(1)
-                .multilineTextAlignment(.trailing)
-                .foregroundStyle(.primary)
-                .autocorrectionDisabled()
-                .textContentType(nil)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
     }
 }
 
@@ -480,31 +392,18 @@ struct OnboardingProfilePicturePicker: View {
     }
 }
 
-#Preview("Create Profile (UT Student)") {
+#Preview("Create Profile (Student)") {
     @Previewable @State var fullName = ""
-    @Previewable @State var currentPage = 1
     @Previewable @State var existingUserMatch: ExistingUserMatch?
     @Previewable @State var showImageAdjustment = false
     NavigationStack {
         CreateProfileView(
             profileModel: UserProfileModel(),
             fullName: $fullName,
-            currentPage: $currentPage,
+            role: .student,
+            onNext: {},
             existingUserMatch: $existingUserMatch,
             showImageAdjustment: $showImageAdjustment
-        )
-    }
-}
-
-#Preview("Industry Details") {
-    @Previewable @State var fullName = ""
-    @Previewable @State var showImageAdjustment = false
-    NavigationStack {
-        IndustryDetailsView(
-            profileModel: UserProfileModel(),
-            fullName: $fullName,
-            showImageAdjustment: $showImageAdjustment,
-            onComplete: {}
         )
     }
 }

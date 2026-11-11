@@ -91,7 +91,19 @@ struct SchoolTheme {
          SchoolTheme(bubble: Color(hex: "005EB8"), text: .white,
                      appIconName: "AppIcon-DePaul",
                      toolbarPill: Color(hex: "3D8BDB"),
-                     toolbarHighlight: Color(hex: "00468A")))
+                     toolbarHighlight: Color(hex: "00468A"))),
+        // Boston University Scarlet + white, with a lighter scarlet pill and deeper
+        // scarlet highlight. No alternate home-screen icon yet, so it keeps `AppIcon`.
+        (["BU", "Boston University"],
+         SchoolTheme(bubble: Color(hex: "CC0000"), text: .white,
+                     toolbarPill: Color(hex: "E54444"),
+                     toolbarHighlight: Color(hex: "990000"))),
+        // Aggie Maroon + white, with a lighter maroon pill and deeper maroon
+        // highlight. No alternate home-screen icon yet, so it keeps `AppIcon`.
+        (["Texas A&M", "Texas A&M University", "TAMU"],
+         SchoolTheme(bubble: Color(hex: "500000"), text: .white,
+                     toolbarPill: Color(hex: "8C2B2B"),
+                     toolbarHighlight: Color(hex: "3A0000")))
     ]
 
     /// `registry` flattened to a lookup table, built once. `forSchool` sits behind

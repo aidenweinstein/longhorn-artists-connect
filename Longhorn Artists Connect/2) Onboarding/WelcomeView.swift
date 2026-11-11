@@ -2,26 +2,18 @@
 //  WelcomeView.swift
 //  Longhorn Artists Connect
 //
-//  Onboarding page 1: the "Welcome to Nexus" screen where the user declares which
-//  kind of account they're creating — student, industry professional, or guest
-//  (the "Guest" button in the upper right). The "?" in the upper left explains
-//  LAC and Nexus.
-//  Each choice sets the matching flags on `profileModel` and routes onward
-//  (students go to `SchoolSelectionView` first).
-//  Extracted from OnboardingView.swift.
+//  Onboarding's first page, "Welcome to Nexus": Create Account or Sign In, plus
+//  "Enthusiast" in the upper right for people who just want to follow along.
+//  The "?" in the upper left explains LAC and Nexus. `OnboardingView` decides
+//  where each choice leads.
 //
 
 import SwiftUI
 
 struct WelcomeView: View {
-    @ObservedObject var profileModel: UserProfileModel
-
-    /// The onboarding page index, owned by `OnboardingView`.
-    @Binding var currentPage: Int
-
-    /// Saves the profile and finishes onboarding. Used by the Guest path, which
-    /// skips account details entirely.
-    let onComplete: () -> Void
+    let onCreateAccount: () -> Void
+    let onSignIn: () -> Void
+    let onEnthusiast: () -> Void
 
     /// Drives the "?" sheet describing LAC and Nexus.
     @State private var showAbout = false
@@ -51,14 +43,8 @@ struct WelcomeView: View {
 
             // Action buttons
             VStack(spacing: 16) {
-                Button {
-                    // Students pick their school on the next page (page 5), which
-                    // then continues down the student path.
-                    withAnimation {
-                        currentPage = 5
-                    }
-                } label: {
-                    Text("I am a Student")
+                Button(action: onCreateAccount) {
+                    Text("Create Account")
                         .font(.headline)
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -67,26 +53,13 @@ struct WelcomeView: View {
                         .cornerRadius(12)
                 }
 
-                Button {
-                    // Industry professionals are restricted accounts (no sharing) with a
-                    // real profile. Route to a dedicated details page (page 3) that
-                    // collects Industry / Company / Company Role instead of academics.
-                    profileModel.isIndustryProfessional = true
-                    profileModel.isUTStudent = false
-                    profileModel.isGuest = false
-                    profileModel.accountKind = nil
-                    withAnimation {
-                        currentPage = 3
-                    }
-                } label: {
-                    Text("I'm an Industry Professional")
+                Button(action: onSignIn) {
+                    Text("Sign In")
                         .font(.headline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.brandOrange)
                         .frame(maxWidth: .infinity)
                         .padding()
-                        // Mid-strength orange: between the solid UT button and the light
-                        // Guest tint.
-                        .background(Color.brandOrange.opacity(0.55))
+                        .background(Color.brandOrange.opacity(0.15))
                         .cornerRadius(12)
                 }
             }
@@ -105,16 +78,11 @@ struct WelcomeView: View {
                 .accessibilityLabel("About LAC and Nexus")
             }
 
+            // Enthusiasts follow along without a school account: they verify
+            // any email, give a name, and can't post.
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    // Guests skip account details entirely — no name or photo — and go
-                    // straight into the app.
-                    profileModel.isUTStudent = false
-                    profileModel.isGuest = true
-                    profileModel.accountKind = nil
-                    onComplete()
-                } label: {
-                    Text("Guest")
+                Button(action: onEnthusiast) {
+                    Text("Enthusiast")
                         .font(.headline)
                         .foregroundStyle(Color.brandOrange)
                 }
@@ -173,12 +141,7 @@ struct AboutNexusView: View {
 }
 
 #Preview {
-    @Previewable @State var currentPage = 0
     NavigationStack {
-        WelcomeView(
-            profileModel: UserProfileModel(),
-            currentPage: $currentPage,
-            onComplete: {}
-        )
+        WelcomeView(onCreateAccount: {}, onSignIn: {}, onEnthusiast: {})
     }
 }

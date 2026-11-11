@@ -10,11 +10,18 @@ INSERT OR REPLACE INTO schools (id, name, short_name, state, enabled) VALUES
     ('calpoly-slo','California Polytechnic State University, San Luis Obispo', 'Cal Poly SLO', 'CA', 1),
     ('usc',        'University of Southern California', 'USC',        'CA', 1),
     ('nyu',        'New York University',               'NYU',        'NY', 1),
-    ('depaul',     'DePaul University',                 'DePaul',     'IL', 1);
+    ('depaul',     'DePaul University',                 'DePaul',     'IL', 1),
+    ('bu',         'Boston University',                 'BU',         'MA', 1),
+    ('tamu',       'Texas A&M University',              'Texas A&M',  'TX', 1);
 
 INSERT OR REPLACE INTO school_domains (domain, school_id, kind) VALUES
     ('utexas.edu',        'ut-austin',   'student'),
     ('alumni.utexas.edu', 'ut-austin',   'alumni'),
+    -- The app asks UT students for their @my.utexas.edu address and faculty for
+    -- @austin.utexas.edu; both would also resolve through utexas.edu, but listing
+    -- them records the right kind.
+    ('my.utexas.edu',     'ut-austin',   'student'),
+    ('austin.utexas.edu', 'ut-austin',   'staff'),
     -- Berkeley issues @berkeley.edu to students; department subdomains
     -- (eecs.berkeley.edu, etc.) resolve through it via `domainCandidates`.
     ('berkeley.edu',      'berkeley',    'student'),
@@ -22,4 +29,7 @@ INSERT OR REPLACE INTO school_domains (domain, school_id, kind) VALUES
     ('calpoly.edu',       'calpoly-slo', 'student'),
     ('usc.edu',           'usc',         'student'),
     ('nyu.edu',           'nyu',         'student'),
-    ('depaul.edu',        'depaul',      'student');
+    ('depaul.edu',        'depaul',      'student'),
+    ('bu.edu',            'bu',          'student'),
+    -- Texas A&M students and faculty both use NetID@tamu.edu.
+    ('tamu.edu',          'tamu',        'student');

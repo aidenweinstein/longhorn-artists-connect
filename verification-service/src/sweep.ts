@@ -201,12 +201,14 @@ async function creatorVerification(env: Env, userRecordName: string): Promise<Cr
     if (cached !== undefined) return cached;
 
     const row = await env.DB.prepare(
-        `SELECT school_id FROM verified_emails WHERE user_record_name = ? AND revoked_at IS NULL`,
+        `SELECT school_id, domain_kind FROM verified_emails WHERE user_record_name = ? AND revoked_at IS NULL`,
     )
         .bind(userRecordName)
-        .first<{ school_id: string }>();
+        .first<{ school_id: string; domain_kind: string }>();
 
-    const verification: CreatorVerification = row
+    // Enthusiasts confirm an email but have no school and may not post, so for
+    // the sweep they count as unverified.
+    const verification: CreatorVerification = row && row.domain_kind !== "enthusiast"
         ? { verified: true, schoolID: row.school_id }
         : { verified: false, schoolID: null };
     verifiedCache.set(userRecordName, verification);

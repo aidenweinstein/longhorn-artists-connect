@@ -169,8 +169,8 @@ struct CreativeDetailsFormSections: View {
             }
             TextField("Height (e.g. 5'9\")", text: $details.actor.height)
             TextField("Ethnic appearance", text: $details.actor.ethnicAppearance)
-            TextField("Hair", text: $details.actor.hair)
-            TextField("Eyes", text: $details.actor.eyes)
+            DetailOptionPicker("Hair", selection: $details.actor.hair, options: ActorDetails.hairColors)
+            DetailOptionPicker("Eyes", selection: $details.actor.eyes, options: ActorDetails.eyeColors)
             Picker("Union", selection: $details.actor.union) {
                 Text("Not set").tag("")
                 ForEach(ActorDetails.unions, id: \.self) { Text($0).tag($0) }
@@ -257,12 +257,26 @@ struct CreativeDetailsFormSections: View {
 
         Section {
             TextField("Artist or band name", text: $details.musician.artistName)
-            TextField("Instruments", text: $details.musician.instruments)
-            TextField("Genres", text: $details.musician.genres)
         } header: {
             Text("Musician · About")
         } footer: {
             Text("Releases posted under this artist name, or crediting you, make up your discography.")
+        }
+
+        Section {
+            DetailChipPicker(options: MusicianDetails.instrumentOptions, selection: $details.musician.instruments)
+        } header: {
+            Text("Musician · Instruments")
+        } footer: {
+            Text("Everything you can play. Shown under your card on the Musicians page, where people can filter by instrument.")
+        }
+
+        Section {
+            DetailChipPicker(options: MusicianDetails.genreOptions, selection: $details.musician.genres)
+        } header: {
+            Text("Musician · Genres")
+        } footer: {
+            Text("People can filter the Musicians page by genre too.")
         }
 
         Section("Musician · Available for") {
@@ -277,6 +291,92 @@ struct CreativeDetailsFormSections: View {
             get: { details.musician.link(for: service) },
             set: { details.musician.setLink($0, for: service) }
         )
+    }
+}
+
+// MARK: - Field Controls
+
+/// A Form picker for a single detail (hair, eyes) with a fixed list of choices plus
+/// "Not set". A value typed before the list existed is kept as an extra choice so
+/// opening the editor never silently blanks it.
+struct DetailOptionPicker: View {
+    let title: String
+    @Binding var selection: String
+    let options: [String]
+
+    init(_ title: String, selection: Binding<String>, options: [String]) {
+        self.title = title
+        _selection = selection
+        self.options = options
+    }
+
+    private var choices: [String] {
+        let current = selection.trimmingCharacters(in: .whitespaces)
+        if current.isEmpty || options.contains(where: { $0.caseInsensitiveCompare(current) == .orderedSame }) {
+            return options
+        }
+        return options + [current]
+    }
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            Text("Not set").tag("")
+            ForEach(choices, id: \.self) { option in
+                // Tag with the stored spelling so a legacy value still reads as selected.
+                Text(option).tag(option.caseInsensitiveCompare(selection) == .orderedSame ? selection : option)
+            }
+        }
+    }
+}
+
+/// Tappable chips for a multi-choice detail (instruments, genres), stored as one
+/// comma-separated string. Anything already in the string that isn't a listed option
+/// (typed in an older build) shows as its own selected chip, so nothing is lost.
+struct DetailChipPicker: View {
+    let options: [String]
+    @Binding var selection: String
+
+    private var selected: [String] { MusicianDetails.splitList(selection) }
+
+    private var chips: [String] {
+        let extras = selected.filter { value in
+            !options.contains { $0.caseInsensitiveCompare(value) == .orderedSame }
+        }
+        return options + extras
+    }
+
+    private func isOn(_ chip: String) -> Bool {
+        selected.contains { $0.caseInsensitiveCompare(chip) == .orderedSame }
+    }
+
+    private func toggle(_ chip: String) {
+        var values = selected
+        if let index = values.firstIndex(where: { $0.caseInsensitiveCompare(chip) == .orderedSame }) {
+            values.remove(at: index)
+        } else {
+            values.append(chip)
+        }
+        selection = values.joined(separator: ", ")
+    }
+
+    var body: some View {
+        ProfileStyleFlowLayout(spacing: 6) {
+            ForEach(chips, id: \.self) { chip in
+                Button {
+                    toggle(chip)
+                } label: {
+                    Text(chip)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(isOn(chip) ? Color.brandOrange : Color.secondary.opacity(0.12), in: Capsule())
+                        .foregroundStyle(isOn(chip) ? Color.white : Color.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isOn(chip) ? .isSelected : [])
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

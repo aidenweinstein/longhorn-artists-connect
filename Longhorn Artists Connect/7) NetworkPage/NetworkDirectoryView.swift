@@ -15,15 +15,20 @@ struct NetworkDirectoryView: View {
     @ObservedObject var userProfileManager = UserProfileManager.shared
     @State private var searchText = ""
     @State private var showAddUserSheet = false
+    /// CloudKit's complaint when a moderator's directory-page change is refused.
+    @State private var moderationError: String?
     @State private var selectedUser: DirectoryUser?
     @State private var sortOption: DirectorySort = .nameAsc
     /// Active tag filter (empty = show everyone under "On Nexus"). When non-empty,
     /// students matching any selected tag are grouped under a header naming those
     /// tags, and the rest fall under "Everyone Else".
     @State private var selectedFilterTags: Set<String> = []
+    /// Active filters on the Actors / Filmmakers / Musicians pages (see
+    /// DirectoryFilters). Cleared when the page changes.
+    @State private var groupChoices: Set<DirectoryFilterChoice> = []
     @AppStorage("isModeratorMode") private var isModeratorMode: Bool = false
-    /// Private connections, so they can be listed in their own sections (Requests
-    /// waiting on me, then my Connections) ahead of the general directory.
+    /// Private connections, so they can be listed in their own sections (my Connections,
+    /// then Requests waiting on me) ahead of the general directory.
     @ObservedObject private var connections = ConnectionsManager.shared
     /// Headshots and details for the people cards (see DirectoryPeopleGrid).
     @ObservedObject private var creative = CreativeProfileStore.shared
@@ -334,22 +339,45 @@ struct NetworkDirectoryView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 20))
                     }
 
-                    // Filter menu — narrow the "On Nexus" list to selected tags.
+                    // Filter menu. Everyone narrows the "On Nexus" list by role tag; the
+                    // group pages filter by what matters there (see DirectoryFilters):
+                    // actors by gender / age / height / hair / eyes, filmmakers by role
+                    // on set, musicians by instrument and genre.
                     Menu {
-                        // Toggles keep the menu open across taps, so multiple filters can
-                        // be selected in one pass.
-                        ForEach(UserType.allCases) { type in
-                            Toggle(isOn: Binding(
-                                get: { selectedFilterTags.contains(type.rawValue) },
-                                set: { isOn in
-                                    if isOn {
-                                        selectedFilterTags.insert(type.rawValue)
-                                    } else {
-                                        selectedFilterTags.remove(type.rawValue)
+                        if tab == .everyone {
+                            // Toggles keep the menu open across taps, so multiple filters can
+                            // be selected in one pass.
+                            ForEach(UserType.allCases) { type in
+                                Toggle(isOn: Binding(
+                                    get: { selectedFilterTags.contains(type.rawValue) },
+                                    set: { isOn in
+                                        if isOn {
+                                            selectedFilterTags.insert(type.rawValue)
+                                        } else {
+                                            selectedFilterTags.remove(type.rawValue)
+                                        }
+                                    }
+                                )) {
+                                    Text(type.rawValue)
+                                }
+                            }
+                        } else {
+                            // One submenu per facet (Hair, Eyes, Role on set, …), each a
+                            // set of toggles.
+                            ForEach(groupFacets) { facet in
+                                Menu(facet.title) {
+                                    ForEach(facet.options, id: \.self) { option in
+                                        let choice = DirectoryFilterChoice(facet: facet.id, option: option)
+                                        Toggle(isOn: Binding(
+                                            get: { groupChoices.contains(choice) },
+                                            set: { isOn in
+                                                if isOn { groupChoices.insert(choice) } else { groupChoices.remove(choice) }
+                                            }
+                                        )) {
+                                            Text(option)
+                                        }
                                     }
                                 }
-                            )) {
-                                Text(type.rawValue)
                             }
                         }
 
@@ -358,10 +386,11 @@ struct NetworkDirectoryView: View {
                         Divider()
                         Button(role: .destructive) {
                             selectedFilterTags.removeAll()
+                            groupChoices.removeAll()
                         } label: {
                             Label("Clear Filters", systemImage: "xmark.circle")
                         }
-                        .disabled(selectedFilterTags.isEmpty)
+                        .disabled(tab == .everyone ? selectedFilterTags.isEmpty : groupChoices.isEmpty)
                     } label: {
                         // Static label: its icon/color must NOT change with the selection.
                         // Mutating a Menu's label while it's open forces SwiftUI to dismiss
@@ -378,29 +407,22 @@ struct NetworkDirectoryView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
                 
-                // Everyone | Actors | Filmmakers | Musicians. The group tabs list
-                // everyone whose tags fall in that group (see DirectoryTab).
+                // Everyone | Actors | Filmmakers | Musicians. The group pages list the
+                // people moderators have put there (see DirectoryTab).
                 Picker("Show", selection: $tab) {
                     ForEach(DirectoryTab.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                // Each page has its own filters, so a Hair choice shouldn't linger on Musicians.
+                .onChange(of: tab) { _, _ in groupChoices.removeAll() }
                 .padding(.horizontal)
                 .padding(.bottom, 8)
 
                 // User list
                 List {
-                    // Connection requests waiting on me, with an inline Accept.
-                    // Requests and Connections belong to Everyone; the group tabs are
-                    // purely "who does this work".
-                    if tab == .everyone, !requestUsers.isEmpty {
-                        Section("Requests") {
-                            ForEach(requestUsers) { user in
-                                requestRow(user)
-                            }
-                        }
-                    }
-
-                    // My connections, kept apart from the general directory below.
+                    // First section: just my connections, kept apart from the general
+                    // directory below. Connections and Requests belong to Everyone; the
+                    // group tabs are purely "who does this work".
                     if tab == .everyone, !connectionUsers.isEmpty {
                         Section("Connections") {
                             ForEach(connectionUsers) { user in
@@ -409,43 +431,66 @@ struct NetworkDirectoryView: View {
                         }
                     }
 
-                    // ✅ SECTION 1: the people grid — large photo cards, two or three
-                    // across (see DirectoryPeopleGrid). Everyone shows every student,
-                    // split by the tag filter menu when one is set; Actors / Filmmakers /
-                    // Musicians show students whose tags fall in that group.
+                    // Connection requests waiting on me, with an inline Accept.
+                    if tab == .everyone, !requestUsers.isEmpty {
+                        Section("Requests") {
+                            ForEach(requestUsers) { user in
+                                requestRow(user)
+                            }
+                        }
+                    }
+
+                    // ✅ SECTION 1: On Nexus. Everyone is the plain directory list —
+                    // every student as a row, split by the tag filter menu when one is
+                    // set. Actors / Filmmakers / Musicians are the website-style people
+                    // pages (large photo cards, see DirectoryPeopleGrid) and list only
+                    // the people moderators have put there.
                     if tab == .everyone {
                         if selectedFilterTags.isEmpty {
                             // No filter — everyone under "On Nexus".
                             if !filteredUTStudents.isEmpty {
                                 Section("On Nexus") {
-                                    peopleGrid(filteredUTStudents)
+                                    ForEach(filteredUTStudents) { user in
+                                        directoryUserRow(user)
+                                    }
                                 }
                             }
                         } else {
                             // Filtered — matched tags first, then "Everyone Else".
                             if !tagMatchedStudents.isEmpty {
                                 Section(selectedTagsHeader) {
-                                    peopleGrid(tagMatchedStudents)
+                                    ForEach(tagMatchedStudents) { user in
+                                        directoryUserRow(user)
+                                    }
                                 }
                             }
 
                             if !tagUnmatchedStudents.isEmpty {
                                 Section("Everyone Else") {
-                                    peopleGrid(tagUnmatchedStudents)
+                                    ForEach(tagUnmatchedStudents) { user in
+                                        directoryUserRow(user)
+                                    }
                                 }
                             }
                         }
                     } else {
                         let people = groupStudents
-                        Section(tab.rawValue) {
+                        Section {
                             if people.isEmpty {
-                                Text(searchText.isEmpty
-                                     ? "No \(tab.rawValue.lowercased()) yet. Anyone with a \(tab.group?.tagList ?? "") tag appears here."
+                                Text(searchText.isEmpty && groupChoices.isEmpty
+                                     ? "No \(tab.rawValue.lowercased()) listed yet. Moderators choose who appears on this page."
                                      : "No results found")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             } else {
                                 peopleGrid(people)
+                            }
+                        } header: {
+                            Text(tab.rawValue)
+                        } footer: {
+                            // What the page is filtered by, when anything is.
+                            if !groupChoices.isEmpty {
+                                Text("Filtered by \(groupFilterSummary)")
                             }
                         }
                     }
@@ -591,6 +636,14 @@ struct NetworkDirectoryView: View {
             .sheet(isPresented: $showAddUserSheet) {
                 AddUserProfileView()
             }
+            .alert("Couldn't Update", isPresented: Binding(
+                get: { moderationError != nil },
+                set: { if !$0 { moderationError = nil } }
+            )) {
+                Button("OK", role: .cancel) { moderationError = nil }
+            } message: {
+                Text(moderationError ?? "")
+            }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.hidden)
@@ -670,6 +723,12 @@ struct NetworkDirectoryView: View {
         }
         .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        // Moderator Mode: long-press to choose which directory pages list this person.
+        .contextMenu {
+            if isModeratorMode {
+                DirectoryGroupToggles(user: user) { moderationError = $0 }
+            }
+        }
     }
 
     /// A directory row for someone whose connection request is waiting on me: the
@@ -732,22 +791,41 @@ struct NetworkDirectoryView: View {
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
     }
 
-    /// Students on the selected group tab (Actors / Filmmakers / Musicians): everyone
-    /// in the viewer's school scope whose tags fall in the group, connections included,
-    /// narrowed by the search text and the tag filter menu.
-    var groupStudents: [DirectoryUser] {
+    /// The people a moderator has listed on the selected page (Actors / Filmmakers /
+    /// Musicians), within the viewer's school scope, connections included, before the
+    /// filter menu is applied. `source` is the user list to draw from.
+    private func groupMembers(in source: [DirectoryUser]) -> [DirectoryUser] {
         let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
-        return sortUsers(filteredCloudKitUsers.filter {
+        return source.filter {
             $0.isUTStudent
                 && SchoolScope.isVisible(schoolName: $0.school, in: visibleSchoolIDs)
                 && tab.includes($0)
-                && matchesTagFilter($0)
+        }
+    }
+
+    /// The filter menu's groups for this page, with options drawn from everyone listed
+    /// on it (not just the current search results).
+    var groupFacets: [DirectoryFacet] {
+        DirectoryFilters.facets(for: tab, people: groupMembers(in: cloudKitUsers), creative: creative)
+    }
+
+    /// The page's people, narrowed by the search text and the page's filters.
+    var groupStudents: [DirectoryUser] {
+        sortUsers(groupMembers(in: filteredCloudKitUsers).filter {
+            DirectoryFilters.matches($0, tab: tab, choices: groupChoices, creative: creative)
         })
+    }
+
+    /// "Brown · 5'8"–5'11"" — what the page is currently filtered by, for its footer.
+    var groupFilterSummary: String {
+        DirectoryFilters.summary(of: groupChoices, facets: groupFacets)
     }
 
     /// The large-photo grid as a single list row, edge to edge within the section.
     private func peopleGrid(_ users: [DirectoryUser]) -> some View {
-        DirectoryPeopleGrid(users: users, tab: tab) { selectedUser = $0 }
+        DirectoryPeopleGrid(users: users, tab: tab,
+                            moderatorControls: isModeratorMode,
+                            onModerationError: { moderationError = $0 }) { selectedUser = $0 }
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
             .listRowBackground(Color.clear)
     }

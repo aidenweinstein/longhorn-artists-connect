@@ -17,6 +17,11 @@ struct ContentView: View {
     // True for accounts created via the "I'm an Industry Professional" onboarding flow.
     // These are restricted like guests for sharing (no Share tab) but keep the Network tab.
     @AppStorage("isIndustryProfessional") private var isIndustryProfessional: Bool = false
+    // Enthusiasts can't view projects or events, so they get no Discover tab.
+    @AppStorage(AccountKind.storageKey) private var accountKind: String = ""
+    // Alumni have no school email to verify, so they're exempt from the
+    // verification gate and reminder.
+    @AppStorage(SchoolRole.storageKey) private var schoolRole: String = ""
     // The school a moderator is viewing/posting as (Moderate → Schools). Changing it
     // rebuilds the tabs so every header, pill and asset picks up that school's theme.
     @AppStorage(SchoolScope.moderatorSchoolKey) private var moderatorSchool: String = ""
@@ -52,6 +57,14 @@ struct ContentView: View {
     }
 
     // MARK: - Computed Properties
+
+    private var isEnthusiast: Bool {
+        AccountKind(storedValue: accountKind) == .enthusiast
+    }
+
+    private var isAlumni: Bool {
+        SchoolRole(rawValue: schoolRole) == .alumni
+    }
 
     private var shouldShowModeratorMode: Bool {
         // Gate on the moderator's profile name. Enabling `isModeratorMode` itself
@@ -94,10 +107,13 @@ struct ContentView: View {
                 .tag("home")
                 .tabItem { Image(systemName: "house") }
 
-            DiscoverView()
-                .id("discover")
-                .tag("discover")
-                .tabItem { Image(systemName: "binoculars") }
+            // Discover is projects and events, which enthusiasts can't view.
+            if !isEnthusiast {
+                DiscoverView()
+                    .id("discover")
+                    .tag("discover")
+                    .tabItem { Image(systemName: "binoculars") }
+            }
 
             // Guests can't share content or message, so hide both the Share/Moderate
             // and Network tabs entirely for them. Industry pros also get no Share tab.
@@ -107,13 +123,10 @@ struct ContentView: View {
                     .tag("moderate")
                     .tabItem { Image(systemName: "checkmark.shield") }
             } else if !isGuestUser && !isIndustryPro {
-                // New accounts verify a school email before posting. Accounts
-                // that predate verification are exempt and keep full access;
-                // they can still verify voluntarily from their profile.
-                VerificationGate(
-                    action: "post your work",
-                    bypass: StudentVerificationManager.accountPredatesVerification
-                ) {
+                // Every student and professor verifies a school email before
+                // posting, including accounts created before verification
+                // existed. Alumni have no school email, so they're exempt.
+                VerificationGate(action: "post your work", bypass: isAlumni) {
                     ShareView_3()
                 }
                 .id("share")
@@ -203,6 +216,9 @@ struct ContentView: View {
         // store change — that re-render on each sync/like/upload tick made the whole app
         // feel sluggish.
         .background { EventReminderCoordinator() }
+        // Nudge unverified students (including accounts that predate verification)
+        // to verify their school email, which also links their website account.
+        .verificationReminder(isEligible: !isGuestUser && !isIndustryPro && !isAlumni)
         .task {
             // Weekly "<show> is Live!" notifications — see LiveStreams.swift.
             await LiveStreamNotifications.schedule()

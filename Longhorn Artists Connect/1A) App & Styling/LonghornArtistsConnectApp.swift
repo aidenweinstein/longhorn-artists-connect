@@ -157,10 +157,6 @@ struct AppView: App {
         // the persisted flag here guarantees a relaunch re-locks it.
         UserDefaults.standard.set(false, forKey: "isModeratorMode")
 
-        // Stamp whether this install predates school-email verification, before
-        // anything can read the flag. Pre-existing accounts stay exempt.
-        StudentVerificationManager.markAccountEraIfNeeded()
-
         // Enable beta mode for TestFlight builds
         // This ensures beta testers' data is preserved when migrating to production
         #if DEBUG

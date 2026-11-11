@@ -46,6 +46,14 @@ final class StudentVerificationManager {
         let state: String?
     }
 
+    /// What an address is being verified for.
+    enum Purpose: String {
+        /// A school address — the domain must be in the service's registry.
+        case school
+        /// Enthusiast sign-up: any address the user controls.
+        case enthusiast
+    }
+
     /// Handle for a code that's been emailed but not yet confirmed.
     struct PendingVerification {
         let id: String
@@ -165,37 +173,6 @@ final class StudentVerificationManager {
         !CloudKitEnvironmentDetector.isDevelopment
     }
 
-    // MARK: - Grandfathering
-
-    private static let eraMarkedKey = "verificationEraMarked"
-    private static let predatesKey = "accountPredatesVerification"
-
-    /// Records whether this install existed before verification shipped.
-    ///
-    /// Called once at launch. If onboarding was already complete the first time
-    /// a verification-aware build runs, the account is pre-existing and is
-    /// exempt: existing users are not asked to verify. Fresh installs fall
-    /// through to the normal onboarding step.
-    ///
-    /// This lives in UserDefaults, so deleting and reinstalling the app drops
-    /// the exemption and the user would be asked to verify. That's acceptable
-    /// because this flag only ever *grants* leniency — the durable enforcement
-    /// is the sweep's date-based grandfathering (SWEEP_GRANDFATHER_BEFORE),
-    /// which no client can influence.
-    static func markAccountEraIfNeeded() {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: eraMarkedKey) else { return }
-
-        defaults.set(true, forKey: eraMarkedKey)
-        defaults.set(defaults.bool(forKey: "hasCompletedOnboarding"), forKey: predatesKey)
-    }
-
-    /// True for accounts created before verification existed. They keep full
-    /// access and can still verify voluntarily.
-    static var accountPredatesVerification: Bool {
-        UserDefaults.standard.bool(forKey: predatesKey)
-    }
-
     // MARK: - Status
 
     /// Re-reads the `Verification` record from CloudKit. This is the source of
@@ -253,8 +230,8 @@ final class StudentVerificationManager {
     /// this user's own `UserProfile` record — only the account owner can do
     /// that, which is how the service proves the caller owns the account it
     /// claims at confirm time.
-    func requestCode(email: String) async throws -> PendingVerification {
-        let (pending, nonce, userRecordName) = try await sendCodeRequest(email: email)
+    func requestCode(email: String, purpose: Purpose = .school) async throws -> PendingVerification {
+        let (pending, nonce, userRecordName) = try await sendCodeRequest(email: email, purpose: purpose)
         try await writeNonce(nonce, userRecordName: userRecordName)
         return pending
     }
@@ -271,7 +248,8 @@ final class StudentVerificationManager {
     /// The `/v1/verify/request` round trip shared by the real flow and the
     /// moderator's test send.
     private func sendCodeRequest(
-        email: String
+        email: String,
+        purpose: Purpose = .school
     ) async throws -> (pending: PendingVerification, nonce: String, userRecordName: String) {
         guard let baseURL = Self.baseURL else { throw VerificationError.notConfigured }
         guard let userRecordName = try? await CKContainer.default().userRecordID().recordName else {
@@ -284,6 +262,7 @@ final class StudentVerificationManager {
         struct Request: Encodable {
             let email: String
             let userRecordName: String
+            let purpose: String
         }
         struct SchoolStub: Decodable { let id: String; let name: String }
         struct Response: Decodable {
@@ -295,7 +274,7 @@ final class StudentVerificationManager {
 
         let response: Response = try await post(
             baseURL.appendingPathComponent("v1/verify/request"),
-            body: Request(email: email, userRecordName: userRecordName)
+            body: Request(email: email, userRecordName: userRecordName, purpose: purpose.rawValue)
         )
 
         let pending = PendingVerification(

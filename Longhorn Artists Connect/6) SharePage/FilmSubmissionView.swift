@@ -116,6 +116,13 @@ struct FilmSubmissionView: View {
             }
 
             Section("Details") {
+                Picker("Age Rating", selection: $selectedAgeRating) {
+                    ForEach(AgeRating.allCases) { rating in
+                        Text(rating.rawValue).tag(rating)
+                    }
+                }
+                .pickerStyle(.segmented)
+
                 TextField("Title", text: $title, axis: .vertical)
 
                 TextField("Logline", text: $logline, axis: .vertical)
@@ -216,13 +223,6 @@ struct FilmSubmissionView: View {
                     }
                 }
                 .buttonStyle(.plain)
-
-                Picker("Age Rating", selection: $selectedAgeRating) {
-                    ForEach(AgeRating.allCases) { rating in
-                        Text(rating.rawValue).tag(rating)
-                    }
-                }
-                .pickerStyle(.segmented)
             }
 
             Section {

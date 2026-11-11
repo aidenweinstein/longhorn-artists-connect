@@ -118,6 +118,9 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
 
     const email = normalizeEmail(String(body.email ?? ""));
     const userRecordName = String(body.userRecordName ?? "").trim();
+    // Enthusiast accounts confirm any address they control, not a school one.
+    // They get no school and can't post, so the registry check doesn't apply.
+    const isEnthusiast = body.purpose === "enthusiast";
 
     if (!email) return errorResponse("invalid_email", "That doesn't look like an email address.", 400);
     if (!userRecordName) return errorResponse("bad_request", "Missing userRecordName.", 400);
@@ -137,8 +140,10 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
         return errorResponse("rate_limited", "Too many attempts. Try again later.", 429);
     }
 
-    // Domain must resolve to a school in the registry.
-    const match = await lookupDomain(env, domain);
+    // Domain must resolve to a school in the registry (except for enthusiasts).
+    const match: DomainMatch | null = isEnthusiast
+        ? { schoolID: "", schoolName: "Nexus", kind: "enthusiast" }
+        : await lookupDomain(env, domain);
     if (!match) {
         return errorResponse(
             "unsupported_domain",
@@ -171,9 +176,9 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
 
     await env.DB.prepare(
         `INSERT INTO pending_verifications
-           (id, email_normalized, email_hash, code_hash, school_id, user_record_name,
-            nonce, attempts, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+           (id, email_normalized, email_hash, code_hash, school_id, domain_kind,
+            user_record_name, nonce, attempts, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     )
         .bind(
             pendingID,
@@ -181,6 +186,7 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
             emailHash,
             await hmacHex(env.CODE_PEPPER, `code:${pendingID}:${code}`),
             match.schoolID,
+            match.kind,
             userRecordName,
             nonce,
             now,
@@ -253,9 +259,12 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         return errorResponse("ownership_unproven", "Couldn't confirm account ownership.", 403);
     }
 
-    const school = await env.DB.prepare(`SELECT id, name FROM schools WHERE id = ?`)
-        .bind(pending.school_id)
-        .first<{ id: string; name: string }>();
+    const school = pending.school_id
+        ? await env.DB.prepare(`SELECT id, name FROM schools WHERE id = ?`)
+            .bind(pending.school_id)
+            .first<{ id: string; name: string }>()
+        : null;
+    const domainKind: string = pending.domain_kind ?? "student";
     const now = nowSeconds();
 
     await writeVerificationRecord(env, {
@@ -263,7 +272,7 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         emailHash: pending.email_hash,
         schoolID: pending.school_id,
         schoolName: school?.name ?? "",
-        domainKind: "student",
+        domainKind,
         verifiedAt: now,
     });
 
@@ -271,13 +280,14 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         env.DB.prepare(
             `INSERT INTO verified_emails
                (email_hash, user_record_name, school_id, domain_kind, verified_at, method)
-             VALUES (?, ?, ?, 'student', ?, 'email')
+             VALUES (?, ?, ?, ?, ?, 'email')
              ON CONFLICT(email_hash) DO UPDATE SET
                user_record_name = excluded.user_record_name,
                school_id = excluded.school_id,
+               domain_kind = excluded.domain_kind,
                verified_at = excluded.verified_at,
                revoked_at = NULL`,
-        ).bind(pending.email_hash, pending.user_record_name, pending.school_id, now),
+        ).bind(pending.email_hash, pending.user_record_name, pending.school_id, domainKind, now),
         // Consume the row and drop the raw address — from here we only keep the hash.
         env.DB.prepare(
             `UPDATE pending_verifications SET consumed_at = ?, email_normalized = '' WHERE id = ?`,
@@ -292,6 +302,7 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
     return json({
         verified: true,
         school: { id: pending.school_id, name: school?.name ?? "" },
+        domainKind,
         verifiedAt: now,
     });
 }

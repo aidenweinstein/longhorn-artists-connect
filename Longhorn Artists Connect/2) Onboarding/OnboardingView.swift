@@ -7,15 +7,20 @@
 //  Refactored to use UserProfileModel for centralized user data management
 //
 //  This is the onboarding coordinator: it owns the shared profile model and the
-//  page index, presents the app-level sheets, and saves the finished profile.
-//  The individual pages live in their own files:
-//    - page 0 → WelcomeView.swift          (WelcomeView)
-//    - page 1 → CreateProfileView.swift    (CreateProfileView — UT students)
-//    - page 2 → TagsView.swift             (TagsView)
-//    - page 3 → CreateProfileView.swift    (IndustryDetailsView)
-//    - page 4 → SchoolEmailVerificationView.swift
-//    - page 5 → SchoolSelectionView.swift
-//    - page 6 → UserTypePage.swift          (Artist / Enthusiast)
+//  step history, presents the app-level sheets, and saves the finished profile.
+//
+//  Welcome
+//    ├─ Create Account → school → role
+//    │     ├─ student   → verify student email   → details → tags
+//    │     ├─ professor → verify faculty email   → details
+//    │     └─ alumni    → name + phone           → details
+//    ├─ Sign In → school → verify school email → restore this Apple ID's profile
+//    │     (no profile yet → offered Create Account)
+//    └─ Enthusiast (upper right) → verify any email → name
+//
+//  The individual pages live in their own files: WelcomeView, SchoolSelectionView,
+//  SchoolRolePage, SchoolEmailVerificationView, ContactDetailsView,
+//  CreateProfileView and TagsView.
 //
 
 import SwiftUI
@@ -34,23 +39,48 @@ struct ExistingUserMatch: Identifiable {
 // MARK: - Onboarding Coordinator
 
 struct OnboardingView: View {
+    /// One page of onboarding.
+    enum Step: Hashable {
+        case welcome
+        case school
+        case role
+        case verifySchoolEmail
+        case alumniContact
+        case details
+        case tags
+        case signInVerify
+        case enthusiastVerify
+        case enthusiastName
+    }
+
+    /// Which Welcome button started the school-picking path.
+    enum Flow {
+        case createAccount
+        case signIn
+    }
+
     // MARK: - Profile Model (Single Source of Truth)
     @StateObject private var profileModel = UserProfileModel()
 
     // MARK: - UI State
-    @State private var currentPage: Int = 0
+    /// Pages visited, so Back can retrace them. The last one is showing.
+    @State private var steps: [Step] = [.welcome]
+    @State private var flow: Flow = .createAccount
+    @State private var school: OnboardingSchool?
+    @State private var role: SchoolRole = .student
     @State private var fullName: String = "" // Temporary for input, splits into first/last
+    /// Set once a school email is verified on Sign-In, so Create Account
+    /// (offered when no profile exists) doesn't ask again.
+    @State private var hasVerifiedSchoolEmail = false
 
     /// The matched existing user + their projects, driving the "Is this you?" sheet.
     /// Using `.sheet(item:)` (rather than a separate bool + array) guarantees the sheet
     /// is built with this exact payload, instead of a stale/empty snapshot.
     @State private var existingUserMatch: ExistingUserMatch?
 
-    // Error handling
-    @State private var showingError = false
-    @State private var errorMessage = ""
-
-    @State private var showYearPicker = false
+    // Sign-In
+    @State private var isRestoring = false
+    @State private var showNoAccountFound = false
 
     // Profile picture crop (zoom & position), shared with EditProfileView via
     // these AppStorage keys so the chosen crop persists into the profile.
@@ -59,69 +89,52 @@ struct OnboardingView: View {
     @AppStorage("profileImageScale") private var profileImageScale: Double = 1.0
     @State private var showImageAdjustment = false
 
-    // MARK: - Constants
-    private let availableYears = ["2026", "2027", "2028", "2029", "2030"]
+    private var step: Step { steps.last ?? .welcome }
+
+    /// Whether email verification steps are shown. Development builds (and
+    /// builds with no service configured) skip them, as before.
+    private var isVerificationEnabled: Bool {
+        StudentVerificationManager.isUIAvailable && StudentVerificationManager.isRequired
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Content
-                Group {
-                    if currentPage == 0 {
-                        WelcomeView(
-                            profileModel: profileModel,
-                            currentPage: $currentPage,
-                            onComplete: completeOnboarding
-                        )
-                    } else if currentPage == 1 {
-                        CreateProfileView(
-                            profileModel: profileModel,
-                            fullName: $fullName,
-                            currentPage: $currentPage,
-                            existingUserMatch: $existingUserMatch,
-                            showImageAdjustment: $showImageAdjustment
-                        )
-                    } else if currentPage == 2 {
-                        TagsView(
-                            profileModel: profileModel,
-                            onComplete: completeOnboarding
-                        )
-                    } else if currentPage == 3 {
-                        IndustryDetailsView(
-                            profileModel: profileModel,
-                            fullName: $fullName,
-                            showImageAdjustment: $showImageAdjustment,
-                            onComplete: completeOnboarding
-                        )
-                    } else if currentPage == 4 {
-                        page5VerificationView
-                    } else if currentPage == 5 {
-                        SchoolSelectionView(
-                            profileModel: profileModel,
-                            currentPage: $currentPage
-                        )
-                    } else if currentPage == 6 {
-                        UserTypePage(
-                            profileModel: profileModel,
-                            currentPage: $currentPage,
-                            onComplete: completeOnboarding
-                        )
-                    }
-                }
-                .animation(.easeInOut, value: currentPage)
+                page
+                    .animation(.easeInOut, value: step)
             }
             // Tapping anywhere outside a text field drops the keyboard. The account
             // pages are fixed (scrollDisabled), so without this the keyboard can sit
             // over the Next / Create Account button with no way to reach it.
             .endEditingOnTap()
             .navigationBarTitleDisplayMode(.inline)
-            .alert("Error", isPresented: $showingError) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text(errorMessage)
+            .toolbar {
+                if steps.count > 1 && !isRestoring {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            withAnimation { _ = steps.popLast() }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                        }
+                        .accessibilityLabel("Back")
+                    }
+                }
             }
-            .sheet(isPresented: $showYearPicker) {
-                yearPickerSheet
+            .overlay {
+                if isRestoring {
+                    ProgressView("Signing in…")
+                        .padding(24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
+            .alert("No account found", isPresented: $showNoAccountFound) {
+                Button("Create Account") {
+                    flow = .createAccount
+                    withAnimation { steps = [.welcome, .school, .role] }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("There's no Nexus account on this Apple ID yet. You can create one now.")
             }
             .sheet(isPresented: $showImageAdjustment) {
                 if let data = profileModel.profileImage?.jpegData(compressionQuality: 0.9) {
@@ -137,11 +150,7 @@ struct OnboardingView: View {
                 ExistingUserConfirmationView(
                     fullName: match.name,
                     projects: match.projects,
-                    onConfirm: {
-                        withAnimation {
-                            currentPage += 1
-                        }
-                    },
+                    onConfirm: advanceFromDetails,
                     onCancel: {
                         existingUserMatch = nil
                     }
@@ -153,60 +162,188 @@ struct OnboardingView: View {
         .scrollIndicators(.hidden)
     }
 
-    // MARK: - Page 5: School Email Verification
+    // MARK: - Pages
 
-    /// Shown immediately after the student declares themselves a student, and
-    /// before any profile details are collected — so someone without an
-    /// eligible school address finds out before doing any work.
-    ///
-    /// Students only. Industry professionals have no school email and are
-    /// already restricted from sharing; guests never reach this page.
-    /// Skipping is allowed and lands on account details all the same; posting
-    /// stays gated until they verify (see `VerificationGate`).
-    private var page5VerificationView: some View {
-        SchoolEmailVerificationView(
-            onFinished: {
-                withAnimation {
-                    currentPage = 1
+    @ViewBuilder
+    private var page: some View {
+        switch step {
+        case .welcome:
+            WelcomeView(
+                onCreateAccount: {
+                    flow = .createAccount
+                    go(to: .school)
+                },
+                onSignIn: {
+                    flow = .signIn
+                    go(to: .school)
+                },
+                onEnthusiast: {
+                    configureEnthusiast()
+                    go(to: isVerificationEnabled ? .enthusiastVerify : .enthusiastName)
                 }
-            },
-            school: profileModel.school
-        )
+            )
+
+        case .school:
+            SchoolSelectionView { picked in
+                school = picked
+                profileModel.school = picked.name
+                switch flow {
+                case .createAccount:
+                    go(to: .role)
+                case .signIn:
+                    if isVerificationEnabled {
+                        go(to: .signInVerify)
+                    } else {
+                        restoreProfile()
+                    }
+                }
+            }
+
+        case .role:
+            if let school {
+                SchoolRolePage(school: school) { picked in
+                    role = picked
+                    configureMember(role: picked)
+                    switch picked {
+                    case .student, .professor:
+                        go(to: isVerificationEnabled && !hasVerifiedSchoolEmail ? .verifySchoolEmail : .details)
+                    case .alumni:
+                        go(to: .alumniContact)
+                    }
+                }
+            }
+
+        case .verifySchoolEmail:
+            // Required to move on: no skip button.
+            SchoolEmailVerificationView(
+                onFinished: { go(to: .details) },
+                dismissTitle: nil,
+                school: school?.name,
+                allowedDomains: school?.domain(for: role).map { [$0] },
+                subtitle: role == .professor
+                    ? "Enter your faculty email address. We'll send a six-digit code to confirm it's yours."
+                    : "Enter your student email address. We'll send a six-digit code to confirm it's yours."
+            )
+
+        case .alumniContact:
+            ContactDetailsView(
+                title: "Welcome Back",
+                subtitle: "Alumni don't need a school email. Tell us who you are.",
+                fullName: $fullName,
+                phoneNumber: $profileModel.phoneNumber,
+                buttonTitle: "Next",
+                onContinue: { go(to: .details) }
+            )
+
+        case .details:
+            CreateProfileView(
+                profileModel: profileModel,
+                fullName: $fullName,
+                role: role,
+                onNext: advanceFromDetails,
+                existingUserMatch: $existingUserMatch,
+                showImageAdjustment: $showImageAdjustment
+            )
+
+        case .tags:
+            TagsView(
+                profileModel: profileModel,
+                onComplete: completeOnboarding
+            )
+
+        case .signInVerify:
+            // Either verifying or "I'm an alumni" leads to the restore: the
+            // account itself is keyed by Apple ID, and alumni have no school email.
+            SchoolEmailVerificationView(
+                onFinished: {
+                    hasVerifiedSchoolEmail = StudentVerificationManager.shared.status.isVerified
+                    restoreProfile()
+                },
+                dismissTitle: "I'm an alumni",
+                school: school?.name,
+                allowedDomains: school?.allDomains,
+                title: "Sign In",
+                subtitle: "Verify your school email to sign in to your Nexus account."
+            )
+
+        case .enthusiastVerify:
+            SchoolEmailVerificationView(
+                onFinished: { go(to: .enthusiastName) },
+                dismissTitle: nil,
+                allowedDomains: [],
+                purpose: .enthusiast,
+                title: "Verify Your Email",
+                subtitle: "Enter any email address. We'll send a six-digit code to confirm it's yours."
+            )
+
+        case .enthusiastName:
+            ContactDetailsView(
+                title: "What's your name?",
+                subtitle: "Enthusiasts can watch and listen to work on Nexus. Your account isn't listed in the directory.",
+                fullName: $fullName,
+                buttonTitle: "Finish",
+                onContinue: completeOnboarding
+            )
+        }
     }
 
-    // MARK: - Helper Views
+    // MARK: - Navigation
 
-    private var yearPickerSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(availableYears, id: \.self) { year in
-                    Button {
-                        profileModel.graduationYear = year
-                        showYearPicker = false
-                    } label: {
-                        HStack {
-                            Text(year)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            if profileModel.graduationYear == year {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(Color.brandOrange)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Graduation Year")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        showYearPicker = false
-                    }
-                }
+    private func go(to next: Step) {
+        withAnimation { steps.append(next) }
+    }
+
+    /// Students go on to pick tags; professors and alumni are done.
+    private func advanceFromDetails() {
+        if role == .student {
+            go(to: .tags)
+        } else {
+            completeOnboarding()
+        }
+    }
+
+    // MARK: - Account Types
+
+    /// Student, professor or alumni: a full member of the picked school.
+    private func configureMember(role: SchoolRole) {
+        profileModel.schoolRole = role
+        profileModel.isUTStudent = true
+        profileModel.isGuest = false
+        profileModel.isIndustryProfessional = false
+        profileModel.accountKind = .artist
+        if role != .alumni {
+            profileModel.phoneNumber = ""
+        }
+    }
+
+    /// The Guest-style experience (no posting, messaging, projects or events),
+    /// with no school and no directory listing.
+    private func configureEnthusiast() {
+        profileModel.schoolRole = nil
+        profileModel.isUTStudent = false
+        profileModel.isGuest = true
+        profileModel.isIndustryProfessional = false
+        profileModel.accountKind = .enthusiast
+        profileModel.school = ""
+        profileModel.phoneNumber = ""
+    }
+
+    // MARK: - Sign In
+
+    /// Loads the profile saved to this Apple ID. Success flips
+    /// `hasCompletedOnboarding`, which swaps the app in (see LaunchScreenView).
+    private func restoreProfile() {
+        isRestoring = true
+        Task {
+            await CloudKitManager.shared.checkAvailability()
+            let restored = CloudKitManager.shared.isAvailable
+                ? await UserProfileModel().loadFromCloudKit()
+                : false
+            isRestoring = false
+            if !restored {
+                showNoAccountFound = true
             }
         }
-        .presentationDetents([.medium])
     }
 
     // MARK: - Helper Methods

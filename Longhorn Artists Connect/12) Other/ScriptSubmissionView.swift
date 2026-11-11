@@ -48,11 +48,8 @@ struct ScriptSubmissionView: View {
 
     var body: some View {
         NavigationStack {
-            // Same rule as the Share tab: new accounts verify a school email first.
-            VerificationGate(
-                action: "submit a script",
-                bypass: StudentVerificationManager.accountPredatesVerification
-            ) {
+            // Same rule as the Share tab: verify a school email first (alumni exempt).
+            VerificationGate(action: "submit a script", bypass: SchoolRole.current == .alumni) {
                 form
             }
             .navigationTitle("Submit a Script")

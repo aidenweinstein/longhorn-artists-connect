@@ -5,8 +5,9 @@
 //  Onboarding step: confirm the user controls a school email address.
 //
 //  The school is derived from the email domain by the verification service, so
-//  there's no school picker here — one field, one code. Adding a school is a
-//  registry row on the server, not an app release.
+//  there's no school picker here — one field, one code. Callers pin the domain
+//  (e.g. @my.utexas.edu for UT students) via `allowedDomains`; enthusiasts pass
+//  an empty list and may use any address.
 //
 
 import SwiftUI
@@ -14,13 +15,19 @@ import SwiftUI
 struct SchoolEmailVerificationView: View {
     /// Called when verification succeeds, or when the user backs out.
     let onFinished: () -> Void
-    /// Label for the secondary action. "Skip for now" reads right during
-    /// onboarding; "Cancel" is what you want when opened from Edit Profile.
-    var dismissTitle: String = "Skip for now"
+    /// Label for the secondary action, or nil to hide it — onboarding requires
+    /// verification to move on, so it passes nil.
+    var dismissTitle: String? = "Skip for now"
     /// The school being verified. Onboarding passes the school picked a few
     /// pages earlier (it isn't saved to `userSchool` until the profile is);
     /// everywhere else falls back to the stored school.
     var school: String? = nil
+    /// Domains the address must use. nil derives them from the school and the
+    /// stored role; an empty list accepts any address (enthusiasts).
+    var allowedDomains: [String]? = nil
+    var purpose: StudentVerificationManager.Purpose = .school
+    var title: String = "Verify Your School"
+    var subtitle: String = "Enter your school email address. We'll send a six-digit code to confirm it's yours."
 
     // @Observable, so reading it in `body` is enough for invalidation — no
     // property wrapper needed for a shared instance the view doesn't own.
@@ -34,12 +41,32 @@ struct SchoolEmailVerificationView: View {
     @State private var errorMessage: String?
     @State private var didSucceed = false
 
-    /// UT Austin students must verify with their `@my.utexas.edu` address, so
-    /// the domain is fixed and they only type the part before it. An empty
-    /// stored school is a pre-multi-school account, which was always UT.
-    private var fixedDomain: String? {
+    /// The domain picked from `domains` when there's more than one (UT's
+    /// student vs. faculty addresses on the Sign-In page).
+    @State private var selectedDomain: String?
+
+    /// The domains this address may use; empty means any address.
+    private var domains: [String] {
+        if let allowedDomains { return allowedDomains }
         let name = school ?? UserDefaults.standard.string(forKey: "userSchool") ?? ""
-        return (name.isEmpty || name == UserProfileModel.utSchoolName) ? "my.utexas.edu" : nil
+        // An empty stored school is a pre-multi-school account, which was always UT.
+        guard let onboardingSchool = OnboardingSchool.named(name.isEmpty ? UserProfileModel.utSchoolName : name) else {
+            return []
+        }
+        if let role = SchoolRole.current, let domain = onboardingSchool.domain(for: role) {
+            return [domain]
+        }
+        return onboardingSchool.allDomains
+    }
+
+    /// The domain appended to what's typed, or nil when any address is allowed.
+    private var fixedDomain: String? {
+        guard let first = domains.first else { return nil }
+        return selectedDomain.flatMap { domains.contains($0) ? $0 : nil } ?? first
+    }
+
+    private var idPlaceholder: String {
+        OnboardingSchool.all.first { $0.allDomains.contains(fixedDomain ?? "") }?.idPlaceholder ?? "username"
     }
 
     /// The address the code is sent to: the typed prefix plus the fixed domain
@@ -97,7 +124,7 @@ struct SchoolEmailVerificationView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Verify Your School")
+                Text(title)
                     .font(.title)
                     .fontWeight(.bold)
 
@@ -106,7 +133,7 @@ struct SchoolEmailVerificationView: View {
                     .foregroundStyle(Color.brandOrange)
             }
 
-            Text("Enter your school email address. We'll send a six-digit code to confirm it's yours.")
+            Text(subtitle)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -119,7 +146,8 @@ struct SchoolEmailVerificationView: View {
             // `axis: .vertical` keeps iOS from drawing its autofill box behind
             // single-line fields (same workaround as the other forms).
             HStack(spacing: 0) {
-                TextField(fixedDomain == nil ? "you@school.edu" : "eid", text: $email, axis: .vertical)
+                TextField(fixedDomain == nil ? (purpose == .enthusiast ? "you@example.com" : "you@school.edu") : idPlaceholder,
+                          text: $email, axis: .vertical)
                     .lineLimit(1)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -133,9 +161,27 @@ struct SchoolEmailVerificationView: View {
                     }
 
                 if let fixedDomain {
-                    Text("@\(fixedDomain)")
-                        .foregroundStyle(.secondary)
+                    if domains.count > 1 {
+                        // Sign-In doesn't know yet whether this is a student or
+                        // faculty address, so let them pick the domain.
+                        Menu {
+                            ForEach(domains, id: \.self) { domain in
+                                Button("@\(domain)") { selectedDomain = domain }
+                            }
+                        } label: {
+                            HStack(spacing: 2) {
+                                Text("@\(fixedDomain)")
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2)
+                            }
+                            .foregroundStyle(.secondary)
+                        }
                         .layoutPriority(1)
+                    } else {
+                        Text("@\(fixedDomain)")
+                            .foregroundStyle(.secondary)
+                            .layoutPriority(1)
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -147,9 +193,11 @@ struct SchoolEmailVerificationView: View {
                               : Color(uiColor: .secondarySystemGroupedBackground))
                 )
 
-            Text("Use the address your school issued you. Alumni addresses aren't eligible.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if purpose == .school {
+                Text("Use the address your school issued you. Alumni addresses aren't eligible.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -228,14 +276,15 @@ struct SchoolEmailVerificationView: View {
             }
             .disabled(pending == nil ? !canSendCode : !canConfirm)
 
-            // Skipping is allowed so an outage can't wall people out of the
-            // app entirely — but posting and messaging stay locked until they
-            // verify. See PostingGate.
-            Button(dismissTitle) {
-                onFinished()
+            // Outside onboarding (Edit Profile, the reminder, the Share gate)
+            // the user can back out; posting stays locked until they verify.
+            if let dismissTitle {
+                Button(dismissTitle) {
+                    onFinished()
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 40)
@@ -246,7 +295,7 @@ struct SchoolEmailVerificationView: View {
     private func sendCode() async {
         errorMessage = nil
         do {
-            pending = try await verification.requestCode(email: fullEmail)
+            pending = try await verification.requestCode(email: fullEmail, purpose: purpose)
             code = ""
         } catch {
             errorMessage = error.localizedDescription

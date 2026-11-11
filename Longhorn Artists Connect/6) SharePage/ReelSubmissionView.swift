@@ -97,7 +97,7 @@ struct ReelSubmissionView: View {
     
     /// The reel categories the form used to offer. The form no longer asks for one, but
     /// older posts still carry these, so `SecurityManager` keeps accepting them.
-    static let reelCategories = ["Acting Reel", "Dancing Reel", "Actor Showcase", "Dance Showcase"]
+    static let reelCategories = ["Acting Reel", "Dancing Reel", "Actor Showcase", "Dance Showcase", "Theatre Show"]
 
     var body: some View {
         List {

@@ -189,6 +189,12 @@ class UserProfileModel: ObservableObject {
     /// Artist / Enthusiast, picked on `UserTypePage`. Nil for accounts that
     /// predate that page (treated as Artist) and for non-student accounts.
     @Published var accountKind: AccountKind?
+    /// Student / Professor / Alumni, picked during onboarding. Nil for accounts
+    /// created before that page existed (treated as students).
+    @Published var schoolRole: SchoolRole?
+    /// Alumni contact number. Private: kept on device and in the user's private
+    /// iCloud database, never on the public `UserProfile` record.
+    @Published var phoneNumber: String = ""
     @Published var bio: String = ""
     @Published var instagramHandle: String = ""
     @Published var websiteURL: String = ""
@@ -217,6 +223,8 @@ class UserProfileModel: ObservableObject {
     /// True when the account was created via the Industry Professional flow.
     @AppStorage("isIndustryProfessional") var isIndustryProfessionalStored: Bool = false
     @AppStorage(AccountKind.storageKey) var storedAccountKind: String = ""
+    @AppStorage(SchoolRole.storageKey) var storedSchoolRole: String = ""
+    @AppStorage("userPhoneNumber") var storedPhoneNumber: String = ""
 
     // MARK: - Schools
 
@@ -232,7 +240,7 @@ class UserProfileModel: ObservableObject {
     /// for its email domain — otherwise the school can be picked but never
     /// verified, and its posts land in the wrong feed.
     static let otherSchools = ["University of California, Berkeley", "University of Michigan",
-                               "Cal Poly SLO", "USC", "NYU", "DePaul", "Other"]
+                               "Cal Poly SLO", "USC", "NYU", "DePaul", "BU", "Other"]
     
     // MARK: - Computed Properties
     
@@ -301,6 +309,8 @@ class UserProfileModel: ObservableObject {
         storedCompanyRole = companyRole
         isIndustryProfessionalStored = isIndustryProfessional
         storedAccountKind = accountKind?.rawValue ?? ""
+        storedSchoolRole = schoolRole?.rawValue ?? ""
+        storedPhoneNumber = phoneNumber
 
         // Save profile image to documents directory
         if let profileImage {
@@ -314,6 +324,9 @@ class UserProfileModel: ObservableObject {
         // Save to CloudKit for cross-device sync and directory visibility
         Task {
             await saveToCloudKit()
+        }
+        if !phoneNumber.isEmpty {
+            Task { await PrivateContactStore.save(phoneNumber: phoneNumber) }
         }
     }
     
@@ -342,6 +355,8 @@ class UserProfileModel: ObservableObject {
         companyRole = storedCompanyRole
         isIndustryProfessional = isIndustryProfessionalStored
         accountKind = AccountKind(storedValue: storedAccountKind)
+        schoolRole = SchoolRole(rawValue: storedSchoolRole)
+        phoneNumber = storedPhoneNumber
         migrateLegacyAgentAccount()
 
         // Parse stored user types
@@ -392,6 +407,8 @@ class UserProfileModel: ObservableObject {
         companyRole = ""
         isIndustryProfessional = false
         accountKind = nil
+        schoolRole = nil
+        phoneNumber = ""
         // Tag-unlocked details, headshot and auditions (see CreativeProfileStore).
         CreativeProfileStore.shared.clearMine()
         bio = ""
@@ -418,6 +435,8 @@ class UserProfileModel: ObservableObject {
         storedCompanyRole = ""
         isIndustryProfessionalStored = false
         storedAccountKind = ""
+        storedSchoolRole = ""
+        storedPhoneNumber = ""
         for key in AccountKind.legacyAgentDefaultsKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }
@@ -730,17 +749,20 @@ class UserProfileModel: ObservableObject {
     }
     
     /// Load user profile from CloudKit
-    func loadFromCloudKit() async {
+    /// Restores this Apple ID's profile from CloudKit. Returns true when a real
+    /// profile was found and loaded (which also completes onboarding).
+    @discardableResult
+    func loadFromCloudKit() async -> Bool {
         guard CloudKitManager.shared.isAvailable else {
             print("⚠️ CloudKit not available")
-            return
+            return false
         }
         
         do {
             // Fetch the user's profile using their record ID
             guard let userRecordID = CloudKitManager.shared.userRecordID else {
                 print("⚠️ No user record ID available")
-                return
+                return false
             }
             
             let recordID = CKRecord.ID(recordName: "UserProfile_\(userRecordID.recordName)")
@@ -748,11 +770,25 @@ class UserProfileModel: ObservableObject {
             let database = container.publicCloudDatabase
             
             let record = try await database.record(for: recordID)
+
+            // Verifying an email during onboarding writes a stub `UserProfile`
+            // holding only the ownership nonce. That isn't an account yet —
+            // every completed save writes `isUTStudent`.
+            guard record["isUTStudent"] != nil else {
+                print("ℹ️ Only a verification stub exists for this Apple ID")
+                return false
+            }
+
+            if let phone = await PrivateContactStore.fetchPhoneNumber() {
+                phoneNumber = phone
+            }
             await fromCloudKitRecord(record)
             
             print("✅ User profile loaded from CloudKit: \(fullName)")
+            return true
         } catch {
             print("❌ Failed to load profile from CloudKit: \(error.localizedDescription)")
+            return false
         }
     }
     
@@ -830,6 +866,10 @@ class UserProfileModel: ObservableObject {
         if let accountKind {
             record["accountKind"] = accountKind.rawValue as CKRecordValue
         }
+        // `schoolRole` (STRING) — same schema caveat as `accountKind`.
+        if let schoolRole {
+            record["schoolRole"] = schoolRole.rawValue as CKRecordValue
+        }
         // Left over from the removed Agent flow: it uploaded the agent's email
         // and contract date onto the public profile. Clear both so former
         // agents' records go back to normal.
@@ -860,6 +900,9 @@ class UserProfileModel: ObservableObject {
             // rewrites it on the server.
             if let kind = AccountKind(storedValue: (record["accountKind"] as? String) ?? "") {
                 accountKind = kind
+            }
+            if let role = SchoolRole(rawValue: (record["schoolRole"] as? String) ?? "") {
+                schoolRole = role
             }
 
             // Parse user types

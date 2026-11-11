@@ -18,9 +18,11 @@
 //     Spotify style discography with streaming links.
 //  2. Extra fields in the profile editor (CreativeDetailsEditorView).
 //  3. Sections on the Now page in Discover (NowView).
-//  4. A tab in the Network directory (NetworkDirectoryView): Actors, Filmmakers,
-//     Musicians — everyone with a tag in that group.
-//  5. A lean in the Home feed toward that kind of work (`recommend`).
+//  4. A lean in the Home feed toward that kind of work (`recommend`).
+//
+//  The Network directory's Actors / Filmmakers / Musicians pages are NOT tag-driven:
+//  moderators choose who is listed there (`DirectoryUser.directoryGroups`, see
+//  DirectoryPeopleGrid.swift). Tags only unlock the person's own profile features.
 //
 
 import SwiftUI
@@ -205,8 +207,76 @@ struct ActorDetails: Codable, Equatable {
 
     static let genders = ["Female", "Male", "Non-binary"]
     static let unions = ["Non-union", "SAG-AFTRA Eligible", "SAG-AFTRA", "AEA"]
+    /// Picker choices for hair and eyes. Older profiles may hold free text instead;
+    /// the editor keeps such a value as an extra choice and filters match it loosely.
+    static let hairColors = ["Black", "Dark brown", "Brown", "Light brown", "Blonde", "Red", "Auburn", "Gray", "White", "Bald", "Other"]
+    static let eyeColors = ["Brown", "Hazel", "Blue", "Green", "Gray", "Amber", "Other"]
+
+    /// Age bands the Actors page can filter by: (label, low, high).
+    static let ageBands: [(label: String, low: Int, high: Int)] = [
+        ("Under 18", 0, 17), ("18–25", 18, 25), ("26–35", 26, 35), ("36+", 36, 200)
+    ]
+    /// Height bands the Actors page can filter by, in inches: (label, low, high).
+    static let heightBands: [(label: String, low: Int, high: Int)] = [
+        ("Under 5'4\"", 0, 63), ("5'4\"–5'7\"", 64, 67), ("5'8\"–5'11\"", 68, 71), ("6'0\" and over", 72, 120)
+    ]
 
     init() {}
+
+    /// Height in inches, read from however it was typed: 5'9", 5' 9", 5'9, 5 ft 9 in,
+    /// 69 in, 175 cm. Nil when blank or unreadable.
+    var heightInches: Int? { Self.parseHeightInches(height) }
+
+    static func parseHeightInches(_ text: String) -> Int? {
+        let s = text.lowercased()
+            .replacingOccurrences(of: "’", with: "'")
+            .replacingOccurrences(of: "”", with: "\"")
+        guard !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        func capture(_ pattern: String) -> [String]? {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            let range = NSRange(s.startIndex..., in: s)
+            guard let match = regex.firstMatch(in: s, range: range) else { return nil }
+            return (1..<match.numberOfRanges).map { index in
+                let r = match.range(at: index)
+                guard r.location != NSNotFound, let swiftRange = Range(r, in: s) else { return "" }
+                return String(s[swiftRange])
+            }
+        }
+        // 175 cm
+        if let c = capture("(\\d{2,3})\\s*cm"), let cm = Double(c[0]) {
+            return Int((cm / 2.54).rounded())
+        }
+        // 5'9", 5' 9, 5 ft 9 in, 5 feet 9
+        if let c = capture("(\\d)\\s*(?:'|ft|feet|foot)\\s*(\\d{1,2})?"), let feet = Int(c[0]) {
+            let inches = Int(c[1]) ?? 0
+            return feet * 12 + inches
+        }
+        // 69 in / 69 inches
+        if let c = capture("(\\d{2})\\s*(?:in|inches)"), let inches = Int(c[0]) {
+            return inches
+        }
+        return nil
+    }
+
+    /// Whether the playable age range touches a band (blank range → no).
+    func overlapsAge(low: Int, high: Int) -> Bool {
+        guard ageMin != nil || ageMax != nil else { return false }
+        let lo = ageMin ?? ageMax ?? 0
+        let hi = ageMax ?? ageMin ?? 200
+        return hi >= low && lo <= high
+    }
+
+    /// The short facts under an actor's card on the Actors page: age range, gender,
+    /// height, hair and eyes — whichever are filled in.
+    var cardFacts: [String] {
+        var facts: [String] = []
+        if !ageRangeText.isEmpty { facts.append(ageRangeText) }
+        if !gender.isEmpty { facts.append(gender) }
+        if !height.isEmpty { facts.append(height) }
+        if !hair.isEmpty { facts.append(hair + " hair") }
+        if !eyes.isEmpty { facts.append(eyes + " eyes") }
+        return facts
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -302,6 +372,28 @@ struct MusicianDetails: Codable, Equatable {
     /// Streaming page URLs keyed by `StreamingService.rawValue`. Stored as typed, so
     /// "open.spotify.com/…" without a scheme is fine — see `url(for:)`.
     var streamingLinks: [String: String] = [:]
+
+    /// Chip choices for instruments and genres. Both are stored comma-separated in
+    /// `instruments` / `genres`, so anything typed before the chips existed still reads.
+    static let instrumentOptions = [
+        "Vocals", "Guitar", "Bass", "Drums", "Piano", "Keys / Synth", "Violin", "Viola", "Cello",
+        "Upright bass", "Saxophone", "Trumpet", "Trombone", "Flute", "Clarinet", "Ukulele", "Banjo",
+        "Harp", "Percussion", "DJ / Turntables", "Producer / Beats"
+    ]
+    static let genreOptions = [
+        "Pop", "Rock", "Indie", "Alternative", "Hip-Hop", "R&B", "Soul", "Jazz", "Blues", "Classical",
+        "Country", "Folk", "Electronic", "House", "Metal", "Punk", "Latin", "Gospel", "Film score",
+        "Musical theatre", "Experimental"
+    ]
+
+    /// The instruments they play, one per entry.
+    var instrumentList: [String] { Self.splitList(instruments) }
+    /// Their genres, one per entry.
+    var genreList: [String] { Self.splitList(genres) }
+
+    static func splitList(_ text: String) -> [String] {
+        text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
 
     init() {}
 

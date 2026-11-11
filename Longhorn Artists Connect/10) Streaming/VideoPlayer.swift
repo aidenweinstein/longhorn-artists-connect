@@ -173,6 +173,10 @@ final class VideoPlayerModel: ObservableObject {
     let player: AVPlayer
     let submissionID: UUID
     private let submission: Submission
+    /// True when `player` is the feed's own preview player, taken over mid-stream.
+    /// Playback then continues from where the preview was, rather than from the
+    /// position saved on a previous visit to this post.
+    private let resumesFeedPlayback: Bool
 
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
@@ -188,24 +192,34 @@ final class VideoPlayerModel: ObservableObject {
     private var engagement = PlaybackEngagementTracker()
 
     init(url: URL, submission: Submission) {
-        // Prefer whatever the home feed already warmed for this stream: a player
-        // item that's been buffering since the card was hovered (instant start),
-        // else an asset whose container metadata is already loaded. The feed only
-        // builds these on the main thread, which is where SwiftUI constructs us.
-        var warmItem: AVPlayerItem?
+        // Prefer whatever the home feed already warmed for this stream: the very
+        // player that was autoplaying (or buffering) on the card — taken over whole,
+        // playhead included, so the post continues from the moment the viewer was
+        // watching in the feed — else an asset whose container metadata is already
+        // loaded. The feed only builds these on the main thread, which is where
+        // SwiftUI constructs us.
+        var warmPlayer: AVPlayer?
         var warmAsset: AVURLAsset?
         if Thread.isMainThread {
             MainActor.assumeIsolated {
-                warmItem = FeedVideoPreloader.shared.takeWarmItem(for: url)
-                if warmItem == nil { warmAsset = FeedVideoPreloader.shared.warmedAsset(for: url) }
+                warmPlayer = FeedVideoPreloader.shared.takeWarmPlayer(for: url)
+                if warmPlayer == nil { warmAsset = FeedVideoPreloader.shared.warmedAsset(for: url) }
             }
         }
-        if let warmItem {
-            self.player = AVPlayer(playerItem: warmItem)
+        if let warmPlayer {
+            // Undo the preview-specific settings: a feed preview loops and may let
+            // the display sleep; the detail player stops at the end and keeps the
+            // screen awake like any fresh `AVPlayer`.
+            warmPlayer.actionAtItemEnd = .pause
+            warmPlayer.preventsDisplaySleepDuringVideoPlayback = true
+            self.player = warmPlayer
+            self.resumesFeedPlayback = true
         } else if let warmAsset {
             self.player = AVPlayer(playerItem: AVPlayerItem(asset: warmAsset))
+            self.resumesFeedPlayback = false
         } else {
             self.player = AVPlayer(url: url)
+            self.resumesFeedPlayback = false
         }
         self.submissionID = submission.id
         self.submission = submission
@@ -249,8 +263,13 @@ final class VideoPlayerModel: ObservableObject {
     private func restoreAndPlay() async {
         if let loaded = try? await player.currentItem?.asset.load(.duration) {
             duration = max(loaded.seconds, 1)
-            if let saved = SubmissionStore_3_2.shared.getPlaybackPosition(for: submissionID),
-               saved > 0, saved < duration - 1 {
+            if resumesFeedPlayback {
+                // Carry on from the moment the feed preview reached; the scrubber
+                // shows that position right away rather than 0:00 until the first
+                // periodic tick.
+                currentTime = player.currentTime().seconds
+            } else if let saved = SubmissionStore_3_2.shared.getPlaybackPosition(for: submissionID),
+                      saved > 0, saved < duration - 1 {
                 await player.seek(to: CMTime(seconds: saved, preferredTimescale: 600))
                 currentTime = saved
             }

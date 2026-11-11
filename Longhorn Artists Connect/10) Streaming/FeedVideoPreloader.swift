@@ -56,7 +56,8 @@ final class NetworkConditions {
 ///   - **Player** (iPad / Mac, where a pointer can hover): additionally attach the
 ///     asset to a paused `AVPlayer`, which buffers `StreamPlaybackBuffer.previewSeconds`
 ///     of media in the background. A hover preview — or the detail view, which
-///     takes the buffered item over — can then start almost immediately.
+///     takes the buffered player over, playhead and all — can then start almost
+///     immediately.
 ///
 /// Only a handful of entries are kept (most recently used), and a card drops its
 /// entry when it scrolls off screen, so memory and bandwidth stay bounded.
@@ -81,14 +82,18 @@ final class FeedVideoPreloader {
             self.item = item
         }
 
-        /// Hands the buffered item to a new owner and stops the warm player.
-        fileprivate func detachItem() -> AVPlayerItem? {
-            guard let item else { return nil }
-            player?.pause()
-            player?.replaceCurrentItem(with: nil)
+        /// Hands the warm player — item still attached, playhead wherever the
+        /// preview left it — to a new owner. The player itself moves, never just
+        /// the item: pulling the item off this player and attaching it to a new
+        /// `AVPlayer` raised "AVPlayerItem cannot be associated with more than one
+        /// instance of AVPlayer" whenever the old player hadn't finished releasing
+        /// it (it was mid-seek from the preview's check-in), crashing the app the
+        /// moment a card that was autoplaying was opened.
+        fileprivate func detachPlayer() -> AVPlayer? {
+            guard let player else { return nil }
             self.item = nil
             self.player = nil
-            return item
+            return player
         }
 
         /// Drops the warm player. The actual teardown happens off the main thread:
@@ -197,6 +202,7 @@ final class FeedVideoPreloader {
     /// and marks it in use. Nil when the post can't be streamed on this device.
     func checkOut(_ post: Submission) async -> Entry? {
         if let entry = entries[post.id], entry.player != nil {
+            Self.rewind(entry)
             entry.isCheckedOut = true
             entry.lastTouched = Date()
             return entry
@@ -204,19 +210,28 @@ final class FeedVideoPreloader {
         // Not warm (or only metadata-warm): warm a full player now.
         let task = startWarming(post, forcePlayer: true)
         guard let entry = await task.value, entry.player != nil else { return nil }
+        Self.rewind(entry)
         entry.isCheckedOut = true
         entry.lastTouched = Date()
         return entry
     }
 
-    /// Returns a checked-out player to the pool, rewound and paused.
+    /// Returns a checked-out player to the pool, paused where it stopped. It is
+    /// deliberately *not* rewound here: when the card is opened, the detail view
+    /// takes this player over (`takeWarmPlayer`) and continues from that moment.
+    /// A later preview rewinds on check-out instead, so it still starts at the top.
     func checkIn(_ id: UUID) {
         guard let entry = entries[id] else { return }
         entry.player?.pause()
-        entry.item?.seek(to: .zero, completionHandler: nil)
         entry.isCheckedOut = false
         entry.lastTouched = Date()
         evictIfNeeded()
+    }
+
+    /// Puts a pooled player back at the start, if an earlier preview moved it.
+    private static func rewind(_ entry: Entry) {
+        guard let item = entry.item, item.currentTime().seconds > 0.1 else { return }
+        item.seek(to: .zero, completionHandler: nil)
     }
 
     /// The stream URL for `id` if it's already warm and the stream has proven
@@ -230,16 +245,15 @@ final class FeedVideoPreloader {
         return entry.url
     }
 
-    /// The already-buffered player item for `url`, if a warm player holds one.
-    /// Ownership transfers to the caller; the warm player is released.
-    func takeWarmItem(for url: URL) -> AVPlayerItem? {
+    /// The warm, already-buffered player for `url`, if there is one. Ownership
+    /// transfers to the caller and the entry leaves the pool. The player is handed
+    /// over as-is — paused, at the playhead the feed preview reached — so the
+    /// detail view picks up exactly where the viewer was watching.
+    func takeWarmPlayer(for url: URL) -> AVPlayer? {
         guard let (id, entry) = entries.first(where: { $0.value.url == url }),
-              let item = entry.detachItem() else { return nil }
-        // Rewind so the new owner starts from the top. The buffered range starts
-        // at zero, so this keeps what's loaded.
-        item.seek(to: .zero, completionHandler: nil)
+              let player = entry.detachPlayer() else { return nil }
         entries[id] = nil
-        return item
+        return player
     }
 
     /// The asset with its container metadata already loaded for `url`, if warm.
@@ -350,32 +364,159 @@ final class FeedVideoPreloader {
     }
 }
 
+// MARK: - Feed autoplay coordinator
+
+/// Decides which feed card autoplays: of the previewable cards on screen, the one
+/// whose media is closest to the middle of the feed's viewport.
+///
+/// Every visible card reports its placement on each scroll frame (see
+/// `HomePostCard`). Whenever the card nearest the center changes, the previous one
+/// stops and the new one starts its autoplay countdown — so what's playing is
+/// always what the user is looking at, scrolling in either direction. A card only
+/// becomes eligible once at least half of its media is on screen (or it covers the
+/// viewport's center point, as a portrait reel taller than the screen can), so a
+/// card just peeking in at an edge never takes over from the centered one.
+@MainActor
+final class FeedAutoplayCoordinator {
+    static let shared = FeedAutoplayCoordinator()
+
+    /// Where a card's media sits relative to the feed's viewport. Plain geometry,
+    /// so it's `nonisolated` — `onGeometryChange` needs a `Sendable` value whose
+    /// `Equatable` conformance isn't tied to the main actor.
+    nonisolated struct Placement: Equatable, Sendable {
+        /// Distance from the media's center to the viewport's center, in points.
+        var distanceToCenter: CGFloat
+        /// Fraction of the media's area that's inside the viewport, 0–1.
+        var visibleFraction: CGFloat
+        /// True when the viewport's center point lies inside the media.
+        var coversCenter: Bool
+
+        /// Builds a placement from a card's media geometry. `viewport` is the scroll
+        /// view's bounds converted to the media's local coordinate space
+        /// (`GeometryProxy.bounds(of: .scrollView)`); nil means the card isn't inside
+        /// a scroll view, so it's treated as centered and fully visible.
+        init(mediaSize: CGSize, viewport: CGRect?) {
+            guard let viewport, mediaSize.width > 0, mediaSize.height > 0 else {
+                distanceToCenter = 0
+                visibleFraction = 1
+                coversCenter = true
+                return
+            }
+            let media = CGRect(origin: .zero, size: mediaSize)
+            let center = CGPoint(x: viewport.midX, y: viewport.midY)
+            // Rounded so sub-point scroll jitter doesn't count as a change.
+            distanceToCenter = hypot(center.x - media.midX, center.y - media.midY).rounded()
+            let visible = media.intersection(viewport)
+            let fraction = visible.isNull ? 0 : (visible.width * visible.height) / (media.width * media.height)
+            visibleFraction = (fraction * 100).rounded() / 100
+            coversCenter = media.contains(center)
+        }
+    }
+
+    /// At least this much of a card's media must be on screen before it can autoplay
+    /// (unless it covers the viewport's center — media taller than the screen).
+    static let minimumVisibleFraction: CGFloat = 0.5
+    /// A new card must be this many points closer to the center than the one already
+    /// playing to take over, so two near-equidistant cards don't flip-flop.
+    static let switchMargin: CGFloat = 24
+
+    private struct Candidate {
+        let post: Submission
+        weak var controller: HoverPreviewController?
+        var placement: Placement
+    }
+
+    private var candidates: [UUID: Candidate] = [:]
+    /// The card currently chosen to autoplay.
+    private(set) var focusedID: UUID?
+    /// True while a post's detail view is open over the feed; nothing autoplays
+    /// underneath it (the detail view runs its own player).
+    private var isSuspended = false
+
+    private init() {}
+
+    /// Whether a card at `placement` is far enough on screen to be chosen.
+    static func isEligible(_ placement: Placement) -> Bool {
+        placement.coversCenter || placement.visibleFraction >= minimumVisibleFraction
+    }
+
+    /// Records where `post`'s media is right now and re-picks the centered card.
+    func update(_ post: Submission, placement: Placement, controller: HoverPreviewController) {
+        candidates[post.id] = Candidate(post: post, controller: controller, placement: placement)
+        reevaluate()
+    }
+
+    /// Forgets a card that left the screen (or stopped being previewable).
+    func remove(_ id: UUID) {
+        guard candidates.removeValue(forKey: id) != nil else { return }
+        if focusedID == id { focusedID = nil }
+        reevaluate()
+    }
+
+    /// Pauses all autoplay while a detail view covers the feed; resuming re-picks
+    /// the centered card, which starts its countdown afresh.
+    func setSuspended(_ suspended: Bool) {
+        guard suspended != isSuspended else { return }
+        isSuspended = suspended
+        if suspended {
+            unfocus()
+        } else {
+            reevaluate()
+        }
+    }
+
+    private func unfocus() {
+        guard let id = focusedID else { return }
+        focusedID = nil
+        if let current = candidates[id] {
+            current.controller?.scrollVisibilityChanged(false, post: current.post)
+        }
+    }
+
+    private func reevaluate() {
+        guard !isSuspended else { return }
+        let eligible = candidates.filter { Self.isEligible($0.value.placement) && $0.value.controller != nil }
+        guard let best = eligible.min(by: { $0.value.placement.distanceToCenter < $1.value.placement.distanceToCenter }) else {
+            unfocus()
+            return
+        }
+        // Keep the card that's already playing unless another is clearly nearer the
+        // center (or the current one has slid too far off screen to stay eligible).
+        if let focusedID, let current = eligible[focusedID] {
+            if best.key == focusedID
+                || best.value.placement.distanceToCenter > current.placement.distanceToCenter - Self.switchMargin {
+                return
+            }
+        }
+        unfocus()
+        focusedID = best.key
+        best.value.controller?.scrollVisibilityChanged(true, post: best.value.post)
+    }
+}
+
 // MARK: - Hover preview controller
 
 /// Drives one feed card's inline preview — hover-to-play on pointer devices, and
 /// scroll-to-play (YouTube-style autoplay) everywhere.
 ///
-/// Hovering for `hoverDelay`, or sitting mostly on screen for `autoplayDelay`,
-/// starts the preview. The first frame isn't shown until
-/// `StreamPlaybackBuffer.previewStartAheadSeconds` of video is buffered, and if
-/// the stream stalls mid-preview it pauses on the current frame and refills to
-/// the same depth before resuming — a short wait instead of a stutter.
+/// Hovering for `hoverDelay`, or being the centered card (as chosen by
+/// `FeedAutoplayCoordinator`) for `autoplayDelay`, starts the preview. The first
+/// frame isn't shown until `StreamPlaybackBuffer.previewStartAheadSeconds` of
+/// video is buffered, and if the stream stalls mid-preview it pauses on the
+/// current frame and refills to the same depth before resuming — a short wait
+/// instead of a stutter.
 ///
-/// Only one card autoplays at a time: when a card scrolls into view it claims the
-/// slot and the previous autoplaying card stops, so two cards that happen to both
-/// be mostly visible (two 16:9 films on a tall phone) never play at once. As you
-/// scroll down, the card you just reached takes over — like YouTube's feed.
+/// Only one card autoplays at a time: the coordinator hands the slot to whichever
+/// previewable card is nearest the middle of the feed, and `activeAutoplay` is a
+/// backstop that stops the previous holder if two controllers ever both think
+/// they're the centered one.
 @Observable
 @MainActor
 final class HoverPreviewController {
     /// How long the pointer must rest on a card before its video starts.
     static let hoverDelay: Duration = .seconds(1.5)
-    /// How long a card must stay mostly on screen before its video starts.
+    /// How long a card must stay the centered one before its video starts.
     static let autoplayDelay: Duration = .seconds(1)
-    /// The fraction of the card's media that must be on screen for it to count as
-    /// "scrolled to" — high enough that a card half off the top or bottom edge
-    /// doesn't start playing.
-    static let autoplayVisibilityThreshold: Double = 0.7
 
     /// What started (or is about to start) the current preview.
     private enum Trigger { case hover, scroll }
@@ -417,9 +558,10 @@ final class HoverPreviewController {
         }
     }
 
-    /// Call with each `onScrollVisibilityChange` of the card's media, using
-    /// `autoplayVisibilityThreshold`. After `autoplayDelay` of being mostly on
-    /// screen the video plays inline; scrolling it back out stops it.
+    /// Called by `FeedAutoplayCoordinator` when this card becomes (`true`) or stops
+    /// being (`false`) the card nearest the center of the feed. After
+    /// `autoplayDelay` of holding the center the video plays inline; losing the
+    /// center to another card stops it.
     func scrollVisibilityChanged(_ visible: Bool, post: Submission) {
         guard FeedVideoPreloader.isPreviewable(post) else { return }
         if visible {

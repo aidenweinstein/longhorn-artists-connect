@@ -51,9 +51,19 @@ struct DirectoryUser: Identifiable, Hashable, Codable {
     /// Left over from the removed Agent flow, which uploaded agents' emails. New
     /// saves clear the field, so this is empty for everyone once they relaunch.
     var email: String = ""
+    /// Which directory pages (Actors / Filmmakers / Musicians) list this person, as
+    /// `CreativeGroup` raw values. Set only by moderators (`setDirectoryGroups`) —
+    /// a person's own tags don't put them on a page. Empty = Everyone only.
+    var directoryGroups: [String] = []
 
     var fullName: String {
         "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Enthusiast accounts are kept out of `allUsers` entirely; only moderators
+    /// see them, via `UserProfileManager.enthusiasts`.
+    var isEnthusiast: Bool {
+        AccountKind(storedValue: accountKind) == .enthusiast
     }
     
     var displayName: String {
@@ -96,7 +106,10 @@ struct DirectoryUser: Identifiable, Hashable, Codable {
 class UserProfileManager: ObservableObject {
     static let shared = UserProfileManager()
     
+    /// Every member except enthusiasts — the directory, name matching, credits.
     @Published var allUsers: [DirectoryUser] = []
+    /// Enthusiast accounts, for the moderator's Enthusiasts list only.
+    @Published var enthusiasts: [DirectoryUser] = []
     @Published var isLoading = false
     @Published var lastSyncDate: Date?
     @Published var errorMessage: String?
@@ -124,7 +137,7 @@ class UserProfileManager: ObservableObject {
         "firstName", "lastName", "major", "graduationYear", "userTypes", "bio",
         "instagramHandle", "isUTStudent", "portfolioOrder", "school",
         "isIndustryProfessional", "industry", "company", "companyRole", "accountKind",
-        "userEmail"
+        "userEmail", "directoryGroups"
     ]
     
     private init() {
@@ -197,7 +210,8 @@ class UserProfileManager: ObservableObject {
             // Sort by last name
             users.sort { $0.lastName < $1.lastName }
 
-            allUsers = users
+            allUsers = users.filter { !$0.isEnthusiast }
+            enthusiasts = users.filter(\.isEnthusiast)
             lastSyncDate = Date()
             isLoading = false
             saveToCache(users)
@@ -261,6 +275,34 @@ class UserProfileManager: ObservableObject {
                 saveToCache(allUsers)
             }
             print("✅ Set \(user.displayName) to \(isGuest ? "Guest" : "UT Student")")
+            return nil
+        } catch let error as CKError where error.code == .permissionFailure || error.code == .notAuthenticated {
+            return "This profile was created by a different iCloud account, so CloudKit won't let the app modify it. Change it from the CloudKit Console instead."
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Moderator action: sets which directory pages (Actors / Filmmakers / Musicians)
+    /// list a person, by writing `directoryGroups` on their `UserProfile` record as a
+    /// comma-separated list of `CreativeGroup` raw values (cleared when empty). The
+    /// person's own profile saves never touch this field, so it survives their edits.
+    /// Returns `nil` on success, or a user-facing error message.
+    @discardableResult
+    func setDirectoryGroups(_ user: DirectoryUser, groups: Set<String>) async -> String? {
+        let ordered = CreativeGroup.allCases.map(\.rawValue).filter { groups.contains($0) }
+        let recordID = CKRecord.ID(recordName: user.id)
+        do {
+            let record = try await database.record(for: recordID)
+            record["directoryGroups"] = ordered.isEmpty ? nil : (ordered.joined(separator: ",") as CKRecordValue)
+            _ = try await database.save(record)
+
+            // Reflect the change locally so the directory and Users page update at once.
+            if let index = allUsers.firstIndex(where: { $0.id == user.id }) {
+                allUsers[index].directoryGroups = ordered
+                saveToCache(allUsers)
+            }
+            print("✅ \(user.displayName) listed on: \(ordered.isEmpty ? "Everyone only" : ordered.joined(separator: ", "))")
             return nil
         } catch let error as CKError where error.code == .permissionFailure || error.code == .notAuthenticated {
             return "This profile was created by a different iCloud account, so CloudKit won't let the app modify it. Change it from the CloudKit Console instead."
@@ -438,6 +480,10 @@ class UserProfileManager: ObservableObject {
     // MARK: - Cache Management
     
     private func saveToCache(_ users: [DirectoryUser]) {
+        // Callers usually pass `allUsers`, which excludes enthusiasts; keep them
+        // in the cache too so the moderator's list survives a relaunch.
+        let ids = Set(users.map(\.id))
+        let users = users + enthusiasts.filter { !ids.contains($0.id) }
         guard let url = cacheFileURL, let encoded = try? JSONEncoder().encode(users) else { return }
         do {
             try encoded.write(to: url, options: .atomic)
@@ -465,7 +511,8 @@ class UserProfileManager: ObservableObject {
         // Entries cached by an older build can hold un-normalized names.
         for index in users.indices { users[index].normalizeNames() }
 
-        allUsers = users
+        allUsers = users.filter { !$0.isEnthusiast }
+        enthusiasts = users.filter(\.isEnthusiast)
         lastSyncDate = UserDefaults.standard.object(forKey: cacheTimestampKey) as? Date
 
         print("📱 Loaded \(users.count) user profiles from cache")
@@ -476,6 +523,7 @@ class UserProfileManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: cacheKey)
         UserDefaults.standard.removeObject(forKey: cacheTimestampKey)
         allUsers = []
+        enthusiasts = []
         lastSyncDate = nil
         print("🗑️ Cleared user profile cache")
     }
@@ -535,8 +583,18 @@ class UserProfileManager: ObservableObject {
             company: company,
             companyRole: companyRole,
             accountKind: record["accountKind"] as? String ?? "",
-            email: record["userEmail"] as? String ?? ""
+            email: record["userEmail"] as? String ?? "",
+            directoryGroups: Self.parseDirectoryGroups(record["directoryGroups"] as? String)
         )
+    }
+
+    /// "Actor,Filmmaker" → ["Actor", "Filmmaker"], keeping only real `CreativeGroup`
+    /// names so a typo in the Console can't invent a page.
+    static func parseDirectoryGroups(_ raw: String?) -> [String] {
+        (raw ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { CreativeGroup(rawValue: $0) != nil }
     }
 
     /// Second pass: fetches only the `profileImage` asset for every profile, decodes and

@@ -28,20 +28,18 @@ final class DiscoverTabCoordinator: ObservableObject {
 
 // MARK: - Main Discover View
 struct DiscoverView: View {
-    /// Discover's pages, in toolbar order, labeled by name in the toggle pill: Now (your
-    /// current projects and openings for your profile style — see NowView.swift), then
-    /// the two scrolling feeds. The event calendar isn't one of these — it's a floating
+    /// Discover's pages, in toolbar order, labeled by name in the toggle pill: the two
+    /// scrolling feeds. The event calendar isn't one of these — it's a floating
     /// button over the feeds that takes over the page (see `showCalendar`).
     enum DiscoverCategory: String, CaseIterable, Identifiable {
-        case now = "Now"
         case projects = "Projects"
         case events = "Events"
 
         var id: String { rawValue }
     }
 
-    /// Discover opens on Now, the first page in the toggle.
-    @State private var selection: DiscoverCategory = .now
+    /// Discover opens on Projects, the first page in the toggle.
+    @State private var selection: DiscoverCategory = .projects
 
     /// Presents the event calendar as its own page, from the floating calendar button
     /// in the bottom-right corner of either feed.
@@ -94,7 +92,7 @@ struct DiscoverView: View {
     /// The toggle's halves use the shared toolbar button metrics at full width so the
     /// "Projects" / "Events" labels fit. Height matches the Home pill. `toggleLabelScale`
     /// sizes the label text against that same shared font size.
-    /// Slightly under 1 so three pages (Now | Projects | Events) leave the wordmark room.
+    /// Slightly under 1 so the pages (Projects | Events) leave the wordmark room.
     private var toggleWidthScale: CGFloat { 0.92 }
     private var toggleLabelScale: CGFloat { 0.9 }
     /// Gap between the Projects and Events halves. Negative pulls the two labels
@@ -344,17 +342,14 @@ struct DiscoverView: View {
                 topBar
                 Group {
                     switch selection {
-                    case .now:      NowView()
                     case .projects: projectsView
                     case .events:   eventsView
                     }
                 }
                 // The calendar floats over whichever feed is showing, in the same spot
-                // as Network's compose button. Not on Now, which isn't a feed.
+                // as Network's compose button.
                 .overlay(alignment: .bottomTrailing) {
-                    if selection != .now {
-                        calendarButton
-                    }
+                    calendarButton
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -685,8 +680,6 @@ struct DiscoverView: View {
     /// land on its separator, exactly as it does on the very first appearance.
     private func resetFeedPosition(for category: DiscoverCategory) {
         switch category {
-        case .now:
-            break
         case .projects:
             projectsScrollPosition = ScrollPosition(id: Self.upcomingProjectsSectionID, anchor: .top)
         case .events:

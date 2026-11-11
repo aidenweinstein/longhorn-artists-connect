@@ -2,29 +2,20 @@
 //  SchoolSelectionView.swift
 //  Longhorn Artists Connect
 //
-//  Onboarding page shown after "I am a Student": the user picks their school,
-//  which sets `profileModel.school` and continues down the student path.
+//  Onboarding page shown after Create Account or Sign In: the user picks their
+//  school from `OnboardingSchool.all`. `OnboardingView` decides what's next.
 //
 
 import SwiftUI
 
 struct SchoolSelectionView: View {
-    @ObservedObject var profileModel: UserProfileModel
-
-    /// The onboarding page index, owned by `OnboardingView`.
-    @Binding var currentPage: Int
-
-    /// The only schools offered for now. Each button wears its own school's colors.
-    private let schools = [
-        UserProfileModel.utSchoolName,
-        UserProfileModel.berkeleySchoolName
-    ]
+    let onSelect: (OnboardingSchool) -> Void
 
     var body: some View {
         // The buttons are centered in the full page; the header is overlaid at
         // the top so it doesn't push them off-center.
         VStack(spacing: 16) {
-            ForEach(schools, id: \.self) { school in
+            ForEach(OnboardingSchool.all) { school in
                 schoolButton(school)
             }
         }
@@ -41,18 +32,12 @@ struct SchoolSelectionView: View {
     }
 
     /// A button for one school, in that school's colors (see SchoolColors.swift).
-    /// Every school takes the same student path.
-    private func schoolButton(_ school: String) -> some View {
-        let theme = SchoolTheme.forSchool(school)
+    private func schoolButton(_ school: OnboardingSchool) -> some View {
+        let theme = SchoolTheme.forSchool(school.name)
         return Button {
-            profileModel.school = school
-            withAnimation {
-                // Next: Artist / Enthusiast (UserTypePage), which sets
-                // the account flags and continues down that kind's path.
-                currentPage = 6
-            }
+            onSelect(school)
         } label: {
-            Text(school)
+            Text(school.shortName)
                 .font(.headline)
                 .foregroundStyle(theme.text)
                 .multilineTextAlignment(.center)
@@ -65,11 +50,7 @@ struct SchoolSelectionView: View {
 }
 
 #Preview {
-    @Previewable @State var currentPage = 5
     NavigationStack {
-        SchoolSelectionView(
-            profileModel: UserProfileModel(),
-            currentPage: $currentPage
-        )
+        SchoolSelectionView(onSelect: { _ in })
     }
 }

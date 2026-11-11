@@ -25,8 +25,18 @@ struct OrganizationsView: View {
         NavigationStack {
             Group {
                 if store.organizations.isEmpty {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if store.isLoading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        // Every org in the container is UT Austin's today, so a user
+                        // scoped to another school lands here rather than on a spinner.
+                        ContentUnavailableView(
+                            "No Organizations Yet",
+                            systemImage: "building.2",
+                            description: Text("Student organizations at your school will appear here.")
+                        )
+                    }
                 } else {
                     // Uniform compact cards (all the same height), scrolling list.
                     ScrollView {
@@ -85,7 +95,7 @@ private let previewOrganizations: [Organization] = [
 
 /// Main Organizations page (the list reached from the Discover top bar).
 #Preview("Organizations — List") {
-    OrganizationStore.shared.organizations = previewOrganizations
+    OrganizationStore.shared.allOrganizations = previewOrganizations
     return OrganizationsView()
 }
 

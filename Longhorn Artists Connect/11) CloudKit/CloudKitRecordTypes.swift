@@ -161,14 +161,14 @@ enum CloudKitRecordTypes {
 // | ModerationAction      | yes         | yes        |                                 |
 // | ModerationEdit        | yes         | yes        | being phased out                |
 // | Flag                  | NO          | NO         | reports fail silently until created |
-// | UserProfile           | yes         | yes        |                                 |
+// | UserProfile           | yes         | yes        | `directoryGroups` (STRING, added 2026-11-08; moderator-set "Actor,Filmmaker,Musician" for the directory pages) missing in both until first written in Dev + deployed |
 // | Verification          | server-owned| server-owned| Authenticated = Read, writes reserved to the service key |
 // | Script                | NO          | NO         | added 2026-09-29; fields listed on `ScriptManager` |
 // | Organization          | yes         | yes        |                                 |
 // | OrgContentLink        | yes         | yes        |                                 |
 // | Conversation          | yes         | yes        |                                 |
 // | Message               | yes         | yes        |                                 |
-// | Connection            | NO          | NO         | added 2026-10-23; fields on `ConnectionsManager`. Connect buttons fail silently until created |
+// | Connection            | yes         | deploy?    | added 2026-10-23, created in Dev 2026-11-10; fields on `ConnectionsManager`. Deploy schema to Production before TestFlight |
 // | CreativeProfile       | NO          | NO         | added 2026-11-04; details (STRING), headshot (ASSET), updatedAt (DATE). Needs recordName QUERYABLE. Until created, Edit details saves locally only |
 //
 // Cross-service lists that must stay in step with `liveSubmissions` above:

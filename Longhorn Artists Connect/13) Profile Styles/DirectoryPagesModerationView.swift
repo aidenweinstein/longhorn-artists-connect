@@ -34,6 +34,18 @@ struct ModeratorDirectorySection: View {
                     }
                 }
             }
+
+            // Enthusiasts aren't in the directory; this is the only place they're listed.
+            NavigationLink {
+                EnthusiastListView()
+            } label: {
+                HStack {
+                    Label("Enthusiasts", systemImage: "popcorn")
+                    Spacer()
+                    Text("\(people.enthusiasts.count)")
+                        .foregroundStyle(.secondary)
+                }
+            }
         } header: {
             Text("Directory")
         } footer: {
@@ -43,6 +55,36 @@ struct ModeratorDirectorySection: View {
 
     private func count(for group: CreativeGroup) -> Int {
         people.allUsers.filter { $0.directoryGroups.contains(group.rawValue) }.count
+    }
+}
+
+// MARK: - Enthusiasts
+
+/// Moderator-only list of enthusiast accounts, which are hidden from the
+/// directory and from everyone else.
+struct EnthusiastListView: View {
+    @ObservedObject private var people = UserProfileManager.shared
+
+    private var sorted: [DirectoryUser] {
+        people.enthusiasts.sorted { $0.displayName.lowercased() < $1.displayName.lowercased() }
+    }
+
+    var body: some View {
+        List {
+            if sorted.isEmpty {
+                Text("No enthusiasts yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(sorted) { user in
+                    Text(user.displayName)
+                }
+            }
+        }
+        .navigationTitle("Enthusiasts")
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable {
+            await people.fetchAllUsers(forceRefresh: true)
+        }
     }
 }
 

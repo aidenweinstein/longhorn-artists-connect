@@ -126,7 +126,7 @@ The bulk of the value. No app changes, no schema changes.
 | `/u/[userRecordName]` | Profile + portfolio, honoring `portfolioOrder`, with the sections the person's tags unlock (actor sheet / filmography / discography with streaming links) | `E) PortfolioView.swift`, `13) Profile Styles/StyledProfileSection.swift` |
 | `/studios`, `/studios/[id]` | Organizations | `Collective Studios.swift`, `E3) StudioPageView.swift` |
 | `/now` | The viewer's current projects and openings for their tag groups | `13) Profile Styles/NowView.swift` |
-| `/people` | Everyone / Actors / Filmmakers / Musicians tabs — large photo cards, by tag; the app's directory shows the same people | `7) NetworkPage/NetworkDirectoryView.swift`, `13) Profile Styles/DirectoryPeopleGrid.swift` |
+| `/people` | Everyone / Actors / Filmmakers / Musicians tabs. Everyone is the plain list; the three group pages are large photo cards listing only people moderators chose (`UserProfile.directoryGroups`, "Actor,Filmmaker,Musician") — not by tag. Per-page filters: actors by gender/age/height/hair/eyes, filmmakers by role, musicians by instrument/genre (`DirectoryFilters.swift`) | `7) NetworkPage/NetworkDirectoryView.swift`, `13) Profile Styles/DirectoryPeopleGrid.swift` |
 
 Explicitly **out of scope for Phase 1**: Share (uploads), Network (DMs), Moderate.
 

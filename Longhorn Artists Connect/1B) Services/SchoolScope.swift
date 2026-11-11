@@ -75,11 +75,14 @@ enum SchoolScope {
     /// professionals. Neither can post, and scoping them to a school they don't
     /// have would leave them with an empty app, so they see every school.
     ///
-    /// Enthusiasts are guest accounts too, but they picked a school during
-    /// onboarding and see only that school's work.
+    /// Enthusiasts are guest accounts too. Those created before 2026-11 picked
+    /// a school and see only that school's work; newer ones have no school and
+    /// see everything.
     static var isUnscopedAccount: Bool {
         let defaults = UserDefaults.standard
-        let isSchoolessGuest = defaults.bool(forKey: "isGuestUser") && AccountKind.current != .enthusiast
+        let hasSchool = !(defaults.string(forKey: "userSchool") ?? "").isEmpty
+        let isSchoolessGuest = defaults.bool(forKey: "isGuestUser")
+            && (AccountKind.current != .enthusiast || !hasSchool)
         return isSchoolessGuest || defaults.bool(forKey: "isIndustryProfessional")
     }
 
@@ -226,7 +229,9 @@ enum SchoolScope {
         ("USC", "usc"),
         ("Cal Poly SLO", "calpoly-slo"),
         ("NYU", "nyu"),
-        ("DePaul", "depaul")
+        ("DePaul", "depaul"),
+        ("BU", "bu"),
+        ("Texas A&M", "tamu")
     ]
 
     private static let slugsByDisplayName: [String: String] =

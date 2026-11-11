@@ -2,10 +2,12 @@
 //  DirectoryPeopleGrid.swift
 //  Longhorn Artists Connect
 //
-//  The Network directory's four tabs — Everyone, Actors, Filmmakers, Musicians — and
-//  the large-photo grid each one shows: two cards across on iPhone, three on wider
-//  screens, like the website's people pages. Membership in the three group tabs is
-//  by role tag (see CreativeGroup.swift); nothing is curated by hand.
+//  The Network directory's four tabs — Everyone, Actors, Filmmakers, Musicians.
+//  Everyone is the plain directory list. The three group tabs are the website-style
+//  people pages: a large-photo grid, two cards across on iPhone, three on wider
+//  screens. Who appears on a group page is chosen by moderators
+//  (`DirectoryUser.directoryGroups`, set from Moderate › Users or by long-pressing a
+//  person in the directory in Moderator Mode) — not by the person's own tags.
 //
 
 import SwiftUI
@@ -39,10 +41,50 @@ enum DirectoryTab: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether a directory user belongs on this tab.
+    /// Whether a directory user belongs on this tab: everyone is on Everyone; the
+    /// group pages list only the people a moderator has put there.
     func includes(_ user: DirectoryUser) -> Bool {
         guard let group else { return true }
-        return CreativeGroup.groups(forTagNames: user.userTypes).contains(group)
+        return user.directoryGroups.contains(group.rawValue)
+    }
+}
+
+// MARK: - Moderator Controls
+
+/// Moderator-only toggles for which directory pages list a person. Dropped into a
+/// context menu on the person's row or card (Moderate › Users, and the directory in
+/// Moderator Mode). Each change is written straight to their `UserProfile` record.
+struct DirectoryGroupToggles: View {
+    let user: DirectoryUser
+    /// Called with a user-facing message when CloudKit refuses the change.
+    var onError: (String) -> Void = { _ in }
+
+    @ObservedObject private var people = UserProfileManager.shared
+
+    /// The live entry, so the checkmarks update as soon as a change lands.
+    private var current: Set<String> {
+        Set(people.findUser(byID: user.id)?.directoryGroups ?? user.directoryGroups)
+    }
+
+    var body: some View {
+        Section("Directory pages") {
+            ForEach(CreativeGroup.allCases) { group in
+                Toggle(isOn: Binding(
+                    get: { current.contains(group.rawValue) },
+                    set: { isOn in
+                        var groups = current
+                        if isOn { groups.insert(group.rawValue) } else { groups.remove(group.rawValue) }
+                        Task {
+                            if let message = await people.setDirectoryGroups(user, groups: groups) {
+                                onError(message)
+                            }
+                        }
+                    }
+                )) {
+                    Label(group.plural, systemImage: group.symbol)
+                }
+            }
+        }
     }
 }
 
@@ -52,6 +94,9 @@ enum DirectoryTab: String, CaseIterable, Identifiable {
 struct DirectoryPeopleGrid: View {
     let users: [DirectoryUser]
     let tab: DirectoryTab
+    /// Moderator Mode: long-pressing a card offers the directory-page toggles.
+    var moderatorControls = false
+    var onModerationError: (String) -> Void = { _ in }
     let onSelect: (DirectoryUser) -> Void
 
     @ObservedObject private var creative = CreativeProfileStore.shared
@@ -72,6 +117,11 @@ struct DirectoryPeopleGrid: View {
                 ) {
                     onSelect(user)
                 }
+                .contextMenu {
+                    if moderatorControls {
+                        DirectoryGroupToggles(user: user, onError: onModerationError)
+                    }
+                }
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
@@ -90,13 +140,14 @@ struct DirectoryPeopleGrid: View {
         let details = creative.profile(forUserID: user.id)?.details
         switch tab {
         case .actors:
-            if let actor = details?.actor {
-                let line = [actor.ageRangeText, actor.gender, actor.basedIn].filter { !$0.isEmpty }.joined(separator: " · ")
-                if !line.isEmpty { return line }
+            // Age range · gender · height · hair · eyes, whichever they've filled in.
+            if let actor = details?.actor, !actor.cardFacts.isEmpty {
+                return actor.cardFacts.joined(separator: " · ")
             }
         case .musicians:
             if let musician = details?.musician {
-                let line = [musician.artistName, musician.genres].filter { !$0.isEmpty }.joined(separator: " · ")
+                let line = [musician.artistName, musician.genres, musician.instruments]
+                    .filter { !$0.isEmpty }.joined(separator: " · ")
                 if !line.isEmpty { return line }
             }
         case .filmmakers:
@@ -160,10 +211,11 @@ struct DirectoryPersonCard: View {
                         .font(.caption)
                 }
                 if !subtitle.isEmpty {
+                    // Three lines: an actor's age · gender · height · hair · eyes needs the room.
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(3)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

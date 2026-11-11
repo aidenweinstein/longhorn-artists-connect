@@ -25,6 +25,10 @@ struct Organization: Identifiable, Hashable {
     var description: String
     var profileImageData: Data?
     var order: Int
+    /// Registry slug of the school this org belongs to (see `SchoolScope`). Every
+    /// org in the container today is a UT Austin org, so a record without the field
+    /// defaults to `SchoolScope.legacyDefault`; only orgs at another school need it set.
+    var schoolID: String = SchoolScope.legacyDefault
 
     /// The fixed set of sections this org shows.
     var sections: [OrgSection] { OrgSection.sections(for: id) }
@@ -340,8 +344,23 @@ final class OrgContentStore: ObservableObject {
 final class OrganizationStore: ObservableObject {
     static let shared = OrganizationStore()
 
-    @Published var organizations: [Organization] = []
+    /// Every org in CloudKit, regardless of school. Views should read `organizations`.
+    @Published var allOrganizations: [Organization] = []
     @Published var isLoading = true
+
+    /// The orgs that belong in this user's app: `allOrganizations` scoped to the
+    /// schools they see, the same way `SubmissionStore` scopes posts. The orgs in the
+    /// container are all UT Austin's, so a Berkeley or Michigan user sees none of
+    /// them here; an unscoped account (guest, industry professional) sees every org.
+    ///
+    /// Computed rather than stored so it tracks a moderator's school pick, which
+    /// rebuilds the tabs (`ContentView`) and re-reads this on the next render.
+    var organizations: [Organization] {
+        let visibleSchoolIDs = SchoolScope.visibleSchoolIDs
+        return allOrganizations.filter {
+            SchoolScope.isVisible(schoolID: $0.schoolID, in: visibleSchoolIDs)
+        }
+    }
 
     private let database = CKContainer.default().publicCloudDatabase
     private static let recordType = "Organization"
@@ -406,12 +425,12 @@ final class OrganizationStore: ObservableObject {
             let missing = Self.seeds.enumerated().filter { !existing.contains($0.element.slug) }
             orgs.append(contentsOf: await create(missing))
 
-            organizations = Self.backfillingSeeds(orgs)
+            allOrganizations = Self.backfillingSeeds(orgs)
         } catch {
             // Most commonly the record type doesn't exist yet (first launch) — seed it.
             print("ℹ️ Organization fetch failed (\(error.localizedDescription)); seeding.")
             let created = await create(Array(Self.seeds.enumerated()))
-            organizations = Self.backfillingSeeds(created)
+            allOrganizations = Self.backfillingSeeds(created)
         }
     }
 
@@ -465,12 +484,17 @@ final class OrganizationStore: ObservableObject {
         if let asset = record["profileImage"] as? CKAsset, let url = asset.fileURL {
             imageData = try? Data(contentsOf: url)
         }
+        // Unstamped records are UT Austin's — the only school with orgs today. The
+        // field is read but never written here, so the deployed schema is untouched
+        // until an org at another school actually needs it.
+        let schoolID = (record[SchoolScope.fieldKey] as? String).flatMap { $0.isEmpty ? nil : $0 }
         return Organization(
             id: slug,
             name: name,
             description: record["orgDescription"] as? String ?? "",
             profileImageData: imageData,
-            order: (record["order"] as? Int) ?? 0
+            order: (record["order"] as? Int) ?? 0,
+            schoolID: schoolID ?? SchoolScope.legacyDefault
         )
     }
 }

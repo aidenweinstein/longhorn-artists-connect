@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS pending_verifications (
     email_normalized  TEXT NOT NULL,
     email_hash        TEXT NOT NULL,
     code_hash         TEXT NOT NULL,       -- HMAC-SHA256(code, CODE_PEPPER)
-    school_id         TEXT NOT NULL,
+    school_id         TEXT NOT NULL,       -- '' for enthusiast (any-email) verifications
+    domain_kind       TEXT NOT NULL DEFAULT 'student',  -- student | staff | enthusiast
     user_record_name  TEXT NOT NULL,       -- claimed CloudKit user; proven at confirm
     nonce             TEXT NOT NULL,       -- ownership proof, see README
     attempts          INTEGER NOT NULL DEFAULT 0,
@@ -128,6 +129,12 @@ CREATE INDEX IF NOT EXISTS idx_findings_reason ON sweep_findings(reason);
 --
 --   wrangler d1 execute lac-verification --remote \
 --     --command "ALTER TABLE sweep_findings ADD COLUMN reason TEXT NOT NULL DEFAULT 'creator-unverified'"
+--
+-- Likewise for `pending_verifications.domain_kind` (added for professor and
+-- enthusiast sign-ups):
+--
+--   wrangler d1 execute lac-verification --remote \
+--     --command "ALTER TABLE pending_verifications ADD COLUMN domain_kind TEXT NOT NULL DEFAULT 'student'"
 
 -- ---------------------------------------------------------------------------
 -- People pages on the website (Filmmakers, Actors, Musicians). Hand-picked by

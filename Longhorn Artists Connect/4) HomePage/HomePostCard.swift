@@ -23,16 +23,25 @@ struct HomePostCard: View {
     /// never synced to the feed.
     @State private var filmConfirmedNoVideo = false
     @State private var thumbnailImage: UIImage? // Cache the image
+    /// The thumbnail's width ÷ height read from the image header (no decode) the moment
+    /// the card is built, so the media frame is the right height on its very first
+    /// frame. Without this every card opened at 16:9 and snapped to its real shape once
+    /// the async decode landed — invisible for films (their posters are 16:9) but a
+    /// visible jump for event flyers and project covers, which shoved the whole feed
+    /// below them as they scrolled in.
+    @State private var headerAspect: CGFloat?
     /// True when the thumbnail's bottom-left corner (where the Collective logo sits) is
     /// close to white, so the white logo would be hard to see and the black one is used.
     @State private var collectiveCornerIsLight = false
     /// Inline preview: a film/reel's video plays (with sound, looping) in place of the
     /// thumbnail — or a music post's track plays behind its album art — after the
-    /// card has been scrolled mostly into view for 1 s (YouTube-style autoplay) or,
-    /// on pointer devices, after the pointer rests on it for 1.5 s.
+    /// card has been the one nearest the middle of the feed for 1 s (see
+    /// `FeedAutoplayCoordinator`) or, on pointer devices, after the pointer rests on
+    /// it for 1.5 s.
     @State private var preview = HoverPreviewController()
-    /// True while enough of the thumbnail is on screen to autoplay. Kept so the
-    /// preview can be re-armed when the detail sheet closes over a still-visible card.
+    /// True while enough of the thumbnail is on screen for the card to be eligible
+    /// to autoplay. Used to resume a system-paused preview when the app returns to
+    /// the foreground.
     @State private var isMostlyVisible = false
     @Environment(\.scenePhase) private var scenePhase
     /// The width to lay the thumbnail out at until the card's real width has been
@@ -55,11 +64,24 @@ struct HomePostCard: View {
     /// Which carousel page is showing; 0 is the thumbnail.
     @State private var galleryIndex = 0
 
-    /// The thumbnail's natural aspect ratio (width ÷ height); falls back to 16:9 before
-    /// the image loads or for the gradient placeholder.
+    init(post: Submission, showTypeIcon: Bool, estimatedWidth: CGFloat = UIScreen.main.bounds.width) {
+        self.post = post
+        self.showTypeIcon = showTypeIcon
+        self.estimatedWidth = estimatedWidth
+        // Header-only read (a few microseconds, no pixel decode) so the first layout
+        // pass already knows the media's shape. See `headerAspect`.
+        _headerAspect = State(initialValue: VideoAspectCache.thumbnailAspect(post.thumbnailData))
+    }
+
+    /// The thumbnail's natural aspect ratio (width ÷ height): the decoded image's if it
+    /// has landed, else the shape read from the image header, else 16:9 for the
+    /// gradient placeholder when there's no thumbnail at all.
     private var thumbnailAspect: CGFloat {
         if let img = thumbnailImage, img.size.width > 0, img.size.height > 0 {
             return img.size.width / img.size.height
+        }
+        if let headerAspect, headerAspect > 0 {
+            return headerAspect
         }
         return 16.0 / 9.0
     }
@@ -285,13 +307,21 @@ struct HomePostCard: View {
                     guard canHoverPreview else { return }
                     preview.hoverChanged(hovering, post: post)
                 }
-                // Scroll autoplay: once most of the thumbnail has been on screen for
-                // 1 s the media plays inline (with sound, looping); scrolling it away
-                // stops it. Only one card plays at a time — the one most recently reached.
-                .onScrollVisibilityChange(threshold: HoverPreviewController.autoplayVisibilityThreshold) { visible in
-                    isMostlyVisible = visible
-                    guard canHoverPreview, !showProjectDetail else { return }
-                    preview.scrollVisibilityChanged(visible, post: post)
+                // Scroll autoplay: the previewable card nearest the middle of the feed
+                // plays inline (with sound, looping) once it has held the center for
+                // 1 s; as the feed scrolls and a different card becomes the centered
+                // one, it takes over and this one stops. Each visible card reports
+                // where its media sits on every scroll frame, and the coordinator picks.
+                .onGeometryChange(for: FeedAutoplayCoordinator.Placement.self) { proxy in
+                    FeedAutoplayCoordinator.Placement(mediaSize: proxy.size,
+                                                      viewport: proxy.bounds(of: .scrollView))
+                } action: { placement in
+                    isMostlyVisible = FeedAutoplayCoordinator.isEligible(placement)
+                    guard canHoverPreview else {
+                        FeedAutoplayCoordinator.shared.remove(post.id)
+                        return
+                    }
+                    FeedAutoplayCoordinator.shared.update(post, placement: placement, controller: preview)
                 }
             }
             .buttonStyle(.plain)
@@ -308,17 +338,20 @@ struct HomePostCard: View {
                 FeedVideoPreloader.shared.preload(post)
             }
             .onDisappear {
+                FeedAutoplayCoordinator.shared.remove(post.id)
                 preview.stop()
                 FeedVideoPreloader.shared.cancelPreload(for: post.id)
             }
-            // Opening the post hands playback to the detail view's own player; when
-            // the sheet closes over a card that's still mostly on screen, autoplay
-            // re-arms (the visibility callback won't fire again on its own).
+            // Opening the post hands playback to the detail view's own player, and
+            // pauses feed autoplay so nothing plays under the sheet; when it closes,
+            // the coordinator re-picks the centered card (the geometry callback won't
+            // fire again on its own while the feed hasn't moved).
             .onChange(of: showProjectDetail) { _, isOpen in
                 if isOpen {
+                    FeedAutoplayCoordinator.shared.setSuspended(true)
                     preview.stop()
-                } else if isMostlyVisible, canHoverPreview {
-                    preview.scrollVisibilityChanged(true, post: post)
+                } else {
+                    FeedAutoplayCoordinator.shared.setSuspended(false)
                 }
             }
             // iOS pauses the player when the app leaves the foreground; pick the
@@ -335,6 +368,12 @@ struct HomePostCard: View {
             // never flicker away.
             .task(id: post.thumbnailData) {
                 guard let thumbnailData = post.thumbnailData else { return }
+                // Thumbnail data that arrives after the card was built (a CloudKit sync
+                // landing on a recycled cell): size the frame from the header right now,
+                // in the same frame, rather than waiting on the decode below.
+                if let aspect = VideoAspectCache.thumbnailAspect(thumbnailData) {
+                    headerAspect = aspect
+                }
                 let decoded = await Task.detached(priority: .userInitiated) {
                     UIImage(data: thumbnailData)
                 }.value
@@ -420,20 +459,13 @@ struct HomePostCard: View {
                     }
                     .buttonStyle(.plain)
 
-                    // Top-aligned so the action buttons always sit at the top of this
-                    // section, directly under the title. The left column reserves the
-                    // buttons' height so the "Directed by" credit still lands on the same
-                    // row as the year/studio credit under the buttons on the right.
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Color.clear
-                                .frame(height: actionButtonRowHeight)
-
-                            // The single credit under the title — one rule per post type
-                            // (see `creditLine`), e.g. "Directed by …" or "Shot by …".
-                            if let credit = creditLine {
-                                creditLineView(credit)
-                            }
+                    // Bottom-aligned so the "Directed by" credit on the left lands on the
+                    // same row as the year/studio credit under the buttons on the right.
+                    HStack(alignment: .bottom) {
+                        // The single credit under the title — one rule per post type
+                        // (see `creditLine`), e.g. "Directed by …" or "Shot by …".
+                        if let credit = creditLine {
+                            creditLineView(credit)
                         }
 
                         Spacer()
@@ -467,7 +499,7 @@ struct HomePostCard: View {
                                         .foregroundStyle(iconColor)
                                 }
                             }
-                            .frame(height: actionButtonRowHeight)
+                            .frame(height: 22)
 
                             // Release year (and studio, if any) — same style as the director
                             // credit, mirrored right. e.g. "2025 • Collective".
@@ -501,10 +533,6 @@ struct HomePostCard: View {
             CollectionPickerView(post: post)
         }
     }
-
-    /// Height of the like / save / send row under the title. The credit column on the
-    /// left reserves the same height so both credits share a baseline row.
-    private let actionButtonRowHeight: CGFloat = 22
 
     // MARK: - Credit line
 

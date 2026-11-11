@@ -17,6 +17,7 @@ struct ModerateView_3_1: View {
                 if store.approvedSubmissions.isEmpty {
                     List {
                         ModeratorSchoolsSection()
+                        ModeratorDirectorySection()
                         analyticsSection
                         Text("No posts on the platform.")
                             .foregroundStyle(.secondary)
@@ -25,6 +26,7 @@ struct ModerateView_3_1: View {
                 } else {
                     List {
                         ModeratorSchoolsSection()
+                        ModeratorDirectorySection()
                         analyticsSection
                         ForEach(sortedSubmissions) { submission in
                             SubmissionModerateCard(
@@ -363,12 +365,33 @@ struct UsersModerationView: View {
                                             .font(.caption2)
                                             .foregroundStyle(Color.brandOrange)
                                     }
+                                    // Which directory pages (Actors / Filmmakers / Musicians)
+                                    // this person is listed on. Changed from the context menu.
+                                    if !user.directoryGroups.isEmpty {
+                                        HStack(spacing: 4) {
+                                            ForEach(CreativeGroup.ordered(Set(user.directoryGroups.compactMap(CreativeGroup.init(rawValue:))))) { group in
+                                                Label(group.plural, systemImage: group.symbol)
+                                                    .font(.caption2.weight(.semibold))
+                                                    .padding(.horizontal, 6)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.blue.opacity(0.12))
+                                                    .foregroundStyle(.blue)
+                                                    .clipShape(Capsule())
+                                            }
+                                        }
+                                    }
                                     Text(user.id)
                                         .font(.caption2)
                                         .foregroundStyle(.tertiary)
                                         .textSelection(.enabled)
                                 }
                                 .padding(.vertical, 2)
+                                // Long-press: choose which directory pages list this person.
+                                .contextMenu {
+                                    DirectoryGroupToggles(user: user) { message in
+                                        errorMessage = message
+                                    }
+                                }
                                 .swipeActions(edge: .leading) {
                                     Button {
                                         Task {
@@ -393,7 +416,7 @@ struct UsersModerationView: View {
                                 }
                             }
                         } footer: {
-                            Text("\(sortedUsers.count) profile\(sortedUsers.count == 1 ? "" : "s"). Swipe left to delete, swipe right to move a user to/from Guest. Guest profiles are hidden from the directory.")
+                            Text("\(sortedUsers.count) profile\(sortedUsers.count == 1 ? "" : "s"). Swipe left to delete, swipe right to move a user to/from Guest. Guest profiles are hidden from the directory. Long-press a person to choose which directory pages (Actors, Filmmakers, Musicians) list them — everyone is on Everyone regardless.")
                         }
 
                         Section("Maintenance") {
@@ -456,7 +479,7 @@ struct UsersModerationView: View {
                     secondaryButton: .cancel()
                 )
             }
-            .alert("Couldn't Delete", isPresented: Binding(
+            .alert("Couldn't Update", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
             )) {

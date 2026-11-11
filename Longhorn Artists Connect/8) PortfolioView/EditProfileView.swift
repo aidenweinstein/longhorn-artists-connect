@@ -55,6 +55,13 @@ struct EditProfileView: View {
     @State private var isSendingCode = false
     @State private var isConfirmingCode = false
 
+    // Tag-unlocked details (see CreativeGroup.swift): an actor's Actors Access sheet
+    // and headshot, a musician's streaming links, a filmmaker's specialties. Their
+    // Form sections appear below Tags the moment a matching tag is picked, and are
+    // saved together with the rest of the profile. Loaded from the store on appear.
+    @State private var creativeDetails = CreativeDetails()
+    @State private var creativeHeadshot: UIImage?
+
     private let availableYears = Array(2016...2036).map { String($0) }
 
     private var verification: StudentVerificationManager { .shared }
@@ -448,11 +455,12 @@ struct EditProfileView: View {
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
     }
 
-    /// Tags picker row.
+    /// Tags picker row, showing the current tags so it's clear which extra sections
+    /// below they unlock.
     @ViewBuilder
     private var tagsSection: some View {
         // Tags
-        Section("Tags") {
+        Section {
             Button {
                 showTagsPicker = true
             } label: {
@@ -460,8 +468,15 @@ struct EditProfileView: View {
                     Text("Tags")
                         .foregroundStyle(.primary)
                     Spacer()
-                    Text("Add")
-                        .foregroundStyle(Color.utBrandOrange)
+                    if tempUserTypes.isEmpty {
+                        Text("Add")
+                            .foregroundStyle(Color.utBrandOrange)
+                    } else {
+                        Text(selectedTagsSummary)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                     Image(systemName: "chevron.right")
                         .font(.caption)
                         .foregroundStyle(Color.utBrandOrange)
@@ -469,8 +484,28 @@ struct EditProfileView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+        } header: {
+            Text("Tags")
+        } footer: {
+            Text("Actor, Musician and film tags add more fields below.")
         }
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+    }
+
+    /// The selected tags in the order they're defined, e.g. "Actor, Director".
+    private var selectedTagsSummary: String {
+        UserType.allCases.map(\.rawValue).filter { tempUserTypes.contains($0) }.joined(separator: ", ")
+    }
+
+    /// Whether any selected tag unlocks extra fields.
+    private var hasCreativeGroups: Bool {
+        !CreativeGroup.groups(forTagNames: Array(tempUserTypes)).isEmpty
+    }
+
+    /// Persists the tag-unlocked details alongside the rest of the profile.
+    private func saveCreativeDetails() {
+        guard hasCreativeGroups else { return }
+        CreativeProfileStore.shared.update(details: creativeDetails.normalizedForSave(), headshot: creativeHeadshot)
     }
 
     var body: some View {
@@ -484,6 +519,12 @@ struct EditProfileView: View {
                 } else {
                     academicSection
                     tagsSection
+                    // Appear and disappear live as tags are toggled.
+                    CreativeDetailsFormSections(
+                        tagNames: Array(tempUserTypes),
+                        details: $creativeDetails,
+                        headshot: $creativeHeadshot
+                    )
                 }
             }
             .navigationTitle("Edit Profile")
@@ -509,6 +550,8 @@ struct EditProfileView: View {
                 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        // Tag-unlocked details first; `onSave` writes the rest and dismisses.
+                        saveCreativeDetails()
                         onSave()
                     }
                     .fontWeight(.semibold)
@@ -523,6 +566,10 @@ struct EditProfileView: View {
         .interactiveDismissDisabled(false)
         .onAppear {
             onAppear()
+            // Start the tag-unlocked fields from what's saved, so reopening the
+            // sheet shows the current headshot, stats and links.
+            creativeDetails = CreativeProfileStore.shared.myDetails
+            creativeHeadshot = CreativeProfileStore.shared.myHeadshot
         }
         .onChange(of: selectedItem) { newItem in
             guard let newItem else { return }
