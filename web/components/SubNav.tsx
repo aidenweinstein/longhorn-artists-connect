@@ -29,7 +29,7 @@ const NETWORK_TABS: Tab[] = [
 ];
 
 const PORTFOLIO_TABS: Tab[] = [
-  // Edit profile and Profile style are buttons on the portfolio page itself.
+  // Edit profile is a button on the portfolio page itself.
   { href: "/portfolio", label: "Portfolio", also: ["/portfolio/edit", "/portfolio/style"] },
   { href: "/liked", label: "Liked" },
   { href: "/playlists", label: "Saved" },

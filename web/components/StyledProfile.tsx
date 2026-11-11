@@ -6,17 +6,24 @@ import type { Post } from "@/lib/mockContent";
 import {
   actorStats,
   creditsFor,
+  hasActorInfo,
+  hasFilmmakerInfo,
+  hasMusicianInfo,
   matchesPerson,
   musicianAvailability,
+  PROFILE_STYLES,
   type CreativeProfile,
+  type ProfileStyle,
 } from "@/lib/profileStyle";
 
 /*
- * The part of a portfolio that changes with the person's profile style, shown between
- * the header and their Work grid:
+ * The Actor Info, Filmmaker Info and Musician Info a person filled in under Edit
+ * profile, shown between the header and their Work grid:
  *   Actor      — like Actors Access: headshot beside the stats sheet, reel, resume, skills.
  *   Filmmaker  — like IMDb: filmography grouped by job, newest first, then a grid of stills.
  *   Musician   — like Spotify: upcoming shows, songs, albums & EPs.
+ * Their base profile type comes first and always shows in full; the other two show
+ * once something is filled in, without their empty lists.
  */
 
 const dayFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "America/Chicago" });
@@ -36,11 +43,7 @@ export function upcomingShowsFor(events: NexusEvent[], person: { name: string; p
   const names = [person.name, artistName].map((x) => x.trim().toLowerCase()).filter(Boolean);
   return events
     .filter((e) => (e.endsAt ?? e.startsAt ?? 0) >= now)
-    .filter(
-      (e) =>
-        matchesPerson(e.postedBy ?? "", e.postedByProfileID, person) ||
-        (e.lineup ?? []).some((l) => names.some((n) => l.toLowerCase().includes(n))),
-    )
+    .filter((e) => matchesPerson(e.postedBy ?? "", e.postedByProfileID, person) || (e.lineup ?? []).some((l) => names.some((n) => l.toLowerCase().includes(n))))
     .sort((a, b) => (a.startsAt ?? 0) - (b.startsAt ?? 0));
 }
 
@@ -63,29 +66,47 @@ export default function StyledProfile({
     if (!isOwn) return null;
     return (
       <div className="mt-8 rounded-2xl border border-dashed border-border p-6">
-        <p className="font-semibold">Choose your profile style</p>
-        <p className="mt-1 text-sm text-muted">Filmmaker, Actor or Musician. It decides how your profile looks and what Nexus recommends to you.</p>
-        <Link href="/portfolio/style" className="mt-3 inline-block rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110">
-          Choose style
+        <p className="font-semibold">Add your actor, filmmaker or musician info</p>
+        <p className="mt-1 text-sm text-muted">Fill in any of the three in Edit profile and it shows here.</p>
+        <Link
+          href="/portfolio/edit#actor-info"
+          className="mt-3 inline-block rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110"
+        >
+          Edit profile
         </Link>
       </div>
     );
   }
 
   const person = { name: account.name, profileID: account.profileID };
+  const d = creative.details;
+  const has: Record<ProfileStyle, boolean> = {
+    Actor: hasActorInfo(d.actor, creative.headshotUrl),
+    Filmmaker: hasFilmmakerInfo(d.filmmaker),
+    Musician: hasMusicianInfo(d.musician),
+  };
+  // Base type first, then whichever others are filled in.
+  const shown = [creative.style, ...PROFILE_STYLES.filter((s) => s !== creative.style && has[s])];
   return (
-    <div className="mt-8 space-y-10">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted">{creative.style}</p>
-        {isOwn && (
-          <Link href="/portfolio/style" className="text-sm font-semibold text-brand hover:underline">
-            Edit {creative.style.toLowerCase()} profile
-          </Link>
-        )}
-      </div>
-      {creative.style === "Actor" && <ActorProfile creative={creative} posts={posts} person={person} isOwn={isOwn} name={account.name} />}
-      {creative.style === "Filmmaker" && <FilmmakerProfile creative={creative} posts={posts} person={person} isOwn={isOwn} />}
-      {creative.style === "Musician" && <MusicianProfile creative={creative} posts={posts} person={person} events={events} isOwn={isOwn} />}
+    <div className="mt-8 space-y-12">
+      {shown.map((style) => {
+        const full = style === creative.style;
+        return (
+          <div key={style} className="space-y-10">
+            <div className="flex items-center justify-between gap-3 border-b border-border pb-2">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted">{style} Info</p>
+              {isOwn && (
+                <Link href={`/portfolio/edit#${style.toLowerCase()}-info`} className="text-sm font-semibold text-brand hover:underline">
+                  Edit
+                </Link>
+              )}
+            </div>
+            {style === "Actor" && <ActorProfile creative={creative} posts={posts} person={person} isOwn={isOwn} name={account.name} full={full} />}
+            {style === "Filmmaker" && <FilmmakerProfile creative={creative} posts={posts} person={person} isOwn={isOwn} full={full} />}
+            {style === "Musician" && <MusicianProfile creative={creative} posts={posts} person={person} events={events} isOwn={isOwn} full={full} />}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -94,7 +115,21 @@ type Person = { name: string; profileID: string };
 
 // MARK: - Actor (Actors Access)
 
-function ActorProfile({ creative, posts, person, isOwn, name }: { creative: CreativeProfile; posts: Post[]; person: Person; isOwn: boolean; name: string }) {
+function ActorProfile({
+  creative,
+  posts,
+  person,
+  isOwn,
+  name,
+  full,
+}: {
+  creative: CreativeProfile;
+  posts: Post[];
+  person: Person;
+  isOwn: boolean;
+  name: string;
+  full: boolean;
+}) {
   const a = creative.details.actor;
   const stats = actorStats(a);
   const reel = a.reelPostID ? posts.find((p) => p.id === a.reelPostID) : undefined;
@@ -110,7 +145,10 @@ function ActorProfile({ creative, posts, person, isOwn, name }: { creative: Crea
     lines.push({
       category: post.category === "performance" ? "Performance" : "Film",
       project: post.title,
-      role: acting.map((m) => m.credit.role).filter(Boolean).join(", "),
+      role: acting
+        .map((m) => m.credit.role)
+        .filter(Boolean)
+        .join(", "),
       company: director,
       year: year(post),
       href: `/post/${post.id}`,
@@ -118,7 +156,10 @@ function ActorProfile({ creative, posts, person, isOwn, name }: { creative: Crea
   }
   for (const c of a.resume) lines.push({ category: c.category, project: c.project, role: c.role, company: c.company, year: c.year });
   const order = ["Film", "Television", "Theatre", "Performance", "Commercial", "New Media", "Other"];
-  const categories = [...order.filter((c) => lines.some((l) => l.category === c)), ...[...new Set(lines.map((l) => l.category))].filter((c) => !order.includes(c))];
+  const categories = [
+    ...order.filter((c) => lines.some((l) => l.category === c)),
+    ...[...new Set(lines.map((l) => l.category))].filter((c) => !order.includes(c)),
+  ];
   const extras = [
     ["Special skills", a.specialSkills],
     ["Languages", a.languages],
@@ -185,47 +226,61 @@ function ActorProfile({ creative, posts, person, isOwn, name }: { creative: Crea
         </section>
       )}
 
-      <section>
-        <H>Resume</H>
-        {lines.length === 0 && (
-          <p className="text-sm text-muted">{isOwn ? "Roles you're credited for on Nexus appear here. Add others with Edit." : "No credits yet."}</p>
-        )}
-        <div className="space-y-6">
-          {categories.map((cat) => (
-            <div key={cat}>
-              <p className="mb-1 text-xs font-bold uppercase tracking-wider text-brand">{cat}</p>
-              <table className="w-full text-sm">
-                <tbody>
-                  {lines
-                    .filter((l) => l.category === cat)
-                    .map((l, i) => (
-                      <tr key={`${l.project}-${i}`} className="border-b border-border">
-                        <td className="w-[38%] py-2 pr-3 font-semibold">
-                          {l.href ? (
-                            <Link href={l.href} className="hover:underline">
-                              {l.project}
-                            </Link>
-                          ) : (
-                            l.project
-                          )}
-                        </td>
-                        <td className="w-[30%] py-2 pr-3">{l.role || "—"}</td>
-                        <td className="py-2 text-right text-muted">{[l.company, l.year].filter(Boolean).join(", ")}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
-        </div>
-      </section>
+      {(full || lines.length > 0) && (
+        <section>
+          <H>Resume</H>
+          {lines.length === 0 && (
+            <p className="text-sm text-muted">{isOwn ? "Roles you're credited for on Nexus appear here. Add others with Edit." : "No credits yet."}</p>
+          )}
+          <div className="space-y-6">
+            {categories.map((cat) => (
+              <div key={cat}>
+                <p className="mb-1 text-xs font-bold uppercase tracking-wider text-brand">{cat}</p>
+                <table className="w-full text-sm">
+                  <tbody>
+                    {lines
+                      .filter((l) => l.category === cat)
+                      .map((l, i) => (
+                        <tr key={`${l.project}-${i}`} className="border-b border-border">
+                          <td className="w-[38%] py-2 pr-3 font-semibold">
+                            {l.href ? (
+                              <Link href={l.href} className="hover:underline">
+                                {l.project}
+                              </Link>
+                            ) : (
+                              l.project
+                            )}
+                          </td>
+                          <td className="w-[30%] py-2 pr-3">{l.role || "—"}</td>
+                          <td className="py-2 text-right text-muted">{[l.company, l.year].filter(Boolean).join(", ")}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }
 
 // MARK: - Filmmaker (IMDb)
 
-function FilmmakerProfile({ creative, posts, person, isOwn }: { creative: CreativeProfile; posts: Post[]; person: Person; isOwn: boolean }) {
+function FilmmakerProfile({
+  creative,
+  posts,
+  person,
+  isOwn,
+  full,
+}: {
+  creative: CreativeProfile;
+  posts: Post[];
+  person: Person;
+  isOwn: boolean;
+  full: boolean;
+}) {
   const f = creative.details.filmmaker;
   const groups = new Map<string, { role: string; items: { post: Post; note: string }[] }>();
   // Screen work only: music credits belong on a musician's discography, not a filmography.
@@ -257,37 +312,39 @@ function FilmmakerProfile({ creative, posts, person, isOwn }: { creative: Creati
         </section>
       )}
 
-      <section>
-        <H>Filmography</H>
-        {sorted.length === 0 && <p className="text-sm text-muted">{isOwn ? "Everything you're credited on shows up here by job." : "No credits yet."}</p>}
-        <div className="space-y-6">
-          {sorted.map((g) => (
-            <div key={g.role}>
-              <p className="mb-1 flex items-baseline gap-2 border-b-2 border-brand pb-1">
-                <span className="text-lg font-semibold">{g.role}</span>
-                <span className="text-sm text-muted">
-                  {g.items.length} credit{g.items.length === 1 ? "" : "s"}
-                </span>
-              </p>
-              <ul>
-                {g.items.map(({ post, note }) => (
-                  <li key={post.id} className="flex items-baseline gap-4 border-b border-border py-2 text-sm">
-                    <span className="w-12 shrink-0 tabular-nums text-muted">{year(post) || "—"}</span>
-                    <span className="min-w-0">
-                      <Link href={`/post/${post.id}`} className="font-semibold text-brand hover:underline">
-                        {post.title}
-                      </Link>
-                      <span className="block text-xs text-muted">{[kind(post), note].filter(Boolean).join(" · ")}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </section>
+      {(full || sorted.length > 0) && (
+        <section>
+          <H>Filmography</H>
+          {sorted.length === 0 && <p className="text-sm text-muted">{isOwn ? "Everything you're credited on shows up here by job." : "No credits yet."}</p>}
+          <div className="space-y-6">
+            {sorted.map((g) => (
+              <div key={g.role}>
+                <p className="mb-1 flex items-baseline gap-2 border-b-2 border-brand pb-1">
+                  <span className="text-lg font-semibold">{g.role}</span>
+                  <span className="text-sm text-muted">
+                    {g.items.length} credit{g.items.length === 1 ? "" : "s"}
+                  </span>
+                </p>
+                <ul>
+                  {g.items.map(({ post, note }) => (
+                    <li key={post.id} className="flex items-baseline gap-4 border-b border-border py-2 text-sm">
+                      <span className="w-12 shrink-0 tabular-nums text-muted">{year(post) || "—"}</span>
+                      <span className="min-w-0">
+                        <Link href={`/post/${post.id}`} className="font-semibold text-brand hover:underline">
+                          {post.title}
+                        </Link>
+                        <span className="block text-xs text-muted">{[kind(post), note].filter(Boolean).join(" · ")}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
-      {stills.length > 0 && (
+      {full && stills.length > 0 && (
         <section>
           <H>Stills</H>
           <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
@@ -312,17 +369,17 @@ function MusicianProfile({
   person,
   events,
   isOwn,
+  full,
 }: {
   creative: CreativeProfile;
   posts: Post[];
   person: Person;
   events: NexusEvent[];
   isOwn: boolean;
+  full: boolean;
 }) {
   const m = creative.details.musician;
-  const releases = posts
-    .filter((p) => p.category === "music")
-    .sort((a, b) => (year(b) || "0").localeCompare(year(a) || "0"));
+  const releases = posts.filter((p) => p.category === "music").sort((a, b) => (year(b) || "0").localeCompare(year(a) || "0"));
   const isRecord = (p: Post) => /^(ep|album)$/i.test(p.details?.kindLabel ?? "");
   const songs = releases.filter((p) => !isRecord(p));
   const records = releases.filter(isRecord);
@@ -361,7 +418,9 @@ function MusicianProfile({
                   </span>
                   <span className="min-w-0">
                     <span className="block font-semibold">{e.title}</span>
-                    <span className="block text-sm text-muted">{[e.location, e.startsAt ? timeFmt.format(e.startsAt) : e.when].filter(Boolean).join(" · ")}</span>
+                    <span className="block text-sm text-muted">
+                      {[e.location, e.startsAt ? timeFmt.format(e.startsAt) : e.when].filter(Boolean).join(" · ")}
+                    </span>
                   </span>
                 </Link>
               </li>
@@ -370,36 +429,41 @@ function MusicianProfile({
         </section>
       )}
 
-      <section>
-        <H>Songs</H>
-        {songs.length === 0 && <p className="text-sm text-muted">{isOwn ? "Music you're credited on shows up here." : "No songs yet."}</p>}
-        <ol>
-          {songs.slice(0, 10).map((s, i) => (
-            <li key={s.id}>
-              <Link href={`/post/${s.id}`} className="group grid grid-cols-[1.5rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-surface">
-                <span className="text-right text-sm tabular-nums text-muted group-hover:hidden">{i + 1}</span>
-                <span className="hidden text-right text-sm group-hover:block">▶</span>
-                {s.thumbnailUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={s.thumbnailUrl} alt="" className="h-12 w-12 rounded object-cover" />
-                ) : (
-                  <span className="h-12 w-12 rounded bg-surface" />
-                )}
-                <span className="min-w-0">
-                  <span className="block truncate font-semibold">
-                    {s.title}
-                    {s.details?.explicit && <span className="ml-1.5 rounded-sm bg-foreground/20 px-1 text-[10px] font-bold">E</span>}
+      {(full || songs.length > 0) && (
+        <section>
+          <H>Songs</H>
+          {songs.length === 0 && <p className="text-sm text-muted">{isOwn ? "Music you're credited on shows up here." : "No songs yet."}</p>}
+          <ol>
+            {songs.slice(0, 10).map((s, i) => (
+              <li key={s.id}>
+                <Link
+                  href={`/post/${s.id}`}
+                  className="group grid grid-cols-[1.5rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-surface"
+                >
+                  <span className="text-right text-sm tabular-nums text-muted group-hover:hidden">{i + 1}</span>
+                  <span className="hidden text-right text-sm group-hover:block">▶</span>
+                  {s.thumbnailUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={s.thumbnailUrl} alt="" className="h-12 w-12 rounded object-cover" />
+                  ) : (
+                    <span className="h-12 w-12 rounded bg-surface" />
+                  )}
+                  <span className="min-w-0">
+                    <span className="block truncate font-semibold">
+                      {s.title}
+                      {s.details?.explicit && <span className="ml-1.5 rounded-sm bg-foreground/20 px-1 text-[10px] font-bold">E</span>}
+                    </span>
+                    <span className="block truncate text-xs text-muted">{[s.details?.byline || s.creator, year(s)].filter(Boolean).join(" · ")}</span>
                   </span>
-                  <span className="block truncate text-xs text-muted">{[s.details?.byline || s.creator, year(s)].filter(Boolean).join(" · ")}</span>
-                </span>
-                <span className="text-xs tabular-nums text-muted">
-                  {s.duration ? `${Math.floor(s.duration / 60)}:${String(Math.round(s.duration % 60)).padStart(2, "0")}` : ""}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ol>
-      </section>
+                  <span className="text-xs tabular-nums text-muted">
+                    {s.duration ? `${Math.floor(s.duration / 60)}:${String(Math.round(s.duration % 60)).padStart(2, "0")}` : ""}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
 
       {records.length > 0 && (
         <section>
@@ -423,4 +487,3 @@ function MusicianProfile({
     </>
   );
 }
-

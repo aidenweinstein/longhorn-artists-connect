@@ -6,21 +6,23 @@ import { useEffect, useState, useTransition, type ReactNode } from "react";
 import { saveProfile } from "@/app/(app)/portfolio/edit/actions";
 import { ROLE_TAGS, type ProfileFields } from "@/lib/profileFields";
 import { WORK_STATUSES, parseWorkStatus, workStatusValue, type WorkStatusKind } from "@/lib/workStatus";
+import type { CreativeDetails } from "@/lib/profileStyle";
 import Avatar from "./Avatar";
+import CreativeInfoSections, { appendCreative, draftFrom } from "./CreativeInfoSections";
 
 const field = "w-full rounded-xl border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-brand";
 
-/** Shrinks a chosen photo to at most 1024px and re-encodes it as JPEG, so uploads stay small. */
-async function preparePhoto(file: File): Promise<File> {
+/** Shrinks a chosen photo to at most `max` px on its long side and re-encodes it as JPEG, so uploads stay small. */
+async function preparePhoto(file: File, max = 1024, name = "profile.jpg"): Promise<File> {
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
   if (!blob) throw new Error("Couldn't read that photo.");
-  return new File([blob], "profile.jpg", { type: "image/jpeg" });
+  return new File([blob], name, { type: "image/jpeg" });
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -34,11 +36,29 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-export default function ProfileEditForm({ initial, imageUrl, school }: { initial: ProfileFields; imageUrl?: string; school: string }) {
+export default function ProfileEditForm({
+  initial,
+  imageUrl,
+  school,
+  creative,
+  headshotUrl,
+  reels,
+}: {
+  initial: ProfileFields;
+  imageUrl?: string;
+  school: string;
+  /** What's saved in Actor Info, Filmmaker Info and Musician Info. */
+  creative: CreativeDetails;
+  headshotUrl?: string;
+  reels: { id: string; title: string }[];
+}) {
   const router = useRouter();
   const [p, setP] = useState(initial);
   const [photo, setPhoto] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [draft, setDraft] = useState(() => draftFrom(creative));
+  const [headshot, setHeadshot] = useState<File | null>(null);
+  const [headshotPreview, setHeadshotPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const set = <K extends keyof ProfileFields>(key: K, value: ProfileFields[K]) => setP((cur) => ({ ...cur, [key]: value }));
@@ -47,6 +67,22 @@ export default function ProfileEditForm({ initial, imageUrl, school }: { initial
   useEffect(() => () => {
     if (preview) URL.revokeObjectURL(preview);
   }, [preview]);
+
+  useEffect(() => () => {
+    if (headshotPreview) URL.revokeObjectURL(headshotPreview);
+  }, [headshotPreview]);
+
+  async function chooseHeadshot(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    try {
+      const ready = await preparePhoto(file, 1400, "headshot.jpg");
+      setHeadshot(ready);
+      setHeadshotPreview(URL.createObjectURL(ready));
+    } catch {
+      setError("That headshot couldn't be read. Try a JPEG or PNG.");
+    }
+  }
 
   async function choosePhoto(file: File | undefined) {
     if (!file) return;
@@ -85,6 +121,8 @@ export default function ProfileEditForm({ initial, imageUrl, school }: { initial
       else form.set(key, String(value));
     }
     if (photo) form.set("photo", photo);
+    appendCreative(form, draft);
+    if (headshot) form.set("headshot", headshot);
     start(async () => {
       const res = await saveProfile(form);
       if (!res.ok) return setError(res.message);
@@ -263,6 +301,8 @@ export default function ProfileEditForm({ initial, imageUrl, school }: { initial
           <input className={field} value={p.websiteURL} maxLength={300} placeholder="yourname.com" onChange={(e) => set("websiteURL", e.target.value)} />
         </Field>
       </section>
+
+      <CreativeInfoSections draft={draft} setDraft={setDraft} headshotUrl={headshotPreview ?? headshotUrl} onHeadshot={chooseHeadshot} reels={reels} />
 
       {error && <p className="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
 

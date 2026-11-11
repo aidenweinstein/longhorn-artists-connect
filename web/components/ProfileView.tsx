@@ -17,6 +17,7 @@ export default function ProfileView({
   emptyText,
   styled,
   collaborators,
+  profileActions,
 }: {
   account: Account;
   posts: Post[];
@@ -31,6 +32,8 @@ export default function ProfileView({
   styled?: React.ReactNode;
   /** Who they've worked with, checked against Nexus accounts (see collaboratorsFor). */
   collaborators?: Collaborators;
+  /** Connect and Message, shown under the person's info on someone else's page. */
+  profileActions?: React.ReactNode;
 }) {
   const stats: [string, number][] = [
     ["Credits", posts.length],
@@ -109,6 +112,8 @@ export default function ProfileView({
               )}
             </div>
           )}
+
+          {profileActions}
         </div>
       </section>
 

@@ -90,8 +90,8 @@ export default async function NowPage() {
             {style} profile · {status}
           </p>
         </div>
-        <Link href="/portfolio/style" className="rounded-full border border-border px-4 py-1.5 text-sm font-semibold hover:bg-surface">
-          Edit profile style
+        <Link href={`/portfolio/edit#${style.toLowerCase()}-info`} className="rounded-full border border-border px-4 py-1.5 text-sm font-semibold hover:bg-surface">
+          Edit {style.toLowerCase()} info
         </Link>
       </header>
 
@@ -220,7 +220,7 @@ function Acting({ projects, openCalls, me, details }: { projects: Project[]; ope
       <Section title="Roles you could audition for" count={roles.length || undefined}>
         {!basics && (
           <p className="mb-3 text-sm">
-            <Link href="/portfolio/style" className="font-semibold text-brand hover:underline">
+            <Link href="/portfolio/edit#actor-info" className="font-semibold text-brand hover:underline">
               Add your age range and gender
             </Link>{" "}
             <span className="text-muted">so these fit you.</span>

@@ -1,4 +1,5 @@
-import { asset, lookup, modify, num, queryWhere, str, updateFields, type CKRecord } from "./client";
+import { createHash } from "node:crypto";
+import { asset, createRecord, lookup, modify, num, queryWhere, str, updateFields, type CKRecord } from "./client";
 
 /*
  * The app's messages, from the same CloudKit records the app uses
@@ -164,3 +165,40 @@ export async function markRead(me: string, threadID: string): Promise<void> {
     await updateFields("Conversation", thread.record.recordName, { unreadCount: { value: 0, type: "INT64" } }).catch(() => null);
   }
 }
+
+/**
+ * The app's deterministic thread ID for a pair (Conversation.deterministicID): MD5 of
+ * the two bare IDs sorted and joined with "|", stamped as a v5-style UUID, uppercase.
+ */
+export function conversationIDFor(a: string, b: string): string {
+  const key = [raw(a), raw(b)].sort().join("|");
+  const bytes = createHash("md5").update(key, "utf8").digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex").toUpperCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * The visitor's thread with `other`, created the way the app creates it if neither of
+ * them has messaged yet. Returns the thread ID to open on the Network page.
+ */
+export async function threadWith(me: string, other: string): Promise<string> {
+  const user = raw(me);
+  const them = raw(other);
+  if (!user || !them || user === them) throw new Error("Can't message yourself.");
+  const id = conversationIDFor(user, them);
+  const existing = await lookup(id).catch(() => null);
+  if (existing?.recordType === "Conversation") return id;
+  // "create" (not replace) so a thread the other person made a moment ago is kept.
+  await createRecord("Conversation", id, {
+    participant1UserID: { value: user, type: "STRING" },
+    participant2UserID: { value: them, type: "STRING" },
+    unreadCount: { value: 0, type: "INT64" },
+  }, ["participant1UserID", "participant2UserID"]).catch(async (error) => {
+    if ((await lookup(id).catch(() => null))?.recordType === "Conversation") return [];
+    throw error;
+  });
+  return id;
+}
+

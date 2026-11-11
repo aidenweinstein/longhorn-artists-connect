@@ -61,9 +61,6 @@ async function Profile() {
           <Link href="/portfolio/edit" className="rounded-full border border-border px-4 py-1.5 text-sm font-medium transition hover:bg-surface">
             Edit profile
           </Link>
-          <Link href="/portfolio/style" className="rounded-full border border-border px-4 py-1.5 text-sm font-medium transition hover:bg-surface">
-            Profile style
-          </Link>
           <SignOutButton />
         </div>
       }

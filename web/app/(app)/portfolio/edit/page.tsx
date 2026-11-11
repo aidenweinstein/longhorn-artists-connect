@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import ProfileEditForm from "@/components/ProfileEditForm";
-import { currentAccount } from "@/lib/account";
+import { creditedPosts, currentAccount } from "@/lib/account";
 import { getProfileFields } from "@/lib/cloudkit/content";
+import { getCreativeProfile } from "@/lib/cloudkit/creative";
+import { emptyDetails } from "@/lib/profileStyle";
 
 export default function EditProfile() {
   return (
@@ -35,5 +37,17 @@ async function Editor() {
     );
   }
 
-  return <ProfileEditForm initial={fields} imageUrl={current.account.imageUrl} school={current.account.school || current.session.schoolName} />;
+  const [creative, posts] = await Promise.all([getCreativeProfile(userRecordName!), creditedPosts(current.account).catch(() => [])]);
+  const reels = posts.filter((p) => p.category === "performance" || p.category === "film").map((p) => ({ id: p.id, title: p.title }));
+
+  return (
+    <ProfileEditForm
+      initial={fields}
+      imageUrl={current.account.imageUrl}
+      school={current.account.school || current.session.schoolName}
+      creative={creative?.details ?? emptyDetails()}
+      headshotUrl={creative?.headshotUrl}
+      reels={reels}
+    />
+  );
 }

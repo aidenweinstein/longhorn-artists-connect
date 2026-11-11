@@ -199,6 +199,21 @@ export function musicianAvailability(m: MusicianDetails): string[] {
   );
 }
 
+// MARK: - What's filled in
+
+const filled = (...values: (string | undefined)[]) => values.some((v) => !!v && v.trim() !== "");
+
+/** Whether each Info section has anything to show. The on/off switches alone don't count: they start switched on. */
+export const hasActorInfo = (a: ActorDetails, headshotUrl?: string) =>
+  !!headshotUrl ||
+  a.ageMin !== undefined ||
+  a.ageMax !== undefined ||
+  a.resume.length > 0 ||
+  filled(a.gender, a.height, a.ethnicAppearance, a.hair, a.eyes, a.union, a.basedIn, a.languages, a.specialSkills, a.training, a.reelPostID);
+export const hasFilmmakerInfo = (f: FilmmakerDetails) => filled(f.specialties, f.gear);
+export const hasMusicianInfo = (m: MusicianDetails) => filled(m.artistName, m.instruments, m.genres);
+export const hasAnyCreativeInfo = (d: CreativeDetails) => hasActorInfo(d.actor) || hasFilmmakerInfo(d.filmmaker) || hasMusicianInfo(d.musician);
+
 // MARK: - Recommendations
 
 /** Whether a feed post is the kind of work this style is about. */

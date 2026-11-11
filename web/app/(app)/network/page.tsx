@@ -68,6 +68,13 @@ export default async function Network(props: PageProps<"/network">) {
     console.error("[messages] list:", error instanceof Error ? error.message : error);
     failed = true;
   }
+  // A thread just started from someone's profile Message button has no messages yet,
+  // so threadsFor leaves it out. Put it at the top so it opens ready to type in.
+  if (wanted && !summaries.some((t) => t.id === wanted.toUpperCase())) {
+    const id = wanted.toUpperCase();
+    const fresh = await messagesIn(me, id).catch(() => null);
+    if (fresh) summaries = [{ id, otherUserID: fresh.other, lastMessage: "", lastAt: 0, unread: 0 }, ...summaries];
+  }
   const directory = await profileDirectory().catch(() => []);
   const people = new Map(directory.map((p) => [p.id.replace(/^UserProfile_/, ""), p]));
 
