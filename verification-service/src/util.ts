@@ -23,6 +23,10 @@ export interface Env {
     ADMIN_TOKEN: string;
     /// Bearer token the website presents on /v1/web/*. Unset disables them.
     WEB_CLIENT_TOKEN: string;
+    /// Optional, comma-separated: CloudKit user record names of server-to-server
+    /// keys other than this Worker's (e.g. the website's), whose records the
+    /// sweep judges by their `userID` field. See postOwner in src/sweep.ts.
+    SERVER_CREATORS?: string;
 }
 
 export function json(body: unknown, status = 200): Response {

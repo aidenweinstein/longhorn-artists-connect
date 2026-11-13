@@ -25,8 +25,14 @@ npm run dev        # http://localhost:3000
 
 ## Sign-in
 - School-email 6-digit code via `verification-service` `/v1/web/session/*`
-  (`src/webSession.ts`, tests in `test/webSession.test.ts`). A web session is NOT an
-  app identity: it carries no userRecordName.
+  (`src/webSession.ts`, tests in `test/webSession.test.ts`). When an account owns the
+  email, the session carries its `userRecordName` (an app account, or `web_<id>`).
+- Website accounts (2026-11-12): sign-up's last step (`createAccountAction` in
+  `app/auth/actions.ts`) creates a real Nexus account through verification-service
+  `/v1/web/account/create`: a CloudKit `UserProfile_web_<id>` the app shows like any
+  other, plus the style's `CreativeProfile`. Signing in with an email that has no
+  account goes to `/signup/finish`. Moving a website account into the app isn't built
+  yet; see the verification-service README, "Website accounts".
 - Not deployed yet: run `npm run db:init`, `wrangler secret put WEB_CLIENT_TOKEN`,
   `npm run deploy` in `verification-service`, then fill `web/.env.local` from
   `.env.example`. Until then, dev prints codes in the `npm run dev` terminal.

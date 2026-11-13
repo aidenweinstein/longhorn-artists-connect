@@ -11,7 +11,7 @@
 /// registry entry would otherwise quietly delete legitimate work.
 
 import { Env, nowSeconds } from "./util";
-import { queryRecords, deleteRecord } from "./cloudkit";
+import { queryRecords, deleteRecord, fetchCallerRecordName } from "./cloudkit";
 
 const SWEPT_RECORD_TYPES = [
     "FilmSubmission",
@@ -94,10 +94,43 @@ function isDeletable(reason: SweepReason): boolean {
     return reason === "creator-unverified";
 }
 
+/// Whose post a record is, for verification purposes.
+///
+/// Normally that's its CloudKit creator. But posts made on the website are
+/// created by a server-to-server key, so their creator is the key's own user;
+/// the account they were posted for is the `userID` the website stamped on
+/// them. That field is only trusted when a server key made the record — an app
+/// user writing someone else's `userID` is still judged as themselves.
+///
+/// Returns null when there's no one to check (a server-made record with no
+/// `userID`, such as a profile or listing the website keeps itself).
+export function postOwner(record: any, serverCreators: ReadonlySet<string>): string | null {
+    const creator: string | undefined = record.created?.userRecordName;
+    if (!creator) return null;
+    if (!serverCreators.has(creator)) return creator;
+    const stamped = record.fields?.userID?.value;
+    if (typeof stamped !== "string" || !stamped.trim()) return null;
+    return stamped.trim().replace(/^UserProfile_/, "");
+}
+
+/// The CloudKit users that server-to-server keys write as: this Worker's key
+/// (asked from CloudKit) plus any listed in SERVER_CREATORS — set that to the
+/// website key's user if the website uses a different key from the Worker.
+async function serverCreatorSet(env: Env): Promise<Set<string>> {
+    const set = new Set(
+        (env.SERVER_CREATORS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    );
+    const caller = await fetchCallerRecordName(env);
+    if (caller) set.add(caller);
+    return set;
+}
+
 export async function runSweep(env: Env): Promise<void> {
     const startedAt = nowSeconds();
     const grandfatherBefore = Number(env.SWEEP_GRANDFATHER_BEFORE ?? "0");
     const action = env.SWEEP_ACTION === "delete" ? "delete" : "report";
+
+    const serverCreators = await serverCreatorSet(env);
 
     let scanned = 0;
     const flagged: {
@@ -126,7 +159,8 @@ export async function runSweep(env: Env): Promise<void> {
 
             for (const record of page.records) {
                 scanned++;
-                const creator: string | undefined = record.created?.userRecordName;
+                const creator = postOwner(record, serverCreators);
+                if (record.created?.userRecordName && !creator) continue; // server-made, nobody to check
                 const verification = creator
                     ? await creatorVerification(env, creator)
                     : { verified: false, schoolID: null };
@@ -181,6 +215,9 @@ export async function runSweep(env: Env): Promise<void> {
             startedAt - 86_400,
         ),
         env.DB.prepare(`DELETE FROM pending_web_sessions WHERE expires_at < ?`).bind(
+            startedAt - 86_400,
+        ),
+        env.DB.prepare(`DELETE FROM web_account_claims WHERE expires_at < ?`).bind(
             startedAt - 86_400,
         ),
         env.DB.prepare(`DELETE FROM rate_limits WHERE window_start < ?`).bind(startedAt - 86_400),

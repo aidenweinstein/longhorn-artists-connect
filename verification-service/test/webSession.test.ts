@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import { hmacHex } from "../src/util.ts";
-import { handleWebSessionRequest, handleWebSessionConfirm, type DomainMatch } from "../src/webSession.ts";
+import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreate, type AccountWriter, type DomainMatch } from "../src/webSession.ts";
 
 // MARK: - D1 shim
 
@@ -112,7 +112,9 @@ test("a school email receives a code that signs in once", async () => {
     const confirm = () => handleWebSessionConfirm(post("/v1/web/session/confirm", { pendingID: body.pendingID, code: lastCode() }), env);
     const ok = await confirm();
     assert.equal(ok.status, 200);
-    assert.deepEqual(await ok.json(), {
+    const { accountToken, ...rest } = (await ok.json()) as any;
+    assert.equal(typeof accountToken, "string", "a new email gets a token to create its account");
+    assert.deepEqual(rest, {
         email: "jane.doe@utexas.edu",
         schoolID: "ut-austin",
         schoolName: "The University of Texas at Austin",
@@ -211,4 +213,92 @@ test("rate limits are per end user, not per website server", async () => {
     assert.equal(limited.status, 429);
     const otherUser = await handleWebSessionRequest(post("/v1/web/session/request", { email: "s100@utexas.edu" }, { ip: "198.51.100.2" }), env, lookup);
     assert.equal(otherUser.status, 200);
+});
+
+// MARK: - Website accounts
+
+function fakeWriter(fail = false) {
+    const profiles: { recordName: string; fields: Record<string, { value: unknown }> }[] = [];
+    const verifications: any[] = [];
+    const writer: AccountWriter = {
+        async createProfile(_env, recordName, fields) {
+            if (fail) throw new Error("CloudKit 500");
+            profiles.push({ recordName, fields });
+            return [];
+        },
+        async writeVerification(_env, params) {
+            verifications.push(params);
+        },
+    };
+    return { writer, profiles, verifications };
+}
+
+const details = { firstName: "Jane", lastName: "Doe", major: "Radio-Television-Film", graduationYear: "2028" };
+
+function create(body: Record<string, unknown>, writer: AccountWriter) {
+    return handleWebAccountCreate(post("/v1/web/account/create", body), env, writer);
+}
+
+test("an email already linked to an account gets no account token", async () => {
+    await verifyInApp("jane@utexas.edu", "_app_user_123");
+    assert.ok(!("accountToken" in (await signIn("jane@utexas.edu"))));
+});
+
+test("an account token creates a website account linked to the email", async () => {
+    const { accountToken } = (await signIn("jane@utexas.edu")) as any;
+    const { writer, profiles, verifications } = fakeWriter();
+    const r = await create({ accountToken, ...details }, writer);
+    assert.equal(r.status, 200);
+    const out = (await r.json()) as any;
+    assert.match(out.userRecordName, /^web_[0-9a-f]{32}$/);
+    assert.equal(out.created, true);
+
+    assert.equal(profiles[0].recordName, `UserProfile_${out.userRecordName}`);
+    assert.equal(profiles[0].fields.firstName.value, "Jane");
+    assert.equal(profiles[0].fields.graduationYear.value, "2028");
+    assert.equal(profiles[0].fields.school.value, "The University of Texas at Austin");
+    assert.equal(profiles[0].fields.isUTStudent.value, 1);
+    assert.equal(verifications[0].method, "web");
+
+    // Signing in again now returns the account, and no new token.
+    const again = await signIn("jane@utexas.edu");
+    assert.equal(again.userRecordName, out.userRecordName);
+    assert.ok(!("accountToken" in again));
+});
+
+test("creating twice with one token returns the same account", async () => {
+    const { accountToken } = (await signIn("jane@utexas.edu")) as any;
+    const { writer, profiles } = fakeWriter();
+    const first = (await (await create({ accountToken, ...details }, writer)).json()) as any;
+    const second = await create({ accountToken, ...details }, writer);
+    assert.equal(second.status, 200);
+    const out = (await second.json()) as any;
+    assert.equal(out.userRecordName, first.userRecordName);
+    assert.equal(out.created, false);
+    assert.equal(profiles.length, 1, "only one profile is ever written");
+});
+
+test("a failed CloudKit write unlinks the email so the person can retry", async () => {
+    const { accountToken } = (await signIn("jane@utexas.edu")) as any;
+    const failed = await create({ accountToken, ...details }, fakeWriter(true).writer);
+    assert.equal(failed.status, 502);
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM verified_emails`).get() as any).n, 0);
+
+    const retry = await create({ accountToken, ...details }, fakeWriter().writer);
+    assert.equal(retry.status, 200);
+});
+
+test("bad, expired and missing-detail account requests are refused", async () => {
+    const { writer } = fakeWriter();
+    assert.equal((await create({ accountToken: "made-up", ...details }, writer)).status, 401);
+
+    const { accountToken } = (await signIn("jane@utexas.edu")) as any;
+    assert.equal((await create({ accountToken, ...details, lastName: "" }, writer)).status, 400);
+    assert.equal((await create({ accountToken, ...details, graduationYear: "soon" }, writer)).status, 400);
+
+    db.prepare(`UPDATE web_account_claims SET expires_at = 0`).run();
+    assert.equal((await create({ accountToken, ...details }, writer)).status, 401);
+
+    const noToken = await handleWebAccountCreate(post("/v1/web/account/create", { accountToken, ...details }, { token: "nope" }), env, writer);
+    assert.equal(noToken.status, 403);
 });

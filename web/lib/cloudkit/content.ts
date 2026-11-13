@@ -373,10 +373,14 @@ async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<str
   return { byID, byName };
 }
 
+/** Cache tag for the list of every profile, so a new account shows up right away. */
+export const PROFILES_TAG = "profiles";
+
 /** Every app profile with a name, A to Z, for picking someone to feature. */
 export async function profileDirectory(): Promise<Profile[]> {
   "use cache";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
+  cacheTag(PROFILES_TAG);
   const { byID } = await profiles();
   return [...byID.values()].filter((p) => p.name).sort((a, b) => a.name.localeCompare(b.name));
 }

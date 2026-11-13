@@ -286,6 +286,39 @@ The rules live in `classifyRecord` in `src/sweep.ts`, which is pure and covered
 by `npm test`; the sweep can delete real work, so they're tested there rather
 than discovered against a live container.
 
+## Website accounts (added 2026-11-12)
+
+For people who can't run the iOS app (no iPhone), the website can create a
+full Nexus account. The flow, all in `src/webSession.ts`:
+
+1. `/v1/web/session/confirm` proves the email as before. If no account owns
+   that email, it also returns a one-time `accountToken` (good for 24 hours,
+   stored hashed in `web_account_claims`).
+2. `/v1/web/account/create { accountToken, firstName, lastName, major, graduationYear }`
+   picks a new ID `web_<32 hex>`, links the email to it in `verified_emails`
+   (`method = 'web'`), and writes `UserProfile_web_<id>` and
+   `Verification_web_<id>` with the server key. If CloudKit fails, the link is
+   undone and the token can be used again. Creating twice returns the same account.
+3. Every later web sign-in with that email returns `userRecordName: "web_<id>"`,
+   so the website treats it like any other account (posting, editing, messages).
+
+The app sees these profiles like any other. Two things to know:
+
+- **Moving a website account into the app isn't built yet.** If that email is
+  then verified in the app, `/v1/verify/request` refuses with `email_on_web` and
+  a plain explanation, so nobody ends up with two accounts.
+- **The app can't edit or delete these profiles** (the server key created
+  them, and CloudKit only lets the creator write). Moderators change them in
+  CloudKit Console, as the app's own error message already says.
+
+**Deploying it:** re-run `npm run db:init` (adds `web_account_claims`; the file
+is safe to re-run), then `npm run deploy`. The sweep now judges posts the
+website made by their `userID`, since a server key is their CloudKit creator.
+It finds this Worker's key automatically. If the website uses a **different**
+CloudKit key, set that key's user record name in the `SERVER_CREATORS` var
+(comma-separated) — otherwise the sweep reports website posts as
+`creator-unverified`.
+
 ## Follow-ups, in priority order
 
 - **App Attest.** The app has none today, so the endpoints are reachable by

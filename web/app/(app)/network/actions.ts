@@ -9,7 +9,7 @@ type Result = { ok: true } | { ok: false; message: string };
 export async function sendAction(threadID: string, text: string): Promise<Result> {
   const current = await currentAccount();
   const me = current?.session.userRecordName;
-  if (!me || !current?.account) return { ok: false, message: "Link this email to your Nexus app account to send messages." };
+  if (!me || !current?.account) return { ok: false, message: "Finish creating your Nexus account to send messages." };
   try {
     const error = await sendMessage(me, current.account.name, threadID, text);
     return error ? { ok: false, message: error } : { ok: true };

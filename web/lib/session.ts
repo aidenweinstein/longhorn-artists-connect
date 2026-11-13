@@ -16,10 +16,11 @@ export const SESSION_COOKIE_OPTIONS = {
 };
 
 /**
- * A web session proves control of a school email address. When the app already
- * verified that same address, `userRecordName` names that app account, so the
- * site can show its profile and record that account's own likes and reports (the
- * same proof the app accepted). It never edits anyone's posts or profile.
+ * A web session proves control of a school email address. When an account owns
+ * that address, `userRecordName` names it: an app account (verified in the app)
+ * or a website account (`web_<id>`, made at sign-up on the site). When no
+ * account owns it yet, `accountToken` lets this visitor create one; see
+ * createAccountAction in app/auth/actions.ts.
  */
 export interface Session {
   email: string;
@@ -28,6 +29,8 @@ export interface Session {
   domainKind: string;
   issuedAt: number;
   userRecordName?: string;
+  /** One-time token from verification-service to create an account for `email`. */
+  accountToken?: string;
 }
 
 function secret(): string {

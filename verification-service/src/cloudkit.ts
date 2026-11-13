@@ -62,11 +62,13 @@ export function p1363ToDer(raw: Uint8Array): Uint8Array {
 interface CKRequestOptions {
     /// Path after the host, e.g. "/database/1/<container>/production/public/records/modify"
     path: string;
-    body: unknown;
+    /// Omit for a GET (signed over an empty body).
+    body?: unknown;
 }
 
 async function ckFetch(env: Env, options: CKRequestOptions): Promise<any> {
-    const bodyText = JSON.stringify(options.body);
+    const isGet = options.body === undefined;
+    const bodyText = isGet ? "" : JSON.stringify(options.body);
     const date = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     const bodyHash = await sha256Base64(new TextEncoder().encode(bodyText));
     const payload = `${date}:${bodyHash}:${options.path}`;
@@ -80,14 +82,14 @@ async function ckFetch(env: Env, options: CKRequestOptions): Promise<any> {
     const signature = base64Encode(p1363ToDer(new Uint8Array(rawSignature)));
 
     const response = await fetch(`${CK_HOST}${options.path}`, {
-        method: "POST",
+        method: isGet ? "GET" : "POST",
         headers: {
-            "content-type": "application/json",
+            ...(isGet ? {} : { "content-type": "application/json" }),
             "X-Apple-CloudKit-Request-KeyID": env.CK_KEY_ID,
             "X-Apple-CloudKit-Request-ISO8601Date": date,
             "X-Apple-CloudKit-Request-SignatureV1": signature,
         },
-        body: bodyText,
+        ...(isGet ? {} : { body: bodyText }),
     });
 
     const text = await response.text();
@@ -125,6 +127,8 @@ export async function writeVerificationRecord(
         schoolName: string;
         domainKind: string;
         verifiedAt: number;
+        /// "email" for the app's flow, "web" for an account made on the website.
+        method?: string;
     },
 ): Promise<void> {
     await ckFetch(env, {
@@ -142,7 +146,7 @@ export async function writeVerificationRecord(
                             schoolID: { value: params.schoolID },
                             schoolName: { value: params.schoolName },
                             domainKind: { value: params.domainKind },
-                            method: { value: "email" },
+                            method: { value: params.method ?? "email" },
                             verifiedAt: { value: params.verifiedAt * 1000 },
                             // 0 until an enrollment vendor is wired in.
                             enrollmentVerified: { value: 0 },
@@ -152,6 +156,51 @@ export async function writeVerificationRecord(
             ],
         },
     });
+}
+
+/// Creates a brand-new `UserProfile` for an account made on the website.
+///
+/// `create` (not replace), so it can never overwrite an existing profile. Like
+/// the app's save, a field Production's schema doesn't have yet is dropped and
+/// the save retried — but only fields in `optional`; any other rejection throws.
+/// Returns the fields that were left off.
+export async function createUserProfile(
+    env: Env,
+    recordName: string,
+    fields: Record<string, { value: string | number }>,
+    optional: readonly string[],
+): Promise<string[]> {
+    const current = { ...fields };
+    const dropped: string[] = [];
+    for (let attempt = 0; attempt <= optional.length; attempt++) {
+        const result = await ckFetch(env, {
+            path: databasePath(env, "records/modify"),
+            body: { operations: [{ operationType: "create", record: { recordType: "UserProfile", recordName, fields: current } }] },
+        });
+        const record = result.records?.[0];
+        if (!record?.serverErrorCode) return dropped;
+        const reason = String(record.reason ?? "");
+        const culprit = optional.find(
+            (key) => key in current && new RegExp(`(^|[^A-Za-z0-9_])${key}([^A-Za-z0-9_]|$)`).test(reason),
+        );
+        if (!culprit) throw new Error(`CloudKit ${record.serverErrorCode}: ${reason}`);
+        console.warn(`UserProfile ${recordName}: left off ${culprit} (${reason})`);
+        delete current[culprit];
+        dropped.push(culprit);
+    }
+    throw new Error("CloudKit kept rejecting the new profile.");
+}
+
+/// The CloudKit user this server-to-server key acts as: the `created` user on
+/// every record the key writes. Null if CloudKit won't say.
+export async function fetchCallerRecordName(env: Env): Promise<string | null> {
+    try {
+        const result = await ckFetch(env, { path: databasePath(env, "users/caller") });
+        return typeof result?.userRecordName === "string" ? result.userRecordName : null;
+    } catch (error) {
+        console.error("users/caller failed", error);
+        return null;
+    }
 }
 
 /// Clears the one-time nonce so it cannot be replayed.

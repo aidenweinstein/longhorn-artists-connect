@@ -28,7 +28,7 @@ import {
  *    auto-approved, owned by the signed-in app account, stamped with its school.
  */
 
-const NOT_LINKED = "To post, sign in with the school email linked to your Nexus app account.";
+const NOT_LINKED = "To post, finish creating your Nexus account (Sign up), or sign in with an email that has one.";
 
 async function poster() {
   const current = await currentAccount();

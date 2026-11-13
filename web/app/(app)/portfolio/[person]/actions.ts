@@ -9,7 +9,7 @@ import { threadWith } from "@/lib/cloudkit/messages";
  * signed-in visitor's app account, the same way the app's ProfileActionButtons do.
  */
 
-const NOT_LINKED = "Sign in with the school email linked to your Nexus app account first.";
+const NOT_LINKED = "Finish creating your Nexus account first, or sign in with an email that has one.";
 
 async function visitor() {
   const current = await currentAccount();

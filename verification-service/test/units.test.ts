@@ -12,7 +12,7 @@ import { createVerify, createPublicKey } from "node:crypto";
 
 import { p1363ToDer } from "../src/cloudkit.ts";
 import { domainCandidates, normalizeEmail, randomCode, constantTimeEqual } from "../src/util.ts";
-import { classifyRecord, type CreatorVerification } from "../src/sweep.ts";
+import { classifyRecord, postOwner, type CreatorVerification } from "../src/sweep.ts";
 
 // MARK: - The signature conversion
 
@@ -196,4 +196,23 @@ test("classifyRecord tolerates a record with no fields or no created block", () 
         classifyRecord({ recordName: "x", created: { userRecordName: "u" } }, verified("ut-austin"), 0),
         null,
     );
+});
+
+// MARK: - Posts made on the website
+
+test("postOwner judges server-made posts by the account they were posted for", () => {
+    const server = new Set(["_server_key_user"]);
+    const appPost = { created: { userRecordName: "_alice" }, fields: { userID: { value: "_bob" } } };
+    assert.equal(postOwner(appPost, server), "_alice", "an app user's own userID claim is never trusted");
+
+    const webPost = { created: { userRecordName: "_server_key_user" }, fields: { userID: { value: "web_abc" } } };
+    assert.equal(postOwner(webPost, server), "web_abc");
+
+    const prefixed = { created: { userRecordName: "_server_key_user" }, fields: { userID: { value: "UserProfile__carol" } } };
+    assert.equal(postOwner(prefixed, server), "_carol");
+
+    const noOwner = { created: { userRecordName: "_server_key_user" }, fields: {} };
+    assert.equal(postOwner(noOwner, server), null);
+
+    assert.equal(postOwner({ fields: {} }, server), null);
 });

@@ -74,7 +74,7 @@ export default async function NowPage() {
 
   const listing = account && profile ? listings.get(profile.userID) : undefined;
   const status = !account
-    ? "Link this email to your Nexus app account to save your style and appear on the public pages."
+    ? "Finish creating your Nexus account to save your style and appear on the public pages."
     : listing?.style === style && listing.status === "approved"
       ? `Listed on the ${STYLE_INFO[style].plural} page`
       : listing?.style === style && listing.status === "declined"

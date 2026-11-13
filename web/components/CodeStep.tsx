@@ -9,7 +9,8 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
   email: string;
   pendingID: string;
   onBack: () => void;
-  onVerified: () => void;
+  /** `hasAccount` is false when no Nexus account owns this email yet. */
+  onVerified: (hasAccount: boolean) => void;
 }) {
   const [pendingID, setPendingID] = useState(initialID);
   const [code, setCode] = useState("");
@@ -24,7 +25,7 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
     setError(null);
     startTransition(async () => {
       const result = await confirmCodeAction(pendingID, code);
-      if (result.ok) onVerified();
+      if (result.ok) onVerified(result.hasAccount);
       else setError(result.message);
     });
   }

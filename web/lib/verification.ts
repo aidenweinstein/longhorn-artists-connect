@@ -13,8 +13,14 @@ export type RequestResult =
   | { ok: false; message: string };
 
 export type ConfirmResult =
-  | { ok: true; email: string; schoolID: string; schoolName: string; domainKind: string; userRecordName?: string }
+  | { ok: true; email: string; schoolID: string; schoolName: string; domainKind: string; userRecordName?: string; accountToken?: string }
   | { ok: false; message: string };
+
+export type AccountDetails = { firstName: string; lastName: string; major: string; graduationYear: string };
+
+export type CreateAccountResult =
+  | { ok: true; userRecordName: string }
+  | { ok: false; message: string; signInAgain?: boolean };
 
 const workerURL = () => process.env.VERIFICATION_URL?.replace(/\/$/, "");
 const isDevStandIn = () => !workerURL() && process.env.NODE_ENV !== "production";
@@ -57,6 +63,24 @@ export async function confirmCode(pendingID: string, code: string, clientIP: str
     schoolName: String(json.schoolName ?? ""),
     domainKind: String(json.domainKind ?? "student"),
     userRecordName: typeof json.userRecordName === "string" ? json.userRecordName : undefined,
+    accountToken: typeof json.accountToken === "string" ? json.accountToken : undefined,
+  };
+}
+
+/**
+ * Creates the Nexus account for a signed-in email that has none: verification-service
+ * writes its CloudKit UserProfile and links the email to it. Returns its userRecordName.
+ */
+export async function createAccount(accountToken: string, details: AccountDetails, clientIP: string): Promise<CreateAccountResult> {
+  if (isDevStandIn()) {
+    return { ok: false, message: "Creating accounts needs the verification service. Set VERIFICATION_URL in .env.local." };
+  }
+  const { status, json } = await callWorker("/v1/web/account/create", { accountToken, ...details }, clientIP);
+  if (status === 200 && typeof json.userRecordName === "string") return { ok: true, userRecordName: json.userRecordName };
+  return {
+    ok: false,
+    message: String(json.message ?? "Couldn't create your account. Try again."),
+    signInAgain: status === 401,
   };
 }
 
@@ -83,5 +107,5 @@ function devConfirm(pendingID: string, code: string): ConfirmResult {
   if (++pending.attempts > 5) return { ok: false, message: "Too many wrong codes. Request a new one." };
   if (pending.code !== code) return { ok: false, message: "That code isn't valid." };
   devStore.delete(pendingID);
-  return { ok: true, email: pending.email, schoolID: "dev", schoolName: "Development", domainKind: "student" };
+  return { ok: true, email: pending.email, schoolID: "dev", schoolName: "Development", domainKind: "student", accountToken: "dev" };
 }

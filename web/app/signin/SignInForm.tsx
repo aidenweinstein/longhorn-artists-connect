@@ -31,7 +31,8 @@ export default function SignInForm() {
         email={email.trim()}
         pendingID={pendingID}
         onBack={() => setPendingID(null)}
-        onVerified={() => router.replace("/")}
+        // No account owns this email yet: finish sign-up to create one.
+        onVerified={(hasAccount) => router.replace(hasAccount ? "/" : "/signup/finish")}
       />
     );
   }

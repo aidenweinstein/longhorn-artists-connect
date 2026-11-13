@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS pending_web_sessions (
 CREATE INDEX IF NOT EXISTS idx_web_pending_expiry ON pending_web_sessions(expires_at);
 
 -- ---------------------------------------------------------------------------
+-- Website accounts. When a web sign-in confirms an email that no account owns
+-- yet, the confirm hands the website a one-time account token. Spending it at
+-- /v1/web/account/create makes a Nexus account for that email: a CloudKit
+-- `UserProfile_web_<id>` and a verified_emails row (method 'web'). The token
+-- is what proves the email; the website never names the address itself.
+-- Added 2026-11-12. Pruned by the nightly cron.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS web_account_claims (
+    token_hash   TEXT PRIMARY KEY,         -- HMAC-SHA256("claim:<token>", CODE_PEPPER)
+    email_hash   TEXT NOT NULL,
+    school_id    TEXT NOT NULL,
+    domain_kind  TEXT NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL,
+    used_at      INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_claims_expiry ON web_account_claims(expires_at);
+
+-- ---------------------------------------------------------------------------
 -- Completed verifications. email_hash PK + user_record_name UNIQUE together
 -- enforce one address per account AND one account per address.
 -- ---------------------------------------------------------------------------

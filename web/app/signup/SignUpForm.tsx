@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition, type FormEvent } from "react";
-import { requestCodeAction } from "@/app/auth/actions";
+import Link from "next/link";
+import { createAccountAction, requestCodeAction } from "@/app/auth/actions";
 import { chooseStyle } from "@/app/(app)/portfolio/style/actions";
 import { PROFILE_STYLES, STYLE_INFO, type ProfileStyle } from "@/lib/profileStyle";
 import { field, labelCls, primaryBtn } from "@/components/AuthShell";
@@ -19,9 +20,18 @@ const ROLES: { id: Role; title: string; body: string }[] = [
 
 const STEPS: Step[] = ["role", "details", "code", "style", "profile"];
 
-export default function SignUpForm() {
-  const [step, setStep] = useState<Step>("role");
-  const [role, setRole] = useState<Role | null>(null);
+const classYears = () => {
+  const now = new Date().getFullYear();
+  return Array.from({ length: 6 }, (_, i) => now + i);
+};
+
+/**
+ * Sign-up. `finish` picks up after the email code for someone who signed in with an
+ * email that has no account yet, so it starts at the style step and asks for their name.
+ */
+export default function SignUpForm({ finish = false }: { finish?: boolean }) {
+  const [step, setStep] = useState<Step>(finish ? "style" : "role");
+  const [role, setRole] = useState<Role | null>(finish ? "student" : null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [major, setMajor] = useState("");
@@ -29,17 +39,24 @@ export default function SignUpForm() {
   const [pendingID, setPendingID] = useState("");
   const [style, setStyle] = useState<ProfileStyle | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [signInAgain, setSignInAgain] = useState(false);
+  const [existing, setExisting] = useState(false);
   const [busy, startTransition] = useTransition();
 
   const student = role === "student";
   const emailOk = /\S+@\S+\.\S+/.test(email.trim()) && (!student || /\.edu$/i.test(email.trim()));
   const detailsOk = name.trim().split(/\s+/).length >= 2 && emailOk;
   const [years, setYears] = useState<number[]>([]);
+  const [firstName, ...rest] = name.trim().split(/\s+/);
+  const lastName = rest.join(" ");
 
-  function verified() {
-    if (!student) return setStep("done");
-    const now = new Date().getFullYear();
-    setYears(Array.from({ length: 6 }, (_, i) => now + i));
+  function verified(hasAccount: boolean) {
+    // This email already has a Nexus account (made in the app or here): they're signed in.
+    if (hasAccount || !student) {
+      setExisting(hasAccount);
+      return setStep("done");
+    }
+    setYears(classYears());
     setStep("style");
   }
 
@@ -49,7 +66,10 @@ export default function SignUpForm() {
     setError(null);
     startTransition(async () => {
       const result = await chooseStyle(style);
-      if (result.ok) setStep("profile");
+      if (result.ok) {
+        setYears(classYears());
+        setStep("profile");
+      }
       else setError(result.message);
     });
   }
@@ -69,8 +89,20 @@ export default function SignUpForm() {
 
   function submitProfile(e: FormEvent) {
     e.preventDefault();
-    setStep("done");
+    if (!profileOk || busy) return;
+    setError(null);
+    setSignInAgain(false);
+    startTransition(async () => {
+      const result = await createAccountAction({ firstName, lastName, major, classOf, style: style ?? "" });
+      if (result.ok) setStep("done");
+      else {
+        setError(result.message);
+        setSignInAgain(!!result.signInAgain);
+      }
+    });
   }
+
+  const profileOk = !!firstName && !!lastName && !!major.trim() && !!classOf;
 
   const progress = step === "done" ? STEPS.length : STEPS.indexOf(step) + 1;
 
@@ -180,6 +212,12 @@ export default function SignUpForm() {
 
       {step === "profile" && (
         <form onSubmit={submitProfile} className="space-y-4">
+          {finish && (
+            <div>
+              <label htmlFor="name" className={labelCls}>First &amp; Last Name</label>
+              <input id="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder="Jane Doe" />
+            </div>
+          )}
           <div>
             <label htmlFor="major" className={labelCls}>Major</label>
             <input id="major" value={major} onChange={(e) => setMajor(e.target.value)} className={field} placeholder="Radio-Television-Film" />
@@ -193,14 +231,26 @@ export default function SignUpForm() {
               ))}
             </select>
           </div>
-          <button type="submit" disabled={!major.trim() || !classOf} className={primaryBtn}>Create account</button>
+          {error && (
+            <p role="alert" className="text-sm text-red-400">
+              {error}{" "}
+              {signInAgain && <Link href="/signin" className="font-semibold underline">Sign in</Link>}
+            </p>
+          )}
+          <button type="submit" disabled={!profileOk || busy} className={primaryBtn}>
+            {busy ? "Creating account…" : "Create account"}
+          </button>
         </form>
       )}
 
       {step === "done" && (
         <SignedIn
-          heading={`You're in, ${name.trim().split(/\s+/)[0]}!`}
-          note="Your email is verified. Profile details will be saved once website accounts connect to the app."
+          heading={existing ? "Welcome back!" : `You're in, ${firstName}!`}
+          note={
+            existing
+              ? "This email already has a Nexus account, so you're signed in to it."
+              : "Your Nexus account is ready. People on Nexus, including in the iPhone app, can now find your profile."
+          }
         />
       )}
     </div>

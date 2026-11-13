@@ -8,6 +8,7 @@
 ///   GET  /v1/verify/status?user= has this account been verified
 ///   POST /v1/web/session/request website sign-in, see src/webSession.ts
 ///   POST /v1/web/session/confirm
+///   POST /v1/web/account/create  create an account from the website, see src/webSession.ts
 ///   POST /v1/web/people/*         People pages, see src/people.ts
 ///   POST /v1/admin/backfill-schools   one-off schoolID migration (ADMIN_TOKEN)
 ///
@@ -33,7 +34,7 @@ import { sendVerificationCode } from "./email";
 import { fetchUserProfile, writeVerificationRecord, clearProfileNonce } from "./cloudkit";
 import { runSweep } from "./sweep";
 import { runBackfill, BackfillCursor } from "./backfill";
-import { handleWebSessionRequest, handleWebSessionConfirm } from "./webSession";
+import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreate, WEB_ACCOUNT_PREFIX } from "./webSession";
 import { handlePeople } from "./people";
 
 const CODE_TTL_SECONDS = 600; // 10 minutes
@@ -64,6 +65,9 @@ export default {
             }
             if (url.pathname === "/v1/web/session/confirm" && request.method === "POST") {
                 return await handleWebSessionConfirm(request, env);
+            }
+            if (url.pathname === "/v1/web/account/create" && request.method === "POST") {
+                return await handleWebAccountCreate(request, env);
             }
             if (url.pathname.startsWith("/v1/web/people/") && request.method === "POST") {
                 return await handlePeople(request, env, url.pathname);
@@ -165,6 +169,15 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
     )
         .bind(emailHash)
         .first<{ user_record_name: string }>();
+    if (existing && existing.user_record_name.startsWith(WEB_ACCOUNT_PREFIX)) {
+        // Moving a website account into the app isn't built yet. Say so plainly
+        // rather than "another account", which would read like someone stole it.
+        return errorResponse(
+            "email_on_web",
+            "That email already has a Nexus account made on the website. Sign in at the website for now — moving a website account into the app is coming soon.",
+            409,
+        );
+    }
     if (existing && existing.user_record_name !== userRecordName) {
         return errorResponse("email_taken", "That email is already linked to another account.", 409);
     }
