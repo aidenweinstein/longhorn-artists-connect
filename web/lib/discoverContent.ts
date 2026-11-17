@@ -14,6 +14,9 @@ export type Project = {
   castNeeded: string[];
   crewNeeded: string[];
   posterUrl?: string;
+  /** The poster's checksum, and a smaller copy of it for cards and lists. */
+  posterKey?: string;
+  posterSmallUrl?: string;
   /** Pictures shown before the poster on the detail page, like the app's slideshow. */
   slides?: string[];
   genres?: string[];
@@ -42,6 +45,9 @@ export type NexusEvent = {
   logline: string;
   ticketed: boolean;
   flyerUrl?: string;
+  /** The flyer's checksum, and a smaller copy of it for cards and lists. */
+  flyerKey?: string;
+  flyerSmallUrl?: string;
   /** Start time in ms, when known. */
   startsAt?: number;
   endsAt?: number;

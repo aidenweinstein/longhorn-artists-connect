@@ -33,6 +33,8 @@ struct Portfolio_5: View {
     @AppStorage("userGraduationYear") private var userGraduationYear: String = ""
     @AppStorage("userType") private var userType: String = ""
     @AppStorage("userBio") private var userBio: String = ""
+    /// `WorkStatus` raw value; empty = no status.
+    @AppStorage("userWorkStatus") private var userWorkStatus: String = ""
     @AppStorage("userMajor") private var userMajor: String = ""
     @AppStorage("userMinor") private var userMinor: String = ""
     @AppStorage("userCertificate") private var userCertificate: String = ""
@@ -72,6 +74,7 @@ struct Portfolio_5: View {
     @State private var tempYear = ""
     @State private var tempUserTypes: Set<String> = []
     @State private var tempBio = ""
+    @State private var tempWorkStatus: WorkStatus = .none
     @State private var tempMajor = ""
     @State private var tempMinor = ""
     @State private var tempCertificate = ""
@@ -451,15 +454,18 @@ struct Portfolio_5: View {
                         VStack(alignment: .leading, spacing: feedFormat.sectionSpacing) {
                             profileHeaderView
                             bioView
-                            // Actor resume / filmmaker filmography / musician discography.
-                            StyledProfileSection(name: displayName, profileID: currentUserProfileID, isOwn: true)
+                            // Order: what they're working on now, then their finished
+                            // posts, then everything else (events they're going to and
+                            // the actor resume / filmmaker filmography / musician
+                            // discography their tags unlock).
                             CurrentWorkSection(source: store.visibleApprovedSubmissions, isPerson: isSelf)
+                            postsSeparator
+                            submissionsView
                             SeeYouAtSection(
                                 userID: CloudKitManager.shared.currentAttendeeID ?? currentUserProfileID,
                                 source: store.visibleApprovedSubmissions
                             )
-                            postsSeparator
-                            submissionsView
+                            StyledProfileSection(name: displayName, profileID: currentUserProfileID, isOwn: true)
                         }
                         // ====== UI CONTROLS!!!!! ======
                         .padding(feedFormat.contentPadding)
@@ -535,17 +541,26 @@ struct Portfolio_5: View {
         // total collaborations) underneath.
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 20) {
-                profileImageView
-                    // Track where the photo sits so the zoom can lift off from it, and
-                    // hide the original while its enlarged twin is on screen.
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-                        profileImageFrame = $0
+                // Photo with the work status (Looking for Work, etc.) centered beneath it.
+                VStack(spacing: 8) {
+                    profileImageView
+                        // Track where the photo sits so the zoom can lift off from it, and
+                        // hide the original while its enlarged twin is on screen.
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                            profileImageFrame = $0
+                        }
+                        .opacity(showEnlargedPhoto ? 0 : 1)
+                        // Tap the photo to see it enlarged and centered (only when set).
+                        .onTapGesture {
+                            if profileImage != nil { showEnlargedPhoto = true }
+                        }
+                    // Tap to change the status right here; saved the same way as
+                    // the Edit Profile sheet so the directory and others' views update.
+                    EditableWorkStatusPill(status: WorkStatus(storedValue: userWorkStatus)) { newStatus in
+                        userWorkStatus = newStatus.rawValue
+                        Task { await saveProfileToCloudKit() }
                     }
-                    .opacity(showEnlargedPhoto ? 0 : 1)
-                    // Tap the photo to see it enlarged and centered (only when set).
-                    .onTapGesture {
-                        if profileImage != nil { showEnlargedPhoto = true }
-                    }
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -1069,6 +1084,7 @@ struct Portfolio_5: View {
             tempYear: $tempYear,
             tempUserTypes: $tempUserTypes,
             tempBio: $tempBio,
+            tempWorkStatus: $tempWorkStatus,
             tempMajor: $tempMajor,
             tempMinor: $tempMinor,
             tempCertificate: $tempCertificate,
@@ -1091,6 +1107,7 @@ struct Portfolio_5: View {
                 userGraduationYear = tempYear
                 userType = tempUserTypes.sorted().joined(separator: ", ")
                 userBio = tempBio
+                userWorkStatus = tempWorkStatus.rawValue
                 userMajor = tempMajor
                 userMinor = tempMinor
                 userCertificate = tempCertificate
@@ -1150,6 +1167,7 @@ struct Portfolio_5: View {
                 tempYear = userGraduationYear.isEmpty ? String(Calendar.current.component(.year, from: .now)) : userGraduationYear
                 tempUserTypes = Set(userType.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
                 tempBio = userBio
+                tempWorkStatus = WorkStatus(storedValue: userWorkStatus)
                 tempMajor = userMajor
                 tempMinor = userMinor
                 tempCertificate = userCertificate
@@ -1240,6 +1258,7 @@ struct Portfolio_5: View {
             record["graduationYear"] = userGraduationYear as CKRecordValue
             record["userTypes"] = userType as CKRecordValue
             record["bio"] = userBio as CKRecordValue
+            record["workStatus"] = userWorkStatus as CKRecordValue
             record["hometown"] = userHometown as CKRecordValue
             // Preserve the industry-professional account type on edit. The save writes a
             // fresh record, so without these an edit would drop the industry fields and
@@ -2817,17 +2836,18 @@ struct UserPortfolioView: View {
             VStack(alignment: .leading, spacing: 16) {
                 profileHeaderView
                 bioView
-                StyledProfileSection(
-                    name: user.fullName,
-                    profileID: UserProfileManager.shared.findUser(byName: user.fullName)?.id
-                )
+                // Same order as the Portfolio tab: current work, finished posts, then the rest.
                 CurrentWorkSection(source: sourceSubmissions) { $0.name == user.fullName }
+                Divider()
+                submissionsView
                 SeeYouAtSection(
                     userID: UserProfileManager.shared.findUser(byName: user.fullName)?.id,
                     source: sourceSubmissions
                 )
-                Divider()
-                submissionsView
+                StyledProfileSection(
+                    name: user.fullName,
+                    profileID: UserProfileManager.shared.findUser(byName: user.fullName)?.id
+                )
             }
             .padding()
         }
@@ -2847,7 +2867,13 @@ struct UserPortfolioView: View {
         // and the role tags in a full-width band under those.
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 20) {
-                profileImageView
+                // Photo with the work status (Looking for Work, etc.) centered beneath it.
+                VStack(spacing: 8) {
+                    profileImageView
+                    WorkStatusPill(status: WorkStatus(
+                        storedValue: UserProfileManager.shared.findUser(byName: user.fullName)?.workStatus ?? ""
+                    ))
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     profileInfoView

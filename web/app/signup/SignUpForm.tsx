@@ -1,85 +1,96 @@
 "use client";
 
-import { useState, useTransition, type FormEvent } from "react";
+import { useEffect, useState, useTransition, type FormEvent } from "react";
 import Link from "next/link";
 import { createAccountAction, requestCodeAction } from "@/app/auth/actions";
-import { chooseStyle } from "@/app/(app)/portfolio/style/actions";
-import { PROFILE_STYLES, STYLE_INFO, type ProfileStyle } from "@/lib/profileStyle";
+import { ROLE_TAGS } from "@/lib/profileFields";
+import { emailDomains, exampleName, isSchoolEmail, signupSchool, type SignupRole, type SignupSchool } from "@/lib/signupSchools";
 import { field, labelCls, primaryBtn } from "@/components/AuthShell";
+import { useAuthSchool } from "@/components/AuthTheme";
 import CodeStep from "@/components/CodeStep";
-import NotConnected from "@/components/NotConnected";
+import SchoolEmailBox from "@/components/SchoolEmailBox";
+import SchoolPicker from "@/components/SchoolPicker";
 import SignedIn from "@/components/SignedIn";
 
-type Role = "student" | "professional";
-type Step = "role" | "details" | "code" | "style" | "profile" | "done";
+type Role = SignupRole;
+type Step = "school" | "role" | "details" | "code" | "profile" | "done";
 
-const ROLES: { id: Role; title: string; body: string }[] = [
-  { id: "student", title: "I'm a Student", body: "Share your work and get discovered. Verify with your school email." },
-  { id: "professional", title: "I'm an Industry Professional", body: "Find student talent and connect with emerging creatives." },
+const ROLES: { id: Role; title: string }[] = [
+  { id: "student", title: "I'm a Student" },
+  { id: "educator", title: "I'm an Educator" },
 ];
 
-const STEPS: Step[] = ["role", "details", "code", "style", "profile"];
-
-const classYears = () => {
-  const now = new Date().getFullYear();
-  return Array.from({ length: 6 }, (_, i) => now + i);
-};
+const STEPS: Step[] = ["school", "role", "details", "code", "profile"];
 
 /**
- * Sign-up. `finish` picks up after the email code for someone who signed in with an
- * email that has no account yet, so it starts at the style step and asks for their name.
+ * Sign-up. The school comes first, on a black and white screen with each school in its
+ * own colors; picking one turns the rest of sign-up that school's colors. Name, major,
+ * class and tags are all on the one step after the code.
+ * `finish` picks up after the email code for someone who signed in with an email that
+ * has no account yet (`schoolID` is the school they signed in at), so it asks student or
+ * educator and skips the school, email and code steps.
+ * `mock` is the Mock launch walkthrough: every screen works, but no email is sent, any
+ * 6-digit code passes, and no account or session is created.
  */
-export default function SignUpForm({ finish = false }: { finish?: boolean }) {
-  const [step, setStep] = useState<Step>(finish ? "style" : "role");
-  const [role, setRole] = useState<Role | null>(finish ? "student" : null);
+export default function SignUpForm({ finish = false, mock = false, schoolID }: { finish?: boolean; mock?: boolean; schoolID?: string }) {
+  const [step, setStep] = useState<Step>(finish ? "role" : "school");
+  const [role, setRole] = useState<Role | null>(null);
+  const [school, setSchool] = useState<SignupSchool | null>(() => (finish ? signupSchool(schoolID) ?? null : null));
+  const themeSchool = useAuthSchool();
+  // The screen is in the picked school's colors on every step but the school list.
+  useEffect(() => themeSchool(step === "school" ? null : school), [themeSchool, step, school]);
+  // The example in the name box: a well-known name from the school picked, or none.
+  const [nameExample, setNameExample] = useState("");
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
+  // Only the part before "@" is typed: the school and role decide the rest.
+  const [emailID, setEmailID] = useState("");
+  const [pickedDomain, setPickedDomain] = useState("");
   const [major, setMajor] = useState("");
   const [classOf, setClassOf] = useState("");
   const [pendingID, setPendingID] = useState("");
-  const [style, setStyle] = useState<ProfileStyle | null>(null);
+  const [tags, setTags] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [signInAgain, setSignInAgain] = useState(false);
   const [existing, setExisting] = useState(false);
   const [busy, startTransition] = useTransition();
+  // TESTING ONLY (`npm run dev`): the email and code steps were skipped, so the rest of the
+  // steps can be seen. With no verified email there is nothing to make an account from, so
+  // the last step ends like the mock walkthrough: no account, no session.
+  const [skipped, setSkipped] = useState(false);
+  const practice = mock || skipped;
 
   const student = role === "student";
-  const emailOk = /\S+@\S+\.\S+/.test(email.trim()) && (!student || /\.edu$/i.test(email.trim()));
-  const detailsOk = name.trim().split(/\s+/).length >= 2 && emailOk;
-  const [years, setYears] = useState<number[]>([]);
+  // Everyone verifies with an address at the school they picked: students its student
+  // domain, educators one of its educator domains.
+  const domains = school && role ? emailDomains(school, role) : [];
+  const domain = domains.includes(pickedDomain) ? pickedDomain : domains[0] ?? "";
+  const email = emailID && domain ? `${emailID}@${domain}` : "";
+  const emailOk = !!school && !!role && isSchoolEmail(email, school, role);
   const [firstName, ...rest] = name.trim().split(/\s+/);
   const lastName = rest.join(" ");
 
   function verified(hasAccount: boolean) {
     // This email already has a Nexus account (made in the app or here): they're signed in.
-    if (hasAccount || !student) {
+    if (hasAccount) {
       setExisting(hasAccount);
       return setStep("done");
     }
-    setYears(classYears());
-    setStep("style");
+    startProfile();
   }
 
-  /** Every student account picks a base profile style before it's created. */
-  function submitStyle() {
-    if (!style || busy) return;
-    setError(null);
-    startTransition(async () => {
-      const result = await chooseStyle(style);
-      if (result.ok) {
-        setYears(classYears());
-        setStep("profile");
-      }
-      else setError(result.message);
-    });
+  function startProfile() {
+    setStep("profile");
   }
+
+  const toggleTag = (tag: string) => setTags((on) => (on.includes(tag) ? on.filter((t) => t !== tag) : [...on, tag]));
 
   function submitDetails(e: FormEvent) {
     e.preventDefault();
-    if (!detailsOk || busy) return;
+    if (!emailOk || busy) return;
     setError(null);
+    if (mock) return setStep("code");
     startTransition(async () => {
-      const result = await requestCodeAction(email.trim());
+      const result = await requestCodeAction(email, school?.id, role ?? "student");
       if (result.ok) {
         setPendingID(result.pendingID);
         setStep("code");
@@ -92,8 +103,9 @@ export default function SignUpForm({ finish = false }: { finish?: boolean }) {
     if (!profileOk || busy) return;
     setError(null);
     setSignInAgain(false);
+    if (practice) return setStep("done");
     startTransition(async () => {
-      const result = await createAccountAction({ firstName, lastName, major, classOf, style: style ?? "" });
+      const result = await createAccountAction({ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" });
       if (result.ok) setStep("done");
       else {
         setError(result.message);
@@ -102,7 +114,7 @@ export default function SignUpForm({ finish = false }: { finish?: boolean }) {
     });
   }
 
-  const profileOk = !!firstName && !!lastName && !!major.trim() && !!classOf;
+  const profileOk = !!firstName && !!lastName && !!major.trim() && (!student || /^\d{4}$/.test(classOf));
 
   const progress = step === "done" ? STEPS.length : STEPS.indexOf(step) + 1;
 
@@ -110,7 +122,7 @@ export default function SignUpForm({ finish = false }: { finish?: boolean }) {
     <div>
       <div className="mb-6 flex gap-1.5" aria-hidden>
         {STEPS.map((s, i) => (
-          <span key={s} className={`h-1 flex-1 rounded-full ${i < progress ? "bg-brand" : "bg-white/15"}`} />
+          <span key={s} className={`h-1 flex-1 rounded-full ${i < progress ? "bg-[var(--auth-line)]" : "bg-white/15"}`} />
         ))}
       </div>
 
@@ -123,113 +135,106 @@ export default function SignUpForm({ finish = false }: { finish?: boolean }) {
               onClick={() => setRole(r.id)}
               aria-pressed={role === r.id}
               className={`w-full rounded-2xl border p-4 text-left transition ${
-                role === r.id ? "border-brand bg-brand/15" : "border-white/15 hover:border-white/30"
+                role === r.id ? "border-[var(--auth-line)] bg-white/10" : "border-white/15 hover:border-white/30"
               }`}
             >
               <p className="font-semibold">{r.title}</p>
-              <p className="mt-1 text-sm text-white/65">{r.body}</p>
             </button>
           ))}
-          <button type="button" disabled={!role} onClick={() => setStep("details")} className={`${primaryBtn} mt-3`}>
+          <button type="button" disabled={!role} onClick={() => (finish ? startProfile() : setStep("details"))} className={`${primaryBtn} mt-3`}>
             Next
           </button>
+          {!finish && (
+            <button type="button" onClick={() => setStep("school")} className="w-full text-sm text-white/60 hover:text-white">Back</button>
+          )}
         </div>
       )}
 
-      {step === "details" && !student && (
-        <div className="space-y-4">
-          <NotConnected
-            heading="Industry accounts are app-only for now"
-            body="Web sign-up currently verifies school email addresses only. Create your professional account in the Nexus app, or browse the website as a guest."
-          />
-          <button type="button" onClick={() => setStep("role")} className="w-full text-sm text-white/60 hover:text-white">Back</button>
-        </div>
+      {step === "school" && (
+        <SchoolPicker
+          onPick={(s) => {
+            setSchool(s);
+            setNameExample(exampleName(s));
+            setStep("role");
+          }}
+        />
       )}
 
-      {step === "details" && student && (
+      {step === "details" && role && school && (
         <form onSubmit={submitDetails} className="space-y-4">
-          <div>
-            <label htmlFor="name" className={labelCls}>First &amp; Last Name</label>
-            <input id="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder="Jane Doe" />
-          </div>
-          <div>
-            <label htmlFor="email" className={labelCls}>{student ? "School email" : "Work email"}</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={field}
-              placeholder={student ? "you@school.edu" : "you@company.com"}
-            />
-            {student && email.includes("@") && !/\.edu$/i.test(email.trim()) && (
-              <p className="mt-1.5 text-xs text-white/55">Use your .edu email so we can verify your school.</p>
-            )}
-          </div>
+          <SchoolEmailBox school={school} domains={domains} id={emailID} onID={setEmailID} domain={domain} onDomain={setPickedDomain} />
           {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-          <button type="submit" disabled={!detailsOk || busy} className={primaryBtn}>
+          <button type="submit" disabled={!emailOk || busy} className={primaryBtn}>
             {busy ? "Sending…" : "Send code"}
           </button>
           <button type="button" onClick={() => setStep("role")} className="w-full text-sm text-white/60 hover:text-white">Back</button>
+          {/* Testing shortcut; only under `npm run dev`, never on the live site. */}
+          {process.env.NODE_ENV === "development" && !mock && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setSkipped(true);
+                startProfile();
+              }}
+              className="h-10 w-full rounded-full border border-dashed border-yellow-400/60 text-sm font-semibold text-yellow-300 transition hover:bg-yellow-300/10"
+            >
+              Skip email and code (testing only)
+            </button>
+          )}
         </form>
       )}
 
       {step === "code" && (
-        <CodeStep email={email.trim()} pendingID={pendingID} onBack={() => setStep("details")} onVerified={verified} />
-      )}
-
-      {step === "style" && (
-        <div className="space-y-3">
-          <div>
-            <p className="font-semibold">I&rsquo;m a&hellip;</p>
-            <p className="mt-1 text-sm text-white/65">
-              Your base profile decides what Nexus recommends to you and how your profile looks. You can change it later.
-            </p>
-          </div>
-          {PROFILE_STYLES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setStyle(s)}
-              aria-pressed={style === s}
-              className={`w-full rounded-2xl border p-4 text-left transition ${
-                style === s ? "border-brand bg-brand/15" : "border-white/15 hover:border-white/30"
-              }`}
-            >
-              <p className="font-semibold">
-                {s} <span className="ml-1 text-xs font-normal text-white/55">{STYLE_INFO[s].looksLike}</span>
-              </p>
-              <p className="mt-1 text-sm text-white/65">{STYLE_INFO[s].pitch}</p>
-            </button>
-          ))}
-          {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-          <button type="button" disabled={!style || busy} onClick={submitStyle} className={`${primaryBtn} mt-3`}>
-            {busy ? "Saving…" : "Next"}
-          </button>
-        </div>
+        <CodeStep mock={mock} email={email} pendingID={pendingID} onBack={() => setStep("details")} onVerified={verified} />
       )}
 
       {step === "profile" && (
         <form onSubmit={submitProfile} className="space-y-4">
-          {finish && (
+          <div>
+            <label htmlFor="name" className={labelCls}>First &amp; Last Name</label>
+            <input id="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder={nameExample} autoFocus />
+          </div>
+          <div>
+            <label htmlFor="major" className={labelCls}>{student ? "Major" : "Department"}</label>
+            <input id="major" value={major} onChange={(e) => setMajor(e.target.value)} className={field} placeholder="Radio-Television-Film" />
+          </div>
+          {student && (
             <div>
-              <label htmlFor="name" className={labelCls}>First &amp; Last Name</label>
-              <input id="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder="Jane Doe" />
+              <label htmlFor="classOf" className={labelCls}>Class of</label>
+              {/* Typed, not picked from a list: four digits, like Edit profile's graduation year. */}
+              <input
+                id="classOf"
+                value={classOf}
+                onChange={(e) => setClassOf(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                className={field}
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={4}
+                placeholder="2028"
+              />
             </div>
           )}
           <div>
-            <label htmlFor="major" className={labelCls}>Major</label>
-            <input id="major" value={major} onChange={(e) => setMajor(e.target.value)} className={field} placeholder="Radio-Television-Film" />
-          </div>
-          <div>
-            <label htmlFor="classOf" className={labelCls}>Class of</label>
-            <select id="classOf" value={classOf} onChange={(e) => setClassOf(e.target.value)} className={field}>
-              <option value="">Select year</option>
-              {years.map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
+            <p className={labelCls}>Tags</p>
+            <div className="flex flex-wrap gap-2">
+              {ROLE_TAGS.map((tag) => {
+                const on = tags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => toggleTag(tag)}
+                    className={`rounded-full px-3 py-1.5 text-sm font-medium transition ${
+                      on ? "bg-[var(--auth)] text-[var(--auth-fg)]" : "bg-white/10 text-white/80 hover:bg-white/20"
+                    }`}
+                  >
+                    {tag}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           {error && (
             <p role="alert" className="text-sm text-red-400">
@@ -243,7 +248,25 @@ export default function SignUpForm({ finish = false }: { finish?: boolean }) {
         </form>
       )}
 
-      {step === "done" && (
+      {step === "done" && practice && (
+        <div className="space-y-4 text-center">
+          <p className="text-lg font-semibold">You&rsquo;re in, {firstName}!</p>
+          <p className="text-sm text-white/65">
+            Your Nexus account is ready. People on Nexus, including in the iPhone app, can now find your profile.
+          </p>
+          <Link href="/" className={`${primaryBtn} flex items-center justify-center`}>Go to Nexus</Link>
+          {mock ? (
+            <p className="text-xs text-white/50">
+              That was the mock launch: no account was created.{" "}
+              <Link href="/welcome/mock" className="font-semibold text-[var(--auth-line)] underline underline-offset-4 hover:opacity-80">Run it again</Link>
+            </p>
+          ) : (
+            <p className="text-xs text-yellow-300/80">Testing: the email step was skipped, so no account was created and you are not signed in.</p>
+          )}
+        </div>
+      )}
+
+      {step === "done" && !practice && (
         <SignedIn
           heading={existing ? "Welcome back!" : `You're in, ${firstName}!`}
           note={

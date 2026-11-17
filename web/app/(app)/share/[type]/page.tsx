@@ -7,6 +7,8 @@ import MusicForm from "@/components/share/forms/MusicForm";
 import PerformanceForm from "@/components/share/forms/PerformanceForm";
 import PhotographyForm from "@/components/share/forms/PhotographyForm";
 import ProjectForm from "@/components/share/forms/ProjectForm";
+import { DraftProvider } from "@/components/share/DraftContext";
+import type { ShareTypeID } from "@/lib/sharePost";
 import { SHARE_TYPES } from "@/lib/shareTypes";
 
 const FORMS = {
@@ -30,7 +32,10 @@ export default async function ShareSubmission(props: PageProps<"/share/[type]">)
   // The forms read today's date (release-year menus), so render them per visit, not at build time.
   return (
     <Suspense fallback={null}>
-      <Form />
+      {/* ?draft=<id> resumes a saved draft (Share → Drafts). */}
+      <DraftProvider type={type as ShareTypeID}>
+        <Form />
+      </DraftProvider>
     </Suspense>
   );
 }

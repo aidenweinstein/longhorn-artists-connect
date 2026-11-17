@@ -51,13 +51,17 @@ async function Profile() {
   return (
     <ProfileView
       collaborators={collaborators}
-      styled={<StyledProfile account={account} posts={posts} creative={creative} events={events} isOwn />}
+      styled={<StyledProfile part="lists" account={account} posts={posts} creative={creative} events={events} isOwn />}
+        info={<StyledProfile part="info" account={account} posts={posts} creative={creative} events={events} isOwn />}
       account={account}
+      editableStatus
       posts={posts}
       displayName={session.email}
       schoolFallback={session.schoolName}
+      canEditGrid={!!session.userRecordName}
+      // On anything wider than a phone these two are on the top bar (PortfolioBarActions).
       actions={
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 sm:hidden">
           <Link href="/portfolio/edit" className="rounded-full border border-border px-4 py-1.5 text-sm font-medium transition hover:bg-surface">
             Edit profile
           </Link>

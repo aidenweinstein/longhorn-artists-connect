@@ -8,6 +8,7 @@ import { CREATIVE_ALL_TAG, creativeTag, getCreativeProfile, writeCreativeProfile
 import { applyForPage, detailsFromForm } from "@/lib/creativeForm";
 import { myStyle } from "@/lib/myStyle";
 import { cleanProfile } from "@/lib/profileFields";
+import { cleanWorkStatus } from "@/lib/workStatus";
 import { emptyDetails, hasAnyCreativeInfo, suggestedStyle } from "@/lib/profileStyle";
 
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
@@ -108,7 +109,7 @@ export async function saveProfile(form: FormData): Promise<{ ok: true } | { ok: 
     if (headshotFile.size > MAX_PHOTO_BYTES) return { ok: false, message: "Saved your profile, but that headshot is too large. Try one under 5 MB." };
     if (!/^image\/(jpeg|png)$/.test(headshotFile.type)) return { ok: false, message: "Saved your profile, but the headshot needs to be a JPEG or PNG." };
     try {
-      headshot = await uploadAsset("CreativeProfile", `CreativeProfile_${userRecordName}`, "headshot", new Uint8Array(await headshotFile.arrayBuffer()), headshotFile.type);
+      headshot = await uploadAsset("UserProfile", `UserProfile_${userRecordName}`, "headshot", new Uint8Array(await headshotFile.arrayBuffer()), headshotFile.type);
     } catch (e) {
       console.error("[profile] headshot:", e instanceof Error ? e.message : e);
       return { ok: false, message: "Saved your profile, but couldn't upload your headshot. Try again." };
@@ -124,4 +125,33 @@ export async function saveProfile(form: FormData): Promise<{ ok: true } | { ok: 
   updateTag(CREATIVE_ALL_TAG);
   if (!existing && picked) await applyForPage(style, current.account.profileID, current.account.name, current.session.email);
   return { ok: true };
+}
+
+/**
+ * Sets just the signed-in visitor's status ("Looking for Work", "Busy", "Booked until
+ * YYYY-MM-DD", or "" for none), from the status pill on their own profile.
+ */
+export async function saveWorkStatus(value: string): Promise<{ ok: true; status: string } | { ok: false; message: string }> {
+  const current = await currentAccount();
+  const userRecordName = current?.session.userRecordName;
+  if (!current?.account || !userRecordName) return { ok: false, message: "Sign in to change your status." };
+  const status = cleanWorkStatus(value);
+  if (value.trim() && !status) return { ok: false, message: "That status isn't one of the choices." };
+  try {
+    const error = await updateFields("UserProfile", `UserProfile_${userRecordName}`, { workStatus: { value: status, type: "STRING" } });
+    if (error) {
+      console.error("[status] save failed:", error.code, error.reason);
+      return {
+        ok: false,
+        message: /workStatus/i.test(`${error.code} ${error.reason}`)
+          ? "Status needs the workStatus field added to UserProfile in CloudKit (Production) first."
+          : "Couldn't save your status. Try again in a moment.",
+      };
+    }
+  } catch (e) {
+    console.error("[status] save failed:", e instanceof Error ? e.message : e);
+    return { ok: false, message: "Couldn't save your status. Try again in a moment." };
+  }
+  updateTag(accountTag(userRecordName));
+  return { ok: true, status };
 }

@@ -190,12 +190,14 @@ struct PersonProfileView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     profileHeaderView
                     bioView
-                    // Actor resume / filmmaker filmography / musician discography.
-                    StyledProfileSection(name: name, profileID: directoryUser?.id)
+                    // Order: current work, then their finished posts, then the rest
+                    // (events they're going to, and the actor resume / filmmaker
+                    // filmography / musician discography their tags unlock).
                     CurrentWorkSection(source: store.visibleApprovedSubmissions) { $0.name == name }
-                    SeeYouAtSection(userID: directoryUser?.id, source: store.visibleApprovedSubmissions)
                     postsSeparator
                     submissionsView
+                    SeeYouAtSection(userID: directoryUser?.id, source: store.visibleApprovedSubmissions)
+                    StyledProfileSection(name: name, profileID: directoryUser?.id)
                     if isModeratorMode && isCreatedProfile {
                         Divider()
                         deleteProfileButton
@@ -246,17 +248,21 @@ struct PersonProfileView: View {
         // row (posts, unique collaborators, total collaborations) underneath.
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 20) {
-                profileImageView
-                    // Track where the photo sits so the zoom can lift off from it, and
-                    // hide the original while its enlarged twin is on screen.
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
-                        profileImageFrame = $0
-                    }
-                    .opacity(showEnlargedPhoto ? 0 : 1)
-                    // Tap the photo to see it enlarged and centered (only when set).
-                    .onTapGesture {
-                        if profileImage != nil { showEnlargedPhoto = true }
-                    }
+                // Photo with the work status (Looking for Work, etc.) centered beneath it.
+                VStack(spacing: 8) {
+                    profileImageView
+                        // Track where the photo sits so the zoom can lift off from it, and
+                        // hide the original while its enlarged twin is on screen.
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                            profileImageFrame = $0
+                        }
+                        .opacity(showEnlargedPhoto ? 0 : 1)
+                        // Tap the photo to see it enlarged and centered (only when set).
+                        .onTapGesture {
+                            if profileImage != nil { showEnlargedPhoto = true }
+                        }
+                    WorkStatusPill(status: WorkStatus(storedValue: directoryUser?.workStatus ?? ""))
+                }
 
                 VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {

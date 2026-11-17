@@ -54,6 +54,38 @@ export function encodeSession(session: Session): string {
   return `${payload}.${sign(payload)}`;
 }
 
+/**
+ * A guest pass proves the visitor confirmed an email address (any address, by the
+ * same 6-digit code as sign-in) and lets them browse without an account. It is
+ * signed differently from a session, so it can never be presented as one.
+ */
+export const GUEST_COOKIE = "nexus_guest";
+export const GUEST_COOKIE_OPTIONS = SESSION_COOKIE_OPTIONS;
+
+export function encodeGuestPass(email: string): string {
+  const payload = Buffer.from(JSON.stringify({ email, issuedAt: Math.floor(Date.now() / 1000) })).toString("base64url");
+  return `${payload}.${sign(`guest:${payload}`)}`;
+}
+
+/** True for an unexpired guest pass this site issued. An unsigned cookie (the old "1") is not one. */
+export function hasGuestPass(value: string | undefined): boolean {
+  if (!value) return false;
+  const [payload, signature] = value.split(".");
+  if (!payload || !signature) return false;
+
+  const expected = Buffer.from(sign(`guest:${payload}`));
+  const presented = Buffer.from(signature);
+  if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) return false;
+
+  try {
+    const pass = JSON.parse(Buffer.from(payload, "base64url").toString()) as { email?: string; issuedAt?: number };
+    const ageSeconds = Date.now() / 1000 - Number(pass.issuedAt);
+    return !!pass.email && ageSeconds >= 0 && ageSeconds < SESSION_MAX_AGE;
+  } catch {
+    return false;
+  }
+}
+
 export function decodeSession(value: string | undefined): Session | null {
   if (!value) return null;
   const [payload, signature] = value.split(".");

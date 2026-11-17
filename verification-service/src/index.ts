@@ -6,9 +6,10 @@
 ///   POST /v1/verify/request      { email, userRecordName } -> { pendingID, nonce }
 ///   POST /v1/verify/confirm      { pendingID, code }       -> { verified, school }
 ///   GET  /v1/verify/status?user= has this account been verified
-///   POST /v1/web/session/request website sign-in, see src/webSession.ts
+///   POST /v1/web/session/request website sign-in (and guest email check), see src/webSession.ts
 ///   POST /v1/web/session/confirm
 ///   POST /v1/web/account/create  create an account from the website, see src/webSession.ts
+///   GET  /v1/people/listed       who's on the website's People pages (public, read by the app)
 ///   POST /v1/web/people/*         People pages, see src/people.ts
 ///   POST /v1/admin/backfill-schools   one-off schoolID migration (ADMIN_TOKEN)
 ///
@@ -35,7 +36,7 @@ import { fetchUserProfile, writeVerificationRecord, clearProfileNonce } from "./
 import { runSweep } from "./sweep";
 import { runBackfill, BackfillCursor } from "./backfill";
 import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreate, WEB_ACCOUNT_PREFIX } from "./webSession";
-import { handlePeople } from "./people";
+import { handlePeople, handlePeopleListed } from "./people";
 
 const CODE_TTL_SECONDS = 600; // 10 minutes
 const MAX_CODE_ATTEMPTS = 5;
@@ -68,6 +69,9 @@ export default {
             }
             if (url.pathname === "/v1/web/account/create" && request.method === "POST") {
                 return await handleWebAccountCreate(request, env);
+            }
+            if (url.pathname === "/v1/people/listed" && request.method === "GET") {
+                return await handlePeopleListed(env);
             }
             if (url.pathname.startsWith("/v1/web/people/") && request.method === "POST") {
                 return await handlePeople(request, env, url.pathname);

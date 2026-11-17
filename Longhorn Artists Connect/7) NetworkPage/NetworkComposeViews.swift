@@ -14,18 +14,25 @@ import CloudKit
 
 // MARK: - New Message View
 
-/// New Message composer, styled after Apple's: a "To:" bar at the top to add a
-/// recipient, with the standard in-message chat (`InMessageView`) shown below once a
-/// recipient is chosen. Messaging is 1:1, so exactly one recipient is supported.
+/// New Message composer, styled after Apple's: a "To:" bar at the top to add
+/// recipients, with the standard in-message chat (`InMessageView`) shown below once
+/// someone is chosen. One recipient is a one-to-one chat; two or more make a group,
+/// which is created when the first message is sent (after that the recipient list is
+/// locked, like Messages).
 struct NewMessageView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var userProfileManager = UserProfileManager.shared
     @ObservedObject private var blockManager = BlockedUsersManager.shared
     @State private var searchText = ""
 
-    // The chosen recipient. Until one is picked, the "To:" field searches the
-    // directory and the suggestions list is shown instead of a chat.
-    @State private var selectedRecipient: DirectoryUser?
+    // The chosen recipients, in the order they were added. Until someone is picked,
+    // the "To:" field searches the directory and the suggestions list is shown
+    // instead of a chat.
+    @State private var selectedRecipients: [DirectoryUser] = []
+
+    // Set once a group's record exists (first message sent). From then on the
+    // recipients can't change — that's the group now.
+    @State private var createdGroupID: UUID?
 
     // The current user's CloudKit record name, used to keep yourself out of the
     // recipient list — you can't message yourself.
@@ -45,14 +52,24 @@ struct NewMessageView: View {
         return excludingSelf(userProfileManager.searchUsers(searchText))
     }
 
-    /// Removes the current user, and anyone they've blocked, from a list of directory
-    /// users — so you never see (or can pick) yourself or a blocked person as a recipient.
+    /// Removes the current user, anyone they've blocked, and people already added,
+    /// from a list of directory users.
     private func excludingSelf(_ users: [DirectoryUser]) -> [DirectoryUser] {
-        users.filter { user in
+        let chosen = Set(selectedRecipients.map(\.messagingUserID))
+        return users.filter { user in
             if let currentUserID, user.messagingUserID == currentUserID { return false }
+            if chosen.contains(user.messagingUserID) { return false }
             return !blockManager.isBlocked(user.messagingUserID)
         }
     }
+
+    /// The directory is searched while the To field has text; otherwise the chat for
+    /// the chosen people shows (or, with nobody chosen yet, everyone to pick from).
+    private var showsSuggestions: Bool {
+        selectedRecipients.isEmpty || (isToFieldFocused && !searchText.isEmpty)
+    }
+
+    private var isGroupDraft: Bool { selectedRecipients.count >= 2 || createdGroupID != nil }
 
     var body: some View {
         NavigationStack {
@@ -60,7 +77,13 @@ struct NewMessageView: View {
                 recipientBar
                 Divider()
 
-                if let recipient = selectedRecipient {
+                if showsSuggestions {
+                    suggestionsList
+                } else if let createdGroupID {
+                    // The group exists now; keep chatting in it.
+                    InMessageView(thread: .group(createdGroupID), showsHeader: false)
+                        .id(createdGroupID)
+                } else if selectedRecipients.count == 1, let recipient = selectedRecipients.first {
                     // Standard in-message chat for the chosen 1:1 thread. Its built-in
                     // header is hidden so this composer's "To:" bar owns the top.
                     InMessageView(
@@ -72,10 +95,15 @@ struct NewMessageView: View {
                     )
                     .id(recipient.messagingUserID)   // rebuild the chat when the recipient changes
                 } else {
-                    suggestionsList
+                    // Two or more people: a group that's created on the first send.
+                    let memberIDs = selectedRecipients.map(\.messagingUserID)
+                    InMessageView(thread: .newGroup(memberIDs: memberIDs), showsHeader: false) { id in
+                        createdGroupID = id
+                    }
+                    .id(memberIDs.joined(separator: "|"))   // rebuild when the roster changes
                 }
             }
-            .navigationTitle("New Message")
+            .navigationTitle(isGroupDraft ? "New Group" : "New Message")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -97,7 +125,7 @@ struct NewMessageView: View {
                 }
                 await userProfileManager.fetchAllUsers()
             }
-            .onAppear { isToFieldFocused = (selectedRecipient == nil) }
+            .onAppear { isToFieldFocused = selectedRecipients.isEmpty }
         }
         .presentationDragIndicator(.hidden)
         .interactiveDismissDisabled(false) // Allow pull to dismiss
@@ -110,40 +138,54 @@ struct NewMessageView: View {
             Text("To:")
                 .foregroundStyle(.secondary)
 
-            if let recipient = selectedRecipient {
-                recipientToken(recipient)
-                Spacer(minLength: 0)
-            } else {
-                // `axis: .vertical` makes this a multiline field, which on iOS 26 does NOT
-                // get the single-line "capsule" box that a plain TextField picks up. (This
-                // is why the submission fields, all `axis: .vertical`, stay boxless.)
-                TextField("", text: $searchText, axis: .vertical)
-                    .focused($isToFieldFocused)
-                    .textInputAutocapitalization(.words)
-                    .autocorrectionDisabled()
+            // Tokens for everyone added so far, then the search field to add more. Once
+            // the group exists the field goes away and the tokens lose their "x".
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(selectedRecipients) { user in
+                        recipientToken(user, removable: createdGroupID == nil)
+                    }
+                    if createdGroupID == nil {
+                        // `axis: .vertical` makes this a multiline field, which on iOS 26 does NOT
+                        // get the single-line "capsule" box that a plain TextField picks up. (This
+                        // is why the submission fields, all `axis: .vertical`, stay boxless.)
+                        TextField(selectedRecipients.isEmpty ? "" : "Add people for a group", text: $searchText, axis: .vertical)
+                            .focused($isToFieldFocused)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .frame(minWidth: 160)
+                    }
+                }
             }
+            // A ScrollView is greedy in both axes, so without this the horizontal
+            // token strip would stretch the "To:" bar to fill the screen. Keep it
+            // at its content height (one line of tokens / text), like a plain field.
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
     }
 
-    /// The chosen recipient shown as a removable chip, like Apple's blue address tokens.
-    private func recipientToken(_ user: DirectoryUser) -> some View {
+    /// A chosen recipient shown as a removable chip, like Apple's blue address tokens.
+    private func recipientToken(_ user: DirectoryUser, removable: Bool) -> some View {
         HStack(spacing: 6) {
             Text(user.fullName)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(Color.brandOrange)
+                .lineLimit(1)
 
-            Button {
-                selectedRecipient = nil
-                searchText = ""
-                isToFieldFocused = true
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+            if removable {
+                Button {
+                    selectedRecipients.removeAll { $0.id == user.id }
+                    searchText = ""
+                    isToFieldFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(user.fullName)")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove recipient")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -200,7 +242,10 @@ struct NewMessageView: View {
     }
 
     private func selectRecipient(_ user: DirectoryUser) {
-        selectedRecipient = user
+        guard !selectedRecipients.contains(where: { $0.id == user.id }) else { return }
+        selectedRecipients.append(user)
+        searchText = ""
+        // Drop to the chat; tapping the To field again adds more people.
         isToFieldFocused = false
     }
 

@@ -5,10 +5,13 @@
 export const FILM_CATEGORIES = ["Org Project", "Class Project", "Independent Project"] as const;
 export type FilmCategory = (typeof FILM_CATEGORIES)[number];
 
-export const FILM_STUDIOS = ["Collective", "Incubator", "Beyond Frame Productions", "DKA", "Black Lens"];
+/** The Film form's Org/Class choices, besides Independent and a typed-in Other. */
+export const FILM_ORGS = ["Collective", "Incubator", "The New Project", "Black Lens"];
+export const FILM_CLASSES = ["RTF 304D Intro to Production", "RTF 366K Intro to Narrative Production", "Director's Workshop"];
 
+/** Every class name a post may carry, current and earlier wordings, so cards can tell a class from an org. */
 export const PRODUCTION_CLASSES = [
-  "RTF 304D Intro to Production",
+  ...FILM_CLASSES,
   "RTF 366K Narrative Production",
   "RTF 343 Advanced Narrative Production",
   "RTF 367D Directing Workshop",

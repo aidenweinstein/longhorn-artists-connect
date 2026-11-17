@@ -71,10 +71,12 @@ struct ConversationsListView: View {
     private var visibleConversations: [Conversation] {
         let uid = currentUserID ?? ""
         return messageStore.visibleConversations
-            .filter { !blockManager.isBlocked($0.otherParticipant(for: uid)) }
+            // Blocking hides one-to-one threads; a group stays visible even if someone
+            // blocked is in it (the others are still people you talk to).
+            .filter { $0.isGroup || !blockManager.isBlocked($0.otherParticipant(for: uid)) }
             .sorted { a, b in
-                let aPinned = convoPrefs.isPinned(a.otherParticipant(for: uid))
-                let bPinned = convoPrefs.isPinned(b.otherParticipant(for: uid))
+                let aPinned = convoPrefs.isPinned(a.preferenceKey(for: uid))
+                let bPinned = convoPrefs.isPinned(b.preferenceKey(for: uid))
                 if aPinned != bPinned { return aPinned }   // pinned threads first
                 // then most-recent first
                 return (a.lastMessageTimestamp ?? .distantPast) > (b.lastMessageTimestamp ?? .distantPast)
@@ -94,8 +96,8 @@ struct ConversationsListView: View {
                         // Per-user unread, derived from local messages (not the shared
                         // Conversation.unreadCount field, which can't be per-participant).
                         unreadCount: messageStore.unreadCount(for: conversation.id),
-                        isPinned: convoPrefs.isPinned(conversation.otherParticipant(for: currentUserID ?? "")),
-                        isMuted: convoPrefs.isMuted(conversation.otherParticipant(for: currentUserID ?? ""))
+                        isPinned: convoPrefs.isPinned(conversation.preferenceKey(for: currentUserID ?? "")),
+                        isMuted: convoPrefs.isMuted(conversation.preferenceKey(for: currentUserID ?? ""))
                     )
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -125,14 +127,18 @@ struct ConversationsListView: View {
     
     @ViewBuilder
     private func destinationView(for conversation: Conversation) -> some View {
-        let info = userInfo(for: conversation)
-        
-        InMessageView(
-            conversationID: conversation.id,
-            otherUserID: conversation.otherParticipant(for: currentUserID ?? ""),
-            otherUserName: info.name,
-            otherUserRole: info.role
-        )
+        if conversation.isGroup {
+            InMessageView(thread: .group(conversation.id))
+        } else {
+            let info = userInfo(for: conversation)
+
+            InMessageView(
+                conversationID: conversation.id,
+                otherUserID: conversation.otherParticipant(for: currentUserID ?? ""),
+                otherUserName: info.name,
+                otherUserRole: info.role
+            )
+        }
     }
     
     // MARK: - Actions
@@ -183,11 +189,12 @@ struct ConversationsListView: View {
     // MARK: - User Info Helpers
     
     private func loadUserInfo() async {
-        // Load user display info for all conversation participants
-        let participantIDs = Set(messageStore.conversations.flatMap {
-            [
-                $0.otherParticipant(for: currentUserID ?? "")
-            ]
+        // Load user display info for all conversation participants (every member of
+        // a group, so their names are ready for the group's title).
+        let participantIDs = Set(messageStore.conversations.flatMap { conversation -> [String] in
+            conversation.isGroup
+                ? conversation.otherMemberIDs(for: currentUserID ?? "")
+                : [conversation.otherParticipant(for: currentUserID ?? "")]
         })
 
         // Make sure the directory is populated so we can resolve names.
@@ -214,6 +221,18 @@ struct ConversationsListView: View {
     }
     
     private func userInfo(for conversation: Conversation) -> UserDisplayInfo {
+        if conversation.isGroup {
+            // Groups: the group's name (or its members' first names) and a head count.
+            let title = conversation.displayTitle(for: currentUserID) { id in
+                userInfoCache[id]?.name.split(separator: " ").first.map(String.init)
+                    ?? UserProfileManager.shared.findUser(byID: id)?.firstName
+            }
+            return UserDisplayInfo(
+                id: conversation.id.uuidString,
+                name: title,
+                role: "\(conversation.allMemberIDs.count) people"
+            )
+        }
         let otherUserID = conversation.otherParticipant(for: currentUserID ?? "")
         return userInfoCache[otherUserID] ?? UserDisplayInfo(
             id: otherUserID,
@@ -237,16 +256,24 @@ struct ConversationRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Profile placeholder
-            Circle()
-                .fill(Color.brandOrange.opacity(0.2))
-                .frame(width: 56, height: 56)
-                .overlay {
-                    Text(userInfo.initials)
-                        .font(.title3)
-                        .fontWeight(.medium)
-                        .foregroundStyle(Color.brandOrange)
-                }
+            if conversation.isGroup {
+                // Groups: the members' photos (or a people symbol).
+                GroupAvatarView(
+                    members: conversation.allMemberIDs.compactMap { UserProfileManager.shared.findUser(byID: $0) },
+                    size: 56
+                )
+            } else {
+                // Profile placeholder
+                Circle()
+                    .fill(Color.brandOrange.opacity(0.2))
+                    .frame(width: 56, height: 56)
+                    .overlay {
+                        Text(userInfo.initials)
+                            .font(.title3)
+                            .fontWeight(.medium)
+                            .foregroundStyle(Color.brandOrange)
+                    }
+            }
 
             // Conversation info
             VStack(alignment: .leading, spacing: 4) {

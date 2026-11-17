@@ -1,4 +1,4 @@
-import { lookup, modify, type CKRecord } from "./client";
+import { lookup, modify, queryWhere, type CKRecord } from "./client";
 
 /*
  * Connections between Nexus members, from the same CloudKit records the app uses
@@ -69,4 +69,25 @@ export async function connect(me: string, myName: string, other: string): Promis
 export async function disconnect(me: string, other: string): Promise<ConnectionState> {
   await modify([{ kind: "delete", recordName: edgeName(me, other) }]);
   return (await edgeExists(other, me).catch(() => false)) ? "incoming" : "none";
+}
+
+/**
+ * Everyone the visitor is connected with, and the requests waiting on them, as raw
+ * user record names, like the app's Network directory. Newest requests first.
+ */
+export async function myConnections(me: string): Promise<{ requests: string[]; connected: string[] }> {
+  const id = rawUserID(me);
+  const [sent, received] = await Promise.all([
+    queryWhere("Connection", "fromUserID", id, ["toUserID"]),
+    queryWhere("Connection", "toUserID", id, ["fromUserID", "createdDate"]),
+  ]);
+  const out = new Set(sent.map((r) => String(r.fields.toUserID?.value ?? "")).filter(Boolean));
+  const incoming = received
+    .map((r) => ({ from: String(r.fields.fromUserID?.value ?? ""), at: Number(r.fields.createdDate?.value ?? r.created?.timestamp ?? 0) }))
+    .filter((r) => r.from && r.from !== id)
+    .sort((a, b) => b.at - a.at);
+  const requests: string[] = [];
+  const connected: string[] = [];
+  for (const { from } of incoming) (out.has(from) ? connected : requests).push(from);
+  return { requests: [...new Set(requests)], connected: [...new Set(connected)] };
 }

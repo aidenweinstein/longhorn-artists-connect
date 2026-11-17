@@ -5,7 +5,7 @@ import type { SampleProfile } from "./sampleProfiles";
  *
  * Until filmmakers can post their own roles, the Actors page opens filtered to
  * the first role below. Edit the project or roles freely. Every rule is optional:
- *   gender            — "Female", "Male", "Non-binary"… (matches the actor's Gender row)
+ *   gender            — "Female", "Male" (matches the actor's Gender row)
  *   ageMin / ageMax   — the actor's Age, or their Age range, must overlap this
  *   ethnicAppearance  — any of these words in the actor's Ethnic appearance row
  *   skills            — every one must appear in their Special skills or Languages

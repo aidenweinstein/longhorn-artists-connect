@@ -1,7 +1,9 @@
 import { Suspense, type ReactNode } from "react";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
+import PortfolioBarActions from "@/components/PortfolioBarActions";
 import AccountLink, { AccountPlaceholder } from "@/components/AccountLink";
+import SchoolBadge, { SchoolBadgePlaceholder } from "@/components/SchoolBadge";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -10,10 +12,21 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     // background instead of tinting it the school color.
     <div className="flex h-dvh flex-col overflow-hidden">
       <Suspense>
-        <TopBar />
+        <TopBar
+          portfolioActions={
+            <Suspense>
+              <PortfolioBarActions />
+            </Suspense>
+          }
+        />
       </Suspense>
       <div className="flex min-h-0 flex-1">
         <Sidebar
+          school={
+            <Suspense fallback={<SchoolBadgePlaceholder />}>
+              <SchoolBadge />
+            </Suspense>
+          }
           account={
             <Suspense fallback={<AccountPlaceholder />}>
               <AccountLink />

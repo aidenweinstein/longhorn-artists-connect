@@ -1,7 +1,7 @@
 /// Website sign-in: proves control of a school email address and nothing else.
 ///
 /// Routes (called server-to-server by the Nexus website, never by a browser):
-///   POST /v1/web/session/request   { email }            -> { pendingID, expiresAt, school }
+///   POST /v1/web/session/request   { email, purpose? }  -> { pendingID, expiresAt, school }
 ///   POST /v1/web/session/confirm   { pendingID, code }  -> { email, schoolID, schoolName, domainKind, userRecordName? | accountToken? }
 ///   POST /v1/web/account/create    { accountToken, firstName, lastName, major, graduationYear }
 ///                                                       -> { userRecordName, schoolName, created }
@@ -19,6 +19,12 @@
 /// verified_emails exactly as the app's flow links an iCloud account. From then
 /// on, signing in on the website with that email returns `userRecordName:
 /// "web_<id>"`. These accounts exist for people who can't run the iOS app.
+///
+/// Guests (added 2026-11-16): `purpose: "guest"` on request confirms ANY address
+/// the visitor controls, not a school one, like the app's Enthusiast flow. Its
+/// confirm returns `domainKind: "guest"` with no school, no account and no
+/// `accountToken`: a guest can browse the website and nothing else, so proving a
+/// personal address must never lead to a school account.
 ///
 /// Both routes require `Authorization: Bearer <WEB_CLIENT_TOKEN>` and 404 when
 /// the token is unset, so the Worker can't be used as an open mail relay. The
@@ -48,6 +54,9 @@ export const WEB_MAX_CODE_ATTEMPTS = 5;
 export const WEB_ACCOUNT_TOKEN_TTL_SECONDS = 24 * 3600;
 /// Every website account's userRecordName starts with this.
 export const WEB_ACCOUNT_PREFIX = "web_";
+
+/// `domain_kind` of a guest's pending session: any email, no school.
+export const WEB_GUEST_KIND = "guest";
 
 export interface DomainMatch {
     schoolID: string;
@@ -100,7 +109,11 @@ export async function handleWebSessionRequest(
         return errorResponse("rate_limited", "Too many attempts. Try again later.", 429);
     }
 
-    const match = await lookupDomain(env, domain);
+    // Guests confirm any address they control, so the school registry doesn't apply.
+    const isGuest = body.purpose === WEB_GUEST_KIND;
+    const match: DomainMatch | null = isGuest
+        ? { schoolID: "", schoolName: "", kind: WEB_GUEST_KIND }
+        : await lookupDomain(env, domain);
     if (!match) {
         return errorResponse(
             "unsupported_domain",
@@ -138,7 +151,7 @@ export async function handleWebSessionRequest(
         )
         .run();
 
-    await sendVerificationCode(env, { to: email, code, schoolName: match.schoolName, context: "web" });
+    await sendVerificationCode(env, { to: email, code, schoolName: match.schoolName, context: isGuest ? "guest" : "web" });
 
     return json({
         pendingID,
@@ -197,6 +210,12 @@ export async function handleWebSessionConfirm(request: Request, env: Env): Promi
         .run();
     if (!consumed.meta?.changes) {
         return errorResponse("invalid_code", "That code was already used.", 400);
+    }
+
+    // A guest proved an address and nothing more: no school, no account lookup,
+    // and above all no token that could create an account.
+    if (pending.domain_kind === WEB_GUEST_KIND) {
+        return json({ email: pending.email_normalized, schoolID: "", schoolName: "", domainKind: WEB_GUEST_KIND });
     }
 
     const school = await env.DB.prepare(`SELECT id, name FROM schools WHERE id = ?`)
@@ -279,9 +298,13 @@ export async function handleWebAccountCreate(
     const lastName = cleanText(body.lastName, 50);
     const major = cleanText(body.major, 100);
     const graduationYear = cleanText(body.graduationYear, 4);
+    // Role tags picked at sign-up, as the app stores them: "Director, Editor".
+    const userTypes = cleanText(body.userTypes, 400);
     if (!token) return errorResponse("bad_request", "Missing account token.", 400);
     if (!firstName || !lastName) return errorResponse("bad_request", "Enter your first and last name.", 400);
-    if (!/^\d{4}$/.test(graduationYear)) return errorResponse("bad_request", "Pick your graduation year.", 400);
+    // Educators (chosen at sign-up) have no graduation year and are made Professors.
+    const educator = body.role === "educator";
+    if (!educator && !/^\d{4}$/.test(graduationYear)) return errorResponse("bad_request", "Pick your graduation year.", 400);
 
     if (await checkAllRateLimits(env, [
         { dimension: "web_account_ip", value: endUserIP(request), limit: 10, windowSeconds: 3600 },
@@ -347,8 +370,8 @@ export async function handleWebAccountCreate(
             major: { value: major },
             minor: { value: "" },
             certificate: { value: "" },
-            graduationYear: { value: graduationYear },
-            userTypes: { value: "" },
+            graduationYear: { value: educator ? "" : graduationYear },
+            userTypes: { value: userTypes },
             bio: { value: "" },
             instagramHandle: { value: "" },
             websiteURL: { value: "" },
@@ -359,7 +382,7 @@ export async function handleWebAccountCreate(
             companyRole: { value: "" },
             isIndustryProfessional: { value: 0 },
             accountKind: { value: "Artist" },
-            schoolRole: { value: domainKind === "staff" ? "Professor" : "Student" },
+            schoolRole: { value: educator || domainKind === "staff" ? "Professor" : "Student" },
         }, OPTIONAL_PROFILE_FIELDS);
         await writer.writeVerification(env, {
             userRecordName,

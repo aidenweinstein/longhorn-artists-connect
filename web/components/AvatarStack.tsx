@@ -1,6 +1,7 @@
 import Avatar from "./Avatar";
 import PersonLink from "./PersonLink";
 import type { Post } from "@/lib/mockContent";
+import { avatarSource } from "@/lib/smallImage";
 
 /** Linked main artists' profile pictures, or overlapping pictures when several share the credit. Each opens that person's portfolio. */
 export default function AvatarStack({ post, size }: { post: Post; size: "feed" | "md" }) {
@@ -8,7 +9,7 @@ export default function AvatarStack({ post, size }: { post: Post; size: "feed" |
   const people = (
     post.mainCredits?.length
       ? post.mainCredits
-      : [{ name: post.creator, avatarUrl: post.creatorAvatarUrl, profileID: post.creatorProfileID }]
+      : [{ name: post.creator, avatarUrl: post.creatorAvatarUrl, avatarKey: post.creatorAvatarKey, profileID: post.creatorProfileID }]
   ).filter((p) => p.profileID);
   if (people.length === 0) return null;
   return (
@@ -16,7 +17,7 @@ export default function AvatarStack({ post, size }: { post: Post; size: "feed" |
       {people.map((p, i) => (
         <span key={p.name} title={p.name} className={`rounded-full ring-2 ring-background ${i > 0 ? (size === "md" ? "-ml-3" : "-ml-2.5") : ""}`}>
           <PersonLink name={p.name} profileID={p.profileID} className="block rounded-full hover:no-underline">
-            <Avatar name={p.name} src={p.avatarUrl} size={size} />
+            <Avatar name={p.name} src={avatarSource(p)} size={size} />
           </PersonLink>
         </span>
       ))}

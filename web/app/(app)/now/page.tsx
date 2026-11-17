@@ -4,11 +4,13 @@ import { Group, Section } from "@/components/NowTabs";
 import { currentAccount } from "@/lib/account";
 import { discoverItems } from "@/lib/content";
 import type { DiscoverItem, NexusEvent, Project } from "@/lib/discoverContent";
-import { allListings } from "@/lib/cloudkit/creative";
+import { allDirectoryGroups } from "@/lib/cloudkit/creative";
+import { featuresFor } from "@/lib/featured";
 import { myStyle } from "@/lib/myStyle";
 import {
   GIG_PATTERN,
   STYLE_INFO,
+  actNames,
   crewFor,
   emptyDetails,
   fitsRole,
@@ -51,7 +53,7 @@ export default async function NowPage() {
     );
   }
 
-  const [{ style, profile }, items, listings] = await Promise.all([myStyle(), discoverItems().catch((): DiscoverItem[] => []), allListings()]);
+  const [{ style, profile }, items, directoryGroups] = await Promise.all([myStyle(), discoverItems().catch((): DiscoverItem[] => []), allDirectoryGroups()]);
   const account = current.account;
 
   if (!style) {
@@ -72,14 +74,19 @@ export default async function NowPage() {
   const openCalls = projects.filter((p) => p.projectType === "Cast & Crew Call" && !isMine(p));
   const upcoming = upcomingEvents(events);
 
-  const listing = account && profile ? listings.get(profile.userID) : undefined;
+  // On the page if featured here in Manage, or put here by an app moderator (the same
+  // two sources the People page and the app's directory list).
+  const userID = profile?.userID;
+  const listed =
+    !!account &&
+    !!userID &&
+    (directoryGroups.get(userID)?.has(style) ||
+      (await featuresFor(STYLE_INFO[style].slug)).some((f) => f.profileID.replace(/^UserProfile_/, "") === userID));
   const status = !account
     ? "Finish creating your Nexus account to save your style and appear on the public pages."
-    : listing?.style === style && listing.status === "approved"
+    : listed
       ? `Listed on the ${STYLE_INFO[style].plural} page`
-      : listing?.style === style && listing.status === "declined"
-        ? `Not listed on the ${STYLE_INFO[style].plural} page. Edit your profile to send it back for review.`
-        : `Waiting for a moderator to add you to the ${STYLE_INFO[style].plural} page`;
+      : `Waiting for a moderator to add you to the ${STYLE_INFO[style].plural} page`;
 
   return (
     <div className="w-full">
@@ -97,7 +104,7 @@ export default async function NowPage() {
 
       {style === "Actor" && <Acting projects={projects} openCalls={openCalls} me={me} details={details} />}
       {style === "Filmmaker" && <Filmmaking projects={projects} openCalls={openCalls} me={me} tags={tags} />}
-      {style === "Musician" && <Music openCalls={openCalls} upcoming={upcoming} me={me} artistName={details.musician.artistName} />}
+      {style === "Musician" && <Music openCalls={openCalls} upcoming={upcoming} me={me} actNames={actNames(details.musician)} />}
     </div>
   );
 }
@@ -133,7 +140,7 @@ function ProjectRow({ project, children, chips = [], aside }: { project: Project
       <Link href={`/discover/${project.id}`} className="hidden aspect-[2/3] w-16 overflow-hidden rounded bg-surface sm:block">
         {project.posterUrl && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={project.posterUrl} alt="" className="h-full w-full object-cover" />
+          <img src={project.posterSmallUrl ?? project.posterUrl} alt="" className="h-full w-full object-cover" />
         )}
       </Link>
       <div className="min-w-0">
@@ -328,7 +335,7 @@ function EventRow({ event }: { event: NexusEvent }) {
       <span className="hidden aspect-square w-16 overflow-hidden rounded bg-surface sm:block">
         {event.flyerUrl && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={event.flyerUrl} alt="" className="h-full w-full object-cover" />
+          <img src={event.flyerSmallUrl ?? event.flyerUrl} alt="" className="h-full w-full object-cover" />
         )}
       </span>
       <span className="min-w-0">
@@ -341,8 +348,8 @@ function EventRow({ event }: { event: NexusEvent }) {
   );
 }
 
-function Music({ openCalls, upcoming, me, artistName }: { openCalls: Project[]; upcoming: NexusEvent[]; me: Me; artistName: string }) {
-  const names = [me.name, artistName].map((n) => n.trim().toLowerCase()).filter(Boolean);
+function Music({ openCalls, upcoming, me, actNames }: { openCalls: Project[]; upcoming: NexusEvent[]; me: Me; actNames: string[] }) {
+  const names = [me.name, ...actNames].map((n) => n.trim().toLowerCase()).filter(Boolean);
   const shows = upcoming.filter(
     (e) =>
       (!!me.name && matchesPerson(e.postedBy ?? "", e.postedByProfileID, me)) ||

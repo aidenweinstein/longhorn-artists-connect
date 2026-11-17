@@ -21,7 +21,8 @@
 //  4. A lean in the Home feed toward that kind of work (`recommend`).
 //
 //  The Network directory's Actors / Filmmakers / Musicians pages are NOT tag-driven:
-//  moderators choose who is listed there (`DirectoryUser.directoryGroups`, see
+//  they list the people the website features there (`WebsitePeopleList`) and the
+//  people moderators choose in the app (`DirectoryUser.directoryGroups`, see
 //  DirectoryPeopleGrid.swift). Tags only unlock the person's own profile features.
 //
 
@@ -205,8 +206,8 @@ struct ActorDetails: Codable, Equatable {
     /// Credits that aren't posts on Nexus.
     var resume: [ResumeCredit] = []
 
-    static let genders = ["Female", "Male", "Non-binary"]
-    static let unions = ["Non-union", "SAG-AFTRA Eligible", "SAG-AFTRA", "AEA"]
+    static let genders = ["Female", "Male"]
+    static let unions = ["Non-union", "SAG-AFTRA Eligible", "AEA"]
     /// Picker choices for hair and eyes. Older profiles may hold free text instead;
     /// the editor keeps such a value as an extra choice and filters match it loosely.
     static let hairColors = ["Black", "Dark brown", "Brown", "Light brown", "Blonde", "Red", "Auburn", "Gray", "White", "Bald", "Other"]
@@ -308,9 +309,9 @@ struct ActorDetails: Codable, Equatable {
 
     /// The label/value rows shown beside the headshot, skipping blanks.
     var statRows: [(label: String, value: String)] {
-        [("Age range", ageRangeText), ("Gender", gender), ("Height", height),
+        [("Gender", gender), ("Playable age", ageRangeText), ("Height", height),
          ("Ethnic appearance", ethnicAppearance), ("Hair", hair), ("Eyes", eyes),
-         ("Union", union), ("Based in", basedIn)]
+         ("Union", union)]
             .filter { !$0.1.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { (label: $0.0, value: $0.1) }
     }
@@ -359,16 +360,15 @@ enum StreamingService: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-/// The extra lines on a musician's section: artist name, instruments, genres,
-/// availability, and links to their streaming pages.
+/// The extra lines on a musician's section: solo act and band names, instruments,
+/// genres, and links to their streaming pages.
 struct MusicianDetails: Codable, Equatable {
-    /// Stage or band name, when it differs from their own name.
-    var artistName: String = ""
+    /// The name they perform under on their own, when it differs from their own name.
+    var soloName: String = ""
+    /// The band they play in.
+    var bandName: String = ""
     var instruments: String = ""
     var genres: String = ""
-    var availableForSessions: Bool = false
-    var availableForGigs: Bool = true
-    var availableForScoring: Bool = false
     /// Streaming page URLs keyed by `StreamingService.rawValue`. Stored as typed, so
     /// "open.spotify.com/…" without a scheme is fine — see `url(for:)`.
     var streamingLinks: [String: String] = [:]
@@ -395,25 +395,37 @@ struct MusicianDetails: Codable, Equatable {
         text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
+    /// The solo act and band names that are filled in — releases and show lineups
+    /// under either count as theirs.
+    var actNames: [String] {
+        [soloName, bandName].filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case soloName, bandName, instruments, genres, streamingLinks
+        /// Older builds saved one "artist or band name"; it's read as the solo act name.
+        case artistName
+    }
+
     init() {}
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        artistName = try c.decodeIfPresent(String.self, forKey: .artistName) ?? ""
+        soloName = try c.decodeIfPresent(String.self, forKey: .soloName)
+            ?? c.decodeIfPresent(String.self, forKey: .artistName) ?? ""
+        bandName = try c.decodeIfPresent(String.self, forKey: .bandName) ?? ""
         instruments = try c.decodeIfPresent(String.self, forKey: .instruments) ?? ""
         genres = try c.decodeIfPresent(String.self, forKey: .genres) ?? ""
-        availableForSessions = try c.decodeIfPresent(Bool.self, forKey: .availableForSessions) ?? false
-        availableForGigs = try c.decodeIfPresent(Bool.self, forKey: .availableForGigs) ?? true
-        availableForScoring = try c.decodeIfPresent(Bool.self, forKey: .availableForScoring) ?? false
         streamingLinks = try c.decodeIfPresent([String: String].self, forKey: .streamingLinks) ?? [:]
     }
 
-    var availability: [String] {
-        var items: [String] = []
-        if availableForGigs { items.append("Live gigs") }
-        if availableForSessions { items.append("Session work") }
-        if availableForScoring { items.append("Scoring") }
-        return items
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(soloName, forKey: .soloName)
+        try c.encode(bandName, forKey: .bandName)
+        try c.encode(instruments, forKey: .instruments)
+        try c.encode(genres, forKey: .genres)
+        try c.encode(streamingLinks, forKey: .streamingLinks)
     }
 
     /// The typed link for a service, or "".
@@ -449,17 +461,23 @@ struct MusicianDetails: Codable, Equatable {
 
 /// The extra lines on a filmmaker's section.
 struct FilmmakerDetails: Codable, Equatable {
-    var specialties: String = ""
+    /// Production companies or studios they work with.
+    var studios: String = ""
+    /// Software and other certifications (Adobe, Avid…).
+    var certifications: String = ""
     var gear: String = ""
-    var openToCrew: Bool = true
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        specialties = try c.decodeIfPresent(String.self, forKey: .specialties) ?? ""
+        studios = try c.decodeIfPresent(String.self, forKey: .studios) ?? ""
+        certifications = try c.decodeIfPresent(String.self, forKey: .certifications) ?? ""
         gear = try c.decodeIfPresent(String.self, forKey: .gear) ?? ""
-        openToCrew = try c.decodeIfPresent(Bool.self, forKey: .openToCrew) ?? true
+    }
+
+    var isEmpty: Bool {
+        [studios, certifications, gear].allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }
 

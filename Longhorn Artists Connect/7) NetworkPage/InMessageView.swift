@@ -12,14 +12,38 @@ import AVKit
 
 struct InMessageView: View {
     // MARK: - Properties
-    
+
+    /// Which thread this view shows: a one-to-one chat, an existing group, or a group
+    /// that will be created when the first message is sent.
+    let thread: MessageThread
+    /// A hint for one-to-one threads; the real thread ID is derived in `loadMessages`.
     let conversationID: UUID
-    let otherUserID: String
-    let otherUserName: String
-    let otherUserRole: String
     /// When false, hides the built-in nav-bar header (avatar + name) so a host view —
     /// e.g. the New Message composer, which shows its own "To:" bar — can own the top.
     var showsHeader: Bool = true
+    /// For `.newGroup`: called with the new thread's ID once the group record exists
+    /// (on first send), so the host can lock the recipient list.
+    var onGroupCreated: ((UUID) -> Void)? = nil
+
+    /// One-to-one chat. The labels match the original call sites.
+    init(conversationID: UUID, otherUserID: String, otherUserName: String, otherUserRole: String, showsHeader: Bool = true) {
+        self.thread = .direct(otherUserID: otherUserID, name: otherUserName, role: otherUserRole)
+        self.conversationID = conversationID
+        self.showsHeader = showsHeader
+    }
+
+    /// Any thread, including groups.
+    init(thread: MessageThread, showsHeader: Bool = true, onGroupCreated: ((UUID) -> Void)? = nil) {
+        self.thread = thread
+        self.showsHeader = showsHeader
+        self.onGroupCreated = onGroupCreated
+        if case .group(let id) = thread {
+            self.conversationID = id
+            _groupConversationID = State(initialValue: id)
+        } else {
+            self.conversationID = UUID()
+        }
+    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -33,7 +57,68 @@ struct InMessageView: View {
     /// current user's ID is known. This is where messages are actually stored,
     /// so it — not the passed-in `conversationID` — drives fetching/observing.
     @State private var activeConversationID: UUID?
-    
+    /// The group's thread ID: set up front for `.group`, and for `.newGroup` once the
+    /// first send has created the record.
+    @State private var groupConversationID: UUID?
+    @State private var showGroupInfo = false
+    @State private var showLeaveConfirmation = false
+
+    // MARK: Thread helpers
+
+    /// True for a group chat, existing or pending.
+    private var isGroup: Bool {
+        if case .direct = thread { return false }
+        return true
+    }
+
+    /// The other person's ID in a one-to-one chat; empty for groups.
+    private var otherUserID: String {
+        if case .direct(let id, _, _) = thread { return id }
+        return ""
+    }
+
+    private var otherUserName: String {
+        if case .direct(_, let name, _) = thread { return name }
+        return ""
+    }
+
+    /// The members a pending group will be created with (`.newGroup` only).
+    private var pendingMemberIDs: [String] {
+        if case .newGroup(let ids) = thread { return ids }
+        return []
+    }
+
+    /// The live group record from the store, so renames and member changes show.
+    private var groupConversation: Conversation? {
+        guard let groupConversationID else { return nil }
+        return messageStore.conversations.first { $0.id == groupConversationID }
+    }
+
+    /// The IDs of everyone in the group (existing or pending), the current user included.
+    private var groupMemberIDs: [String] {
+        if let groupConversation { return groupConversation.allMemberIDs }
+        let me = currentUserID.map(canonicalMessagingID)
+        return ([me].compactMap { $0 } + pendingMemberIDs.map(canonicalMessagingID))
+    }
+
+    private var groupMembers: [DirectoryUser] {
+        groupMemberIDs.compactMap { profileManager.findUser(byID: $0) }
+    }
+
+    /// The group's title: its name, or the other members' first names.
+    private var groupTitle: String {
+        if let groupConversation {
+            return groupConversation.displayTitle(for: currentUserID) { profileManager.findUser(byID: $0)?.firstName }
+        }
+        let names = pendingMemberIDs.compactMap { profileManager.findUser(byID: $0)?.firstName }
+        return Conversation.autoName(from: names)
+    }
+
+    /// The key mute/pin are stored under: the other person for a chat, the thread for a group.
+    private var preferenceKey: String {
+        isGroup ? (groupConversationID?.uuidString ?? "") : otherUserID
+    }
+
     @State private var newMessageText = ""
     @State private var showPhotoPicker = false
     @State private var showDocumentPicker = false
@@ -81,16 +166,27 @@ struct InMessageView: View {
                 // messaging app. The navigation bar provides the background and
                 // hairline separator from the messages below.
                 ToolbarItem(placement: .topBarLeading) {
-                    otherUserAvatar
+                    if isGroup { groupAvatar } else { otherUserAvatar }
                 }
                 // Recipient's name centered in the middle of the header bar.
                 ToolbarItem(placement: .principal) {
-                    Text(resolvedOtherUserName)
-                        .font(.headline)
+                    if isGroup {
+                        VStack(spacing: 1) {
+                            Text(groupTitle)
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text("\(groupMemberIDs.count) people")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(resolvedOtherUserName)
+                            .font(.headline)
+                    }
                 }
                 // Overflow menu, opposite the avatar: view profile, block/unblock.
                 ToolbarItem(placement: .topBarTrailing) {
-                    moreMenu
+                    if isGroup { groupMenu } else { moreMenu }
                 }
             }
         }
@@ -125,17 +221,91 @@ struct InMessageView: View {
         .sheet(isPresented: $showRecipientProfile) {
             PersonProfileView(name: otherUserName)
         }
+        .sheet(isPresented: $showGroupInfo) {
+            if let groupConversationID {
+                GroupInfoView(conversationID: groupConversationID) {
+                    // Left the group: the thread is gone, so close the chat too.
+                    dismiss()
+                }
+            }
+        }
+        .confirmationDialog("Leave \(groupTitle)?", isPresented: $showLeaveConfirmation, titleVisibility: .visible) {
+            Button("Leave Group", role: .destructive) {
+                guard let groupConversationID else { return }
+                Task {
+                    do {
+                        try await messageStore.leaveGroup(groupConversationID)
+                        dismiss()
+                    } catch {
+                        errorMessage = error.localizedDescription
+                        showError = true
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You'll stop getting messages from this group. Someone in it can add you back.")
+        }
         .presentationDragIndicator(.hidden)
     }
 
     // MARK: - View Components
-    
+
     /// Directory entry for the person being messaged, used for their avatar.
     /// Falls back to a name match because some flows pass a local UUID
-    /// instead of the CloudKit record name as `otherUserID`.
+    /// instead of the CloudKit record name as `otherUserID`. Nil for groups.
     private var otherUser: DirectoryUser? {
-        profileManager.findUser(byID: otherUserID)
+        guard !isGroup else { return nil }
+        return profileManager.findUser(byID: otherUserID)
             ?? profileManager.allUsers.first { $0.fullName == otherUserName }
+    }
+
+    /// Tapping the group avatar opens Group Info (members, name, leave).
+    private var groupAvatar: some View {
+        Button {
+            if groupConversationID != nil { showGroupInfo = true }
+        } label: {
+            GroupAvatarView(members: groupMembers, size: 32)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Overflow menu for a group: pin/mute, Group Info, Leave Group.
+    private var groupMenu: some View {
+        Menu {
+            Button {
+                convoPrefs.togglePin(preferenceKey)
+            } label: {
+                Label(convoPrefs.isPinned(preferenceKey) ? "Unpin Conversation" : "Pin Conversation",
+                      systemImage: convoPrefs.isPinned(preferenceKey) ? "pin.slash" : "pin")
+            }
+
+            Button {
+                convoPrefs.toggleMute(preferenceKey)
+            } label: {
+                Label(convoPrefs.isMuted(preferenceKey) ? "Unmute Notifs" : "Mute Notifications",
+                      systemImage: convoPrefs.isMuted(preferenceKey) ? "bell.slash" : "bell")
+            }
+
+            Divider()
+
+            Button {
+                showGroupInfo = true
+            } label: {
+                Label("Group Info", systemImage: "person.2")
+            }
+
+            Button(role: .destructive) {
+                DispatchQueue.main.async { showLeaveConfirmation = true }
+            } label: {
+                Label("Leave Group", systemImage: "rectangle.portrait.and.arrow.right")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+        }
+        .disabled(groupConversationID == nil)
     }
 
     /// The header name, preferring the freshly-resolved directory entry so it
@@ -237,9 +407,10 @@ struct InMessageView: View {
                     ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
                         MessageBubbleView(
                             message: message,
-                            isFromCurrentUser: message.senderUserID == currentUserID,
+                            isFromCurrentUser: isFromCurrentUser(message),
                             showsTimestamp: shouldShowTimestamp(at: index),
-                            attachmentURL: messageStore.attachmentURLs[message.id]
+                            attachmentURL: messageStore.attachmentURLs[message.id],
+                            senderName: senderLabel(at: index)
                         )
                         .id(message.id)
                     }
@@ -272,6 +443,26 @@ struct InMessageView: View {
         guard index > 0 else { return true }
         let interval = messages[index].timestamp.timeIntervalSince(messages[index - 1].timestamp)
         return interval >= 3600
+    }
+
+    private func isFromCurrentUser(_ message: Message) -> Bool {
+        guard let currentUserID else { return false }
+        return canonicalMessagingID(message.senderUserID) == canonicalMessagingID(currentUserID)
+    }
+
+    /// In a group, the sender's name above a received bubble whenever the sender
+    /// changes from the previous message (or a new time group starts). Nil in
+    /// one-to-one chats and for the user's own messages.
+    private func senderLabel(at index: Int) -> String? {
+        guard isGroup else { return nil }
+        let message = messages[index]
+        guard !isFromCurrentUser(message) else { return nil }
+        if index > 0,
+           canonicalMessagingID(messages[index - 1].senderUserID) == canonicalMessagingID(message.senderUserID),
+           !shouldShowTimestamp(at: index) {
+            return nil
+        }
+        return profileManager.findUser(byID: message.senderUserID)?.displayName ?? "Nexus member"
     }
 
     private var messageInputArea: some View {
@@ -410,9 +601,23 @@ struct InMessageView: View {
             return
         }
 
-        // Resolve the shared thread ID for these two users. Both participants
-        // compute the same value, so we always read/write the one thread.
-        let threadID = Conversation.deterministicID(currentUserID ?? "", otherUserID)
+        let threadID: UUID
+        switch thread {
+        case .direct:
+            // Resolve the shared thread ID for these two users. Both participants
+            // compute the same value, so we always read/write the one thread.
+            threadID = Conversation.deterministicID(currentUserID ?? "", otherUserID)
+        case .group(let id):
+            threadID = id
+            // Make sure the group's record is loaded, so the header and member list
+            // resolve even when the chat was opened straight from a push.
+            if groupConversation == nil {
+                try? await messageStore.fetchConversations()
+            }
+        case .newGroup:
+            // Nothing to load: the thread is created on the first send.
+            return
+        }
         activeConversationID = threadID
 
         // Fetch messages
@@ -448,13 +653,36 @@ struct InMessageView: View {
 
         Task {
             do {
-                _ = try await messageStore.sendMessage(
-                    to: otherUserID,
-                    content: messageContent,
-                    conversationID: conversationID,
-                    attachmentURL: sentAttachmentURL,
-                    attachmentType: sentAttachmentType
-                )
+                if isGroup {
+                    // A pending group gets its record on this first send, then every
+                    // later message goes straight to it.
+                    let threadID: UUID
+                    if let groupConversationID {
+                        threadID = groupConversationID
+                    } else {
+                        let created = try await messageStore.createGroupConversation(with: pendingMemberIDs)
+                        threadID = created.id
+                        await MainActor.run {
+                            groupConversationID = threadID
+                            activeConversationID = threadID
+                        }
+                        onGroupCreated?(threadID)
+                    }
+                    _ = try await messageStore.sendGroupMessage(
+                        in: threadID,
+                        content: messageContent,
+                        attachmentURL: sentAttachmentURL,
+                        attachmentType: sentAttachmentType
+                    )
+                } else {
+                    _ = try await messageStore.sendMessage(
+                        to: otherUserID,
+                        content: messageContent,
+                        conversationID: conversationID,
+                        attachmentURL: sentAttachmentURL,
+                        attachmentType: sentAttachmentType
+                    )
+                }
                 await MainActor.run { isSending = false }
             } catch {
                 await MainActor.run {
@@ -536,6 +764,9 @@ struct MessageBubbleView: View {
     let showsTimestamp: Bool
     /// Local file URL for this message's attachment, if it's been downloaded/cached.
     var attachmentURL: URL? = nil
+    /// Group chats: the sender's name, shown small above a received bubble when the
+    /// sender changes. Nil in one-to-one chats.
+    var senderName: String? = nil
 
     @State private var showPostDetail = false
     @State private var postLiked = false
@@ -551,8 +782,15 @@ struct MessageBubbleView: View {
             if isFromCurrentUser {
                 Spacer(minLength: 60)
             }
-            
+
             VStack(alignment: isFromCurrentUser ? .trailing : .leading, spacing: 4) {
+                if let senderName, !isFromCurrentUser {
+                    Text(senderName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 12)
+                }
+
                 // Message content
                 if message.attachmentType == .post {
                     // Shared post: its own bubble (artwork + title), plus any note.

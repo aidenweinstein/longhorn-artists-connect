@@ -66,7 +66,7 @@ enum CloudKitRecordTypes {
     static let verification = "Verification"
 
     /// The extra profile details a person's tags unlock (an actor's Actors Access
-    /// sheet and headshot, a musician's streaming links, a filmmaker's specialties)
+    /// sheet and headshot, a musician's streaming links, a filmmaker's studios and gear)
     /// as a details JSON plus a headshot asset. Written only by its owner. See
     /// `CreativeProfileStore`. Added 2026-11-04.
     static let creativeProfile = "CreativeProfile"
@@ -166,8 +166,8 @@ enum CloudKitRecordTypes {
 // | Script                | NO          | NO         | added 2026-09-29; fields listed on `ScriptManager` |
 // | Organization          | yes         | yes        |                                 |
 // | OrgContentLink        | yes         | yes        |                                 |
-// | Conversation          | yes         | yes        |                                 |
-// | Message               | yes         | yes        |                                 |
+// | Conversation          | yes         | yes        | group-chat fields (added 2026-11-17) `isGroup` (INT64, QUERYABLE), `participantUserIDs` (STRING_LIST, QUERYABLE), `groupName`, `createdByUserID` (STRING) missing in both until a group is created in Dev + deployed. Without `participantUserIDs` queryable, groups don't load and the group push subscription fails (1:1 chats unaffected) |
+// | Message               | yes         | yes        | group-chat fields (added 2026-11-17) `recipientUserIDs` (STRING_LIST, QUERYABLE), `readByUserIDs` (STRING_LIST), `groupName` (STRING) missing in both until the first group message in Dev + deployed |
 // | Connection            | yes         | deploy?    | added 2026-10-23, created in Dev 2026-11-10; fields on `ConnectionsManager`. Deploy schema to Production before TestFlight |
 // | CreativeProfile       | NO          | NO         | added 2026-11-04; details (STRING), headshot (ASSET), updatedAt (DATE). Needs recordName QUERYABLE. Until created, Edit details saves locally only |
 //

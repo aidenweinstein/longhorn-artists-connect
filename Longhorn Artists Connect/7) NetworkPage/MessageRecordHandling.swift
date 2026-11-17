@@ -120,11 +120,35 @@ struct Message: Identifiable, Codable, Equatable {
     var isRead: Bool
     var attachmentType: AttachmentType?
     var attachmentFileName: String? // Stored in CloudKit as CKAsset
-    
+
+    /// Group chats: every member of the thread other than the sender. Empty for a
+    /// one-to-one message, where `recipientUserID` names the single recipient. Stored
+    /// as a list so the group push subscription (`recipientUserIDs CONTAINS me`) can
+    /// match one shared record per message instead of one copy per member.
+    var recipientUserIDs: [String] = []
+    /// Group chats: the members who have opened this message (the sender included).
+    /// A single `isRead` flag can't be per-person, so unread state in a group is
+    /// "sent by someone else and my ID isn't in here yet".
+    var readByUserIDs: [String] = []
+
     // CloudKit record metadata
     var recordName: String?
     var lastModified: Date?
-    
+
+    /// True for a message in a group chat.
+    var isGroupMessage: Bool { !recipientUserIDs.isEmpty }
+
+    /// Whether `userID` (raw or `UserProfile_`-prefixed) has read this message. The
+    /// sender has always read their own message.
+    func isRead(by userID: String) -> Bool {
+        let me = canonicalMessagingID(userID)
+        if canonicalMessagingID(senderUserID) == me { return true }
+        if isGroupMessage {
+            return readByUserIDs.contains { canonicalMessagingID($0) == me }
+        }
+        return isRead
+    }
+
     enum AttachmentType: String, Codable {
         case image
         case video
@@ -156,7 +180,9 @@ struct Message: Identifiable, Codable, Equatable {
         recipientUserID: String,
         isRead: Bool = false,
         attachmentType: AttachmentType? = nil,
-        attachmentFileName: String? = nil
+        attachmentFileName: String? = nil,
+        recipientUserIDs: [String] = [],
+        readByUserIDs: [String] = []
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -167,12 +193,40 @@ struct Message: Identifiable, Codable, Equatable {
         self.isRead = isRead
         self.attachmentType = attachmentType
         self.attachmentFileName = attachmentFileName
+        self.recipientUserIDs = recipientUserIDs
+        self.readByUserIDs = readByUserIDs
+    }
+
+    // Messages cached on disk before group chats existed have no group fields, so
+    // decode those as empty instead of failing (which would drop the whole cache).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        conversationID = try c.decode(UUID.self, forKey: .conversationID)
+        content = try c.decode(String.self, forKey: .content)
+        timestamp = try c.decode(Date.self, forKey: .timestamp)
+        senderUserID = try c.decode(String.self, forKey: .senderUserID)
+        recipientUserID = try c.decodeIfPresent(String.self, forKey: .recipientUserID) ?? ""
+        isRead = try c.decodeIfPresent(Bool.self, forKey: .isRead) ?? false
+        attachmentType = try c.decodeIfPresent(AttachmentType.self, forKey: .attachmentType)
+        attachmentFileName = try c.decodeIfPresent(String.self, forKey: .attachmentFileName)
+        recipientUserIDs = try c.decodeIfPresent([String].self, forKey: .recipientUserIDs) ?? []
+        readByUserIDs = try c.decodeIfPresent([String].self, forKey: .readByUserIDs) ?? []
+        recordName = try c.decodeIfPresent(String.self, forKey: .recordName)
+        lastModified = try c.decodeIfPresent(Date.self, forKey: .lastModified)
     }
 }
 
 // MARK: - Conversation Model
 
-/// Represents a conversation between two users
+/// A message thread: either a one-to-one chat between two users, or a group chat.
+///
+/// One-to-one threads are keyed by a deterministic ID derived from the pair (see
+/// `deterministicID`) and store the pair in `participant1UserID` / `participant2UserID`.
+/// Group threads (`isGroup`) have a random ID, list every member in
+/// `participantUserIDs`, and may carry a `groupName`; their two legacy participant
+/// fields hold the creator and an empty string so older builds, which require both,
+/// still decode the record.
 struct Conversation: Identifiable, Codable, Equatable {
     let id: UUID
     let participant1UserID: String
@@ -180,17 +234,31 @@ struct Conversation: Identifiable, Codable, Equatable {
     var lastMessageTimestamp: Date?
     var lastMessagePreview: String?
     var unreadCount: Int
-    
+
+    /// True for a group chat.
+    var isGroup: Bool = false
+    /// Group chats: every member, including the current user, as raw user record names.
+    var participantUserIDs: [String] = []
+    /// Group chats: the name members gave the group. Nil/empty means "unnamed" — the
+    /// UI then lists the members' first names instead (see `displayTitle`).
+    var groupName: String? = nil
+    /// Group chats: who started the group.
+    var createdByUserID: String? = nil
+
     // CloudKit record metadata
     var recordName: String?
-    
+
     init(
         id: UUID = UUID(),
         participant1UserID: String,
         participant2UserID: String,
         lastMessageTimestamp: Date? = nil,
         lastMessagePreview: String? = nil,
-        unreadCount: Int = 0
+        unreadCount: Int = 0,
+        isGroup: Bool = false,
+        participantUserIDs: [String] = [],
+        groupName: String? = nil,
+        createdByUserID: String? = nil
     ) {
         self.id = id
         self.participant1UserID = participant1UserID
@@ -198,14 +266,85 @@ struct Conversation: Identifiable, Codable, Equatable {
         self.lastMessageTimestamp = lastMessageTimestamp
         self.lastMessagePreview = lastMessagePreview
         self.unreadCount = unreadCount
+        self.isGroup = isGroup
+        self.participantUserIDs = participantUserIDs
+        self.groupName = groupName
+        self.createdByUserID = createdByUserID
     }
-    
-    /// Returns the other participant's user ID
+
+    // Conversations cached on disk before group chats existed have no group fields;
+    // decode those as a plain one-to-one thread instead of failing.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        participant1UserID = try c.decodeIfPresent(String.self, forKey: .participant1UserID) ?? ""
+        participant2UserID = try c.decodeIfPresent(String.self, forKey: .participant2UserID) ?? ""
+        lastMessageTimestamp = try c.decodeIfPresent(Date.self, forKey: .lastMessageTimestamp)
+        lastMessagePreview = try c.decodeIfPresent(String.self, forKey: .lastMessagePreview)
+        unreadCount = try c.decodeIfPresent(Int.self, forKey: .unreadCount) ?? 0
+        isGroup = try c.decodeIfPresent(Bool.self, forKey: .isGroup) ?? false
+        participantUserIDs = try c.decodeIfPresent([String].self, forKey: .participantUserIDs) ?? []
+        groupName = try c.decodeIfPresent(String.self, forKey: .groupName)
+        createdByUserID = try c.decodeIfPresent(String.self, forKey: .createdByUserID)
+        recordName = try c.decodeIfPresent(String.self, forKey: .recordName)
+    }
+
+    /// Returns the other participant's user ID (one-to-one threads only; for a group
+    /// this is the creator, which callers should not treat as "the other person").
     func otherParticipant(for currentUserID: String) -> String {
         // Compare canonically so a raw self-ID still matches a `UserProfile_`-prefixed
         // participant (and vice versa) on legacy records.
         let me = canonicalMessagingID(currentUserID)
         return me == canonicalMessagingID(participant1UserID) ? participant2UserID : participant1UserID
+    }
+
+    /// Every member of the thread (canonical IDs) — both people of a one-to-one chat,
+    /// or the group's member list.
+    var allMemberIDs: [String] {
+        if isGroup {
+            var seen = Set<String>()
+            return participantUserIDs.map(canonicalMessagingID).filter { !$0.isEmpty && seen.insert($0).inserted }
+        }
+        return [participant1UserID, participant2UserID].map(canonicalMessagingID).filter { !$0.isEmpty }
+    }
+
+    /// Whether `userID` (raw or `UserProfile_`-prefixed) is in this thread.
+    func includes(_ userID: String) -> Bool {
+        allMemberIDs.contains(canonicalMessagingID(userID))
+    }
+
+    /// The members other than `currentUserID`, canonical, in stored order.
+    func otherMemberIDs(for currentUserID: String) -> [String] {
+        let me = canonicalMessagingID(currentUserID)
+        return allMemberIDs.filter { $0 != me }
+    }
+
+    /// The key the per-thread mute/pin preferences are stored under: the other
+    /// person's ID for a one-to-one chat, the thread's own ID for a group.
+    func preferenceKey(for currentUserID: String) -> String {
+        isGroup ? id.uuidString : otherParticipant(for: currentUserID)
+    }
+
+    /// The group's name, or a list of first names when it hasn't been named: "Sam, Alex
+    /// & Jo" — from `currentUserID`'s point of view (so they're left out), like
+    /// Messages. `firstName` resolves a member ID to a first name; unknown members are
+    /// skipped. Falls back to "Group".
+    func displayTitle(for currentUserID: String?, firstName: (String) -> String?) -> String {
+        if let groupName = groupName?.trimmingCharacters(in: .whitespacesAndNewlines), !groupName.isEmpty {
+            return groupName
+        }
+        let others = currentUserID.map { otherMemberIDs(for: $0) } ?? allMemberIDs
+        let names = others.compactMap { firstName($0) }.filter { !$0.isEmpty }
+        return Conversation.autoName(from: names)
+    }
+
+    /// Joins first names the way Messages does: "Sam", "Sam & Alex", "Sam, Alex & Jo".
+    static func autoName(from names: [String]) -> String {
+        switch names.count {
+        case 0: return "Group"
+        case 1: return names[0]
+        default: return names.dropLast().joined(separator: ", ") + " & " + names[names.count - 1]
+        }
     }
 }
 
@@ -245,6 +384,16 @@ class MessageStore: ObservableObject {
     private let publicDatabase: CKDatabase
     private var subscriptionID = "MessageSubscription"
     private var conversationSubscriptionID = "ConversationSubscription"
+    /// Group chats use their own subscriptions (list-membership predicates on the new
+    /// `recipientUserIDs` / `participantUserIDs` fields) so the one-to-one ones keep
+    /// working untouched if the group fields aren't in the schema yet.
+    private var groupMessageSubscriptionID = "GroupMessageSubscription"
+    private var groupConversationSubscriptionID = "GroupConversationSubscription"
+    /// Every messaging subscription, so the app delegate can route their pushes here.
+    static let subscriptionIDs: Set<String> = [
+        "MessageSubscription", "ConversationSubscription",
+        "GroupMessageSubscription", "GroupConversationSubscription",
+    ]
     private var cancellables = Set<AnyCancellable>()
     private let clearedConversationsKey = "clearedConversationTimestamps"
     
@@ -394,7 +543,185 @@ class MessageStore: ObservableObject {
 
         return savedMessage
     }
-    
+
+    // MARK: - Group Chats
+
+    /// Starts a group chat with the current user and `memberIDs` (raw or
+    /// `UserProfile_`-prefixed; duplicates and the current user are collapsed). Needs
+    /// at least two other people — with one it's just a one-to-one thread, so callers
+    /// should use `sendMessage(to:)` for that. The record is created right away so the
+    /// first message has a thread to land in.
+    func createGroupConversation(with memberIDs: [String], name: String? = nil) async throws -> Conversation {
+        guard let currentUserID = await getCurrentUserID() else {
+            throw MessageError.userNotAuthenticated
+        }
+        var seen: Set<String> = [currentUserID]
+        let others = memberIDs.map(canonicalMessagingID).filter { !$0.isEmpty && seen.insert($0).inserted }
+        guard others.count >= 2 else { throw MessageError.groupTooSmall }
+
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let conversation = Conversation(
+            participant1UserID: currentUserID,
+            participant2UserID: "",
+            isGroup: true,
+            participantUserIDs: [currentUserID] + others,
+            groupName: (trimmedName?.isEmpty == false) ? trimmedName : nil,
+            createdByUserID: currentUserID
+        )
+
+        let record = CKRecord(recordType: "Conversation", recordID: CKRecord.ID(recordName: conversation.id.uuidString))
+        record["participant1UserID"] = conversation.participant1UserID
+        record["participant2UserID"] = conversation.participant2UserID
+        record["unreadCount"] = 0
+        record["isGroup"] = 1
+        record["participantUserIDs"] = conversation.participantUserIDs
+        record["createdByUserID"] = currentUserID
+        if let groupName = conversation.groupName { record["groupName"] = groupName }
+
+        do {
+            let saved = try await publicDatabase.save(record)
+            var savedConversation = conversation
+            savedConversation.recordName = saved.recordID.recordName
+            conversations.append(savedConversation)
+            saveConversationsLocally()
+            return savedConversation
+        } catch {
+            throw MessageError.cloudKitError(error)
+        }
+    }
+
+    /// Sends a message to a group chat the current user is in. One record is written
+    /// for the whole group; `recipientUserIDs` lists everyone else so each of their
+    /// devices gets the group push.
+    func sendGroupMessage(
+        in conversationID: UUID,
+        content: String,
+        attachmentURL: URL? = nil,
+        attachmentType: Message.AttachmentType? = nil,
+        sharedSubmissionID: String? = nil
+    ) async throws -> Message {
+        guard let currentUserID = await getCurrentUserID() else {
+            throw MessageError.userNotAuthenticated
+        }
+        guard let conversation = conversations.first(where: { $0.id == conversationID }), conversation.isGroup else {
+            throw MessageError.conversationNotFound
+        }
+        guard conversation.includes(currentUserID) else { throw MessageError.notInGroup }
+
+        let message = Message(
+            conversationID: conversationID,
+            content: content,
+            senderUserID: currentUserID,
+            recipientUserID: "",
+            attachmentType: attachmentType,
+            attachmentFileName: sharedSubmissionID ?? attachmentURL?.lastPathComponent,
+            recipientUserIDs: conversation.otherMemberIDs(for: currentUserID),
+            readByUserIDs: [currentUserID]
+        )
+
+        let savedMessage = try await saveMessageToCloudKit(
+            message,
+            attachmentURL: attachmentURL,
+            groupName: groupPushTitle(for: conversation)
+        )
+        if let attachmentURL {
+            storeAttachment(for: savedMessage.id, from: attachmentURL)
+        }
+        await saveLocally(message: savedMessage)
+
+        do {
+            try await updateConversation(conversationID, lastMessage: savedMessage)
+        } catch {
+            print("⚠️ Group conversation metadata update failed (message already sent): \(error)")
+        }
+        return savedMessage
+    }
+
+    /// Adds people to a group chat. Anyone in the group can add members.
+    func addMembers(_ memberIDs: [String], to conversationID: UUID) async throws {
+        guard let currentUserID = await getCurrentUserID() else { throw MessageError.userNotAuthenticated }
+        let additions = memberIDs.map(canonicalMessagingID).filter { !$0.isEmpty }
+        guard !additions.isEmpty else { return }
+        try await modifyGroupRecord(conversationID, as: currentUserID) { record in
+            var members = (record["participantUserIDs"] as? [String] ?? []).map(canonicalMessagingID)
+            for id in additions where !members.contains(id) { members.append(id) }
+            record["participantUserIDs"] = members
+        }
+    }
+
+    /// Renames a group chat (an empty name clears it, so the member list shows again).
+    func renameGroup(_ conversationID: UUID, to name: String) async throws {
+        guard let currentUserID = await getCurrentUserID() else { throw MessageError.userNotAuthenticated }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await modifyGroupRecord(conversationID, as: currentUserID) { record in
+            record["groupName"] = trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    /// Removes the current user from a group chat and drops the thread locally. Their
+    /// earlier messages stay for the others, like leaving a group in Messages.
+    func leaveGroup(_ conversationID: UUID) async throws {
+        guard let currentUserID = await getCurrentUserID() else { throw MessageError.userNotAuthenticated }
+        try await modifyGroupRecord(conversationID, as: currentUserID) { record in
+            let members = (record["participantUserIDs"] as? [String] ?? []).map(canonicalMessagingID)
+            record["participantUserIDs"] = members.filter { $0 != currentUserID }
+        }
+        conversations.removeAll { $0.id == conversationID }
+        messagesByConversation[conversationID] = nil
+        saveConversationsLocally()
+        saveMessagesLocally()
+    }
+
+    /// Refetch-modify-save on a shared group record, retrying the oplock conflict
+    /// that two members editing at once produces, then mirrors the result locally.
+    private func modifyGroupRecord(
+        _ conversationID: UUID,
+        as currentUserID: String,
+        _ change: (CKRecord) -> Void
+    ) async throws {
+        let recordID = CKRecord.ID(recordName: conversationID.uuidString)
+        var attemptsRemaining = 4
+        while true {
+            do {
+                let record = try await publicDatabase.record(for: recordID)
+                guard (record["isGroup"] as? Int ?? 0) == 1 else { throw MessageError.notAGroup }
+                let members = (record["participantUserIDs"] as? [String] ?? []).map(canonicalMessagingID)
+                guard members.contains(currentUserID) else { throw MessageError.notInGroup }
+                change(record)
+                let saved = try await publicDatabase.save(record)
+                if let updated = Conversation.fromCloudKitRecord(saved) {
+                    if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
+                        conversations[index] = updated
+                    } else {
+                        conversations.append(updated)
+                    }
+                    saveConversationsLocally()
+                }
+                return
+            } catch let error as CKError where error.code == .serverRecordChanged && attemptsRemaining > 1 {
+                attemptsRemaining -= 1
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                continue
+            } catch let error as MessageError {
+                throw error
+            } catch {
+                throw MessageError.cloudKitError(error)
+            }
+        }
+    }
+
+    /// The title stamped on a group message for the push banner: the group's name,
+    /// or every member's first name (the recipient can't be left out of a shared
+    /// record, so the full roster is used here, unlike the in-app title).
+    private func groupPushTitle(for conversation: Conversation) -> String {
+        if let name = conversation.groupName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        let directory = UserProfileManager.shared
+        let names = conversation.allMemberIDs.compactMap { directory.findUser(byID: $0)?.firstName }.filter { !$0.isEmpty }
+        return Conversation.autoName(from: names)
+    }
+
     /// Fetches messages for a specific conversation
     func fetchMessages(for conversationID: UUID) async throws -> [Message] {
         isLoading = true
@@ -436,14 +763,42 @@ class MessageStore: ObservableObject {
         
         do {
             let records = try await publicDatabase.records(matching: query).matchResults.compactMap { try? $0.1.get() }
-            
-            let fetchedConversations = records.compactMap { record -> Conversation? in
+
+            var fetchedConversations = records.compactMap { record -> Conversation? in
                 return Conversation.fromCloudKitRecord(record)
             }
-            
-            self.conversations = fetchedConversations
+
+            // Group chats: a separate list-membership query, kept apart from the
+            // one-to-one predicate so a schema without `participantUserIDs` yet only
+            // loses groups, not every thread. Dedup by ID — a group the user created
+            // is also returned by the participant1UserID match above.
+            let groupPredicate = NSPredicate(format: "participantUserIDs CONTAINS %@", currentUserID)
+            let groupQuery = CKQuery(recordType: "Conversation", predicate: groupPredicate)
+            var knownIDs = Set(fetchedConversations.map(\.id))
+            if let groupRecords = try? await publicDatabase.records(matching: groupQuery).matchResults.compactMap({ try? $0.1.get() }) {
+                for group in groupRecords.compactMap(Conversation.fromCloudKitRecord) where knownIDs.insert(group.id).inserted {
+                    fetchedConversations.append(group)
+                }
+            } else {
+                print("⚠️ Group conversation query failed — is `participantUserIDs` queryable in this CloudKit environment?")
+            }
+
+            // A group the user is in but the query didn't return (index lag right after
+            // it was created, or the group query failing) would vanish from the list
+            // until the next fetch. Confirm each missing local group directly by ID.
+            for local in conversations where local.isGroup && !knownIDs.contains(local.id) {
+                if let record = try? await publicDatabase.record(for: CKRecord.ID(recordName: local.id.uuidString)),
+                   let group = Conversation.fromCloudKitRecord(record),
+                   group.includes(currentUserID) {
+                    fetchedConversations.append(group)
+                    knownIDs.insert(group.id)
+                }
+            }
+
+            // Groups the user is no longer in (left or removed) are gone.
+            self.conversations = fetchedConversations.filter { !$0.isGroup || $0.includes(currentUserID) }
             saveConversationsLocally()
-            
+
         } catch {
             throw MessageError.cloudKitError(error)
         }
@@ -479,10 +834,20 @@ class MessageStore: ObservableObject {
     func markConversationAsRead(_ conversationID: UUID) async throws {
         let messages = messagesByConversation[conversationID] ?? []
 
-        let unreadMessages = messages.filter { !$0.isRead }
+        if conversations.first(where: { $0.id == conversationID })?.isGroup == true {
+            // Groups: add this user to each unread message's `readByUserIDs` instead of
+            // flipping the shared `isRead` flag (which would mark it read for everyone).
+            if let me = await getCurrentUserID() {
+                for message in messages where !message.isRead(by: me) {
+                    await markGroupMessageRead(message, by: me)
+                }
+            }
+        } else {
+            let unreadMessages = messages.filter { !$0.isRead }
 
-        for message in unreadMessages {
-            try? await markMessageAsRead(message.id)
+            for message in unreadMessages {
+                try? await markMessageAsRead(message.id)
+            }
         }
 
         // Update conversation unread count locally…
@@ -499,6 +864,38 @@ class MessageStore: ObservableObject {
         // Network feed reloads) brings the unread dot right back even though the
         // chat has already been read.
         await resetUnreadCountInCloudKit(conversationID)
+    }
+
+    /// Appends `userID` to a group message's `readByUserIDs` in CloudKit (retrying the
+    /// oplock conflict two members reading at once produce) and locally. Best-effort:
+    /// the local copy is updated even if the server write fails, so the unread dot
+    /// clears; the next successful write reconciles the record.
+    private func markGroupMessageRead(_ message: Message, by userID: String) async {
+        var updated = message
+        if !updated.readByUserIDs.contains(userID) { updated.readByUserIDs.append(userID) }
+        await updateLocalMessage(updated)
+
+        guard let recordName = message.recordName else { return }
+        let recordID = CKRecord.ID(recordName: recordName)
+        var attemptsRemaining = 3
+        while true {
+            do {
+                let record = try await publicDatabase.record(for: recordID)
+                var readers = record["readByUserIDs"] as? [String] ?? []
+                if readers.contains(userID) { return }
+                readers.append(userID)
+                record["readByUserIDs"] = readers
+                _ = try await publicDatabase.save(record)
+                return
+            } catch let error as CKError where error.code == .serverRecordChanged && attemptsRemaining > 1 {
+                attemptsRemaining -= 1
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                continue
+            } catch {
+                print("⚠️ Failed to mark group message read in CloudKit: \(error)")
+                return
+            }
+        }
     }
 
     /// Best-effort reset of a conversation's `unreadCount` to 0 in CloudKit,
@@ -643,9 +1040,9 @@ class MessageStore: ObservableObject {
 
     // MARK: - CloudKit Methods
     
-    private func saveMessageToCloudKit(_ message: Message, attachmentURL: URL?) async throws -> Message {
+    private func saveMessageToCloudKit(_ message: Message, attachmentURL: URL?, groupName: String? = nil) async throws -> Message {
         var updatedMessage = message
-        
+
         let record = CKRecord(recordType: "Message", recordID: CKRecord.ID(recordName: message.id.uuidString))
         record["conversationID"] = message.conversationID.uuidString
         record["content"] = message.content
@@ -656,7 +1053,14 @@ class MessageStore: ObservableObject {
         // Fields that power the push banner on the recipient's device.
         record["senderName"] = MessageStore.currentUserDisplayName()
         record["messagePreview"] = message.notificationPreview
-        
+        // Group chats: the member list drives the group push subscription, `readByUserIDs`
+        // tracks who has opened it, and `groupName` titles the banner.
+        if message.isGroupMessage {
+            record["recipientUserIDs"] = message.recipientUserIDs
+            record["readByUserIDs"] = message.readByUserIDs
+            record["groupName"] = groupName ?? "Group"
+        }
+
         if let attachmentType = message.attachmentType {
             record["attachmentType"] = attachmentType.rawValue
         }
@@ -797,10 +1201,18 @@ class MessageStore: ObservableObject {
     /// If the post isn't available locally (e.g. on the recipient's device before it
     /// syncs), it falls back to a generic "Shared a post".
     private func conversationPreview(for message: Message) -> String {
+        let body = previewBody(for: message)
+        // Group chats: lead with who said it, since the row's title is the group.
+        guard message.isGroupMessage else { return body }
+        let first = UserProfileManager.shared.findUser(byID: message.senderUserID)?.firstName ?? ""
+        return first.isEmpty ? body : "\(first): \(body)"
+    }
+
+    private func previewBody(for message: Message) -> String {
         guard message.attachmentType == .post,
               let idString = message.attachmentFileName,
               let uuid = UUID(uuidString: idString) else {
-            return message.content
+            return message.content.isEmpty ? message.notificationPreview : message.content
         }
         guard let post = SubmissionStore_3_2.shared.approvedSubmissions.first(where: { $0.id == uuid }) else {
             return "Shared a post"
@@ -903,14 +1315,18 @@ class MessageStore: ObservableObject {
 
         // Not visible yet (CloudKit index lag): synthesize a placeholder so the
         // message is never stranded. A later fetchConversations replaces it with the
-        // authoritative record.
+        // authoritative record. For a group message the roster is the sender plus
+        // everyone it was addressed to.
         var synthesized = Conversation(
             id: conversationID,
             participant1UserID: message.senderUserID,
             participant2UserID: message.recipientUserID,
             lastMessageTimestamp: message.timestamp,
             lastMessagePreview: conversationPreview(for: message),
-            unreadCount: 1
+            unreadCount: 1,
+            isGroup: message.isGroupMessage,
+            participantUserIDs: message.isGroupMessage ? [message.senderUserID] + message.recipientUserIDs : [],
+            createdByUserID: message.isGroupMessage ? message.senderUserID : nil
         )
         synthesized.recordName = conversationID.uuidString
         conversations.append(synthesized)
@@ -922,9 +1338,71 @@ class MessageStore: ObservableObject {
     private func setupCloudKitSubscriptions() async {
         // Subscribe to new messages
         await setupMessageSubscription()
-        
+
         // Subscribe to conversation updates
         await setupConversationSubscription()
+
+        // Group chats: new group messages and group record changes (renames, members).
+        await setupGroupMessageSubscription()
+        await setupGroupConversationSubscription()
+    }
+
+    /// Pushes for group messages addressed to this user. The banner is titled with the
+    /// group and the body reads "Sender: message", like Messages does for groups.
+    private func setupGroupMessageSubscription() async {
+        guard let currentUserID = await getCurrentUserID() else { return }
+
+        let predicate = NSPredicate(format: "recipientUserIDs CONTAINS %@", currentUserID)
+        let subscription = CKQuerySubscription(
+            recordType: "Message",
+            predicate: predicate,
+            subscriptionID: groupMessageSubscriptionID,
+            options: [.firesOnRecordCreation]
+        )
+
+        let notificationInfo = CKSubscription.NotificationInfo()
+        notificationInfo.shouldSendContentAvailable = true
+        notificationInfo.titleLocalizationKey = "%@"
+        notificationInfo.titleLocalizationArgs = ["groupName"]
+        notificationInfo.alertLocalizationKey = "%@: %@"
+        notificationInfo.alertLocalizationArgs = ["senderName", "messagePreview"]
+        notificationInfo.soundName = "default"
+        notificationInfo.shouldBadge = true
+        notificationInfo.shouldSendMutableContent = true
+        // `conversationID` lets the app honor a muted group; `groupName` lets the
+        // NotificationService extension style the banner as a group message.
+        notificationInfo.desiredKeys = ["senderUserID", "senderName", "messagePreview", "groupName", "conversationID"]
+        subscription.notificationInfo = notificationInfo
+
+        do {
+            _ = try await publicDatabase.save(subscription)
+            print("✅ Group message subscription created successfully")
+        } catch {
+            print("⚠️ Failed to create group message subscription: \(error)")
+        }
+    }
+
+    /// Silent pushes when a group this user is in changes (rename, members, preview).
+    private func setupGroupConversationSubscription() async {
+        guard let currentUserID = await getCurrentUserID() else { return }
+
+        let predicate = NSPredicate(format: "participantUserIDs CONTAINS %@", currentUserID)
+        let subscription = CKQuerySubscription(
+            recordType: "Conversation",
+            predicate: predicate,
+            subscriptionID: groupConversationSubscriptionID,
+            options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+        )
+        let notificationInfo = CKSubscription.NotificationInfo()
+        notificationInfo.shouldSendContentAvailable = true
+        subscription.notificationInfo = notificationInfo
+
+        do {
+            _ = try await publicDatabase.save(subscription)
+            print("✅ Group conversation subscription created successfully")
+        } catch {
+            print("⚠️ Failed to create group conversation subscription: \(error)")
+        }
     }
     
     private func setupMessageSubscription() async {
@@ -1021,7 +1499,11 @@ class MessageStore: ObservableObject {
                     }
                 } else if record.recordType == "Conversation" {
                     if let conversation = Conversation.fromCloudKitRecord(record) {
-                        if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
+                        // A group this user has been removed from (or left on another
+                        // device) disappears rather than lingering as a dead thread.
+                        if conversation.isGroup, let me = await getCurrentUserID(), !conversation.includes(me) {
+                            conversations.removeAll { $0.id == conversation.id }
+                        } else if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
                             conversations[index] = conversation
                         } else {
                             conversations.append(conversation)
@@ -1165,8 +1647,10 @@ class MessageStore: ObservableObject {
     func unreadCount(for conversationID: UUID) -> Int {
         guard let me = currentUserID else { return 0 }
         let mine = canonicalMessagingID(me)
-        return (messagesByConversation[conversationID] ?? []).filter {
-            !$0.isRead && canonicalMessagingID($0.recipientUserID) == mine
+        return (messagesByConversation[conversationID] ?? []).filter { message in
+            // Group messages: unread until this user is in `readByUserIDs`.
+            if message.isGroupMessage { return !message.isRead(by: mine) }
+            return !message.isRead && canonicalMessagingID(message.recipientUserID) == mine
         }.count
     }
     
@@ -1211,26 +1695,27 @@ extension Message {
             let conversationID = UUID(uuidString: conversationIDString),
             let content = record["content"] as? String,
             let timestamp = record["timestamp"] as? Date,
-            let senderUserID = record["senderUserID"] as? String,
-            let recipientUserID = record["recipientUserID"] as? String
+            let senderUserID = record["senderUserID"] as? String
         else {
             return nil
         }
-        
+        // Group messages have no single recipient; the list below names them all.
+        let recipientUserID = record["recipientUserID"] as? String ?? ""
+
         let idString = record.recordID.recordName
         guard let id = UUID(uuidString: idString) else {
             return nil
         }
-        
+
         let isRead = record["isRead"] as? Bool ?? false
-        
+
         var attachmentType: AttachmentType?
         if let typeString = record["attachmentType"] as? String {
             attachmentType = AttachmentType(rawValue: typeString)
         }
-        
+
         let attachmentFileName = record["attachmentFileString"] as? String
-        
+
         var message = Message(
             id: id,
             conversationID: conversationID,
@@ -1240,7 +1725,9 @@ extension Message {
             recipientUserID: recipientUserID,
             isRead: isRead,
             attachmentType: attachmentType,
-            attachmentFileName: attachmentFileName
+            attachmentFileName: attachmentFileName,
+            recipientUserIDs: record["recipientUserIDs"] as? [String] ?? [],
+            readByUserIDs: record["readByUserIDs"] as? [String] ?? []
         )
         
         message.recordName = record.recordID.recordName
@@ -1276,29 +1763,37 @@ extension Conversation {
     }
 
     static func fromCloudKitRecord(_ record: CKRecord) -> Conversation? {
-        guard
-            let participant1UserID = record["participant1UserID"] as? String,
-            let participant2UserID = record["participant2UserID"] as? String
-        else {
-            return nil
+        let isGroup = (record["isGroup"] as? Int ?? 0) == 1
+        let participantUserIDs = record["participantUserIDs"] as? [String] ?? []
+        // One-to-one threads need both people; a group only needs its member list.
+        let participant1UserID = record["participant1UserID"] as? String ?? ""
+        let participant2UserID = record["participant2UserID"] as? String ?? ""
+        if isGroup {
+            guard !participantUserIDs.isEmpty else { return nil }
+        } else {
+            guard !participant1UserID.isEmpty, !participant2UserID.isEmpty else { return nil }
         }
-        
+
         let idString = record.recordID.recordName
         guard let id = UUID(uuidString: idString) else {
             return nil
         }
-        
+
         let lastMessageTimestamp = record["lastMessageTimestamp"] as? Date
         let lastMessagePreview = record["lastMessagePreview"] as? String
         let unreadCount = record["unreadCount"] as? Int ?? 0
-        
+
         var conversation = Conversation(
             id: id,
             participant1UserID: participant1UserID,
             participant2UserID: participant2UserID,
             lastMessageTimestamp: lastMessageTimestamp,
             lastMessagePreview: lastMessagePreview,
-            unreadCount: unreadCount
+            unreadCount: unreadCount,
+            isGroup: isGroup,
+            participantUserIDs: participantUserIDs,
+            groupName: record["groupName"] as? String,
+            createdByUserID: record["createdByUserID"] as? String
         )
         
         conversation.recordName = record.recordID.recordName
@@ -1316,6 +1811,9 @@ enum MessageError: LocalizedError {
     case conversationNotFound
     case attachmentError
     case cannotMessageSelf
+    case groupTooSmall
+    case notInGroup
+    case notAGroup
 
     var errorDescription: String? {
         switch self {
@@ -1331,6 +1829,12 @@ enum MessageError: LocalizedError {
             return "Failed to handle attachment"
         case .cannotMessageSelf:
             return "You can't send a message to yourself."
+        case .groupTooSmall:
+            return "Add at least two other people to start a group."
+        case .notInGroup:
+            return "You're no longer in this group."
+        case .notAGroup:
+            return "That conversation isn't a group."
         }
     }
 }

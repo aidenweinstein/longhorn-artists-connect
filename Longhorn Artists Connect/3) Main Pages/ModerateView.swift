@@ -625,10 +625,7 @@ struct SubmissionModerateCard: View {
         }
         .task {
             await store.refreshLikeCount(for: submission.id)
-            contentSize = await CloudKitManager.shared.contentByteSize(
-                submissionID: submission.id,
-                type: submission.type
-            )
+            contentSize = await CloudKitManager.shared.contentByteSize(for: submission)
             isSizing = false
         }
     }

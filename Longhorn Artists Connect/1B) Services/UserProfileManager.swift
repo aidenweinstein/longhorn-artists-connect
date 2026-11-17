@@ -55,6 +55,8 @@ struct DirectoryUser: Identifiable, Hashable, Codable {
     /// `CreativeGroup` raw values. Set only by moderators (`setDirectoryGroups`) —
     /// a person's own tags don't put them on a page. Empty = Everyone only.
     var directoryGroups: [String] = []
+    /// The member's availability (`WorkStatus` raw value). Empty = no status.
+    var workStatus: String = ""
 
     var fullName: String {
         "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
@@ -137,7 +139,7 @@ class UserProfileManager: ObservableObject {
         "firstName", "lastName", "major", "graduationYear", "userTypes", "bio",
         "instagramHandle", "isUTStudent", "portfolioOrder", "school",
         "isIndustryProfessional", "industry", "company", "companyRole", "accountKind",
-        "userEmail", "directoryGroups"
+        "userEmail", "directoryGroups", "workStatus"
     ]
     
     private init() {
@@ -584,7 +586,8 @@ class UserProfileManager: ObservableObject {
             companyRole: companyRole,
             accountKind: record["accountKind"] as? String ?? "",
             email: record["userEmail"] as? String ?? "",
-            directoryGroups: Self.parseDirectoryGroups(record["directoryGroups"] as? String)
+            directoryGroups: Self.parseDirectoryGroups(record["directoryGroups"] as? String),
+            workStatus: record["workStatus"] as? String ?? ""
         )
     }
 

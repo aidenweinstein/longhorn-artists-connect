@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import Link from "next/link";
 import AuthShell from "@/components/AuthShell";
+import { currentSession } from "@/lib/account";
 import SignUpForm from "../SignUpForm";
 
 export const metadata: Metadata = { title: "Finish creating your account · Nexus" };
@@ -14,11 +16,19 @@ export default function FinishSignUp() {
       footer={
         <>
           Wrong email?{" "}
-          <Link href="/signin" className="font-semibold text-brand hover:underline">Sign in again</Link>
+          <Link href="/signin" className="font-semibold text-[var(--auth-line)] underline underline-offset-4 hover:opacity-80">Sign in again</Link>
         </>
       }
     >
-      <SignUpForm finish />
+      {/* The school they signed in at sets the colors; the session is only known at request time. */}
+      <Suspense fallback={null}>
+        <FinishForm />
+      </Suspense>
     </AuthShell>
   );
+}
+
+async function FinishForm() {
+  const session = await currentSession();
+  return <SignUpForm finish schoolID={session?.schoolID} />;
 }

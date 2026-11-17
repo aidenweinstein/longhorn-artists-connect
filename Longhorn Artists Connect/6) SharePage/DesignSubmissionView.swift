@@ -921,9 +921,7 @@ struct DesignDetailView: View {
         }
         guard resolvedVideoURL == nil else { return }
 
-        let (resolution, debug) = await CloudKitManager.shared.streamResolutionDetailed(
-            submissionID: design.id, type: .design
-        )
+        let (resolution, debug) = await CloudKitManager.shared.streamResolutionDetailed(for: design)
         streamDebug = debug
         switch resolution {
         case .streaming(let streamURL):

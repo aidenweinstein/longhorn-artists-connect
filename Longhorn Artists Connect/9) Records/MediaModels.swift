@@ -78,6 +78,18 @@ nonisolated enum MediaUploadError: LocalizedError {
     }
 }
 
+/// Saves the feed picture's pixel size with the post (`thumbWidth` / `thumbHeight`), so the
+/// website can lay out the feed without downloading the picture to measure it.
+/// `UIImage.size` already accounts for the photo's orientation.
+func setThumbnailSize(on record: CKRecord, fromImageAt url: URL) {
+    guard let image = UIImage(contentsOfFile: url.path) else { return }
+    let width = Int((image.size.width * image.scale).rounded())
+    let height = Int((image.size.height * image.scale).rounded())
+    guard width > 0, height > 0 else { return }
+    record["thumbWidth"] = width as CKRecordValue
+    record["thumbHeight"] = height as CKRecordValue
+}
+
 /// Builds the `CKAsset` for `field`, confirming first that the file is actually readable
 /// and non-empty. Throws `MediaUploadError.missingAssetFile` when it isn't, rather than
 /// handing CloudKit a path it can't open.
@@ -166,6 +178,9 @@ struct Film: MediaItem {
 
     // Media files
     var videoFileName: String?
+    /// Where the video plays from when it lives outside CloudKit: a big website upload
+    /// in Cloudflare R2, linked from the record's `filmVideoURL`. Nil for app uploads.
+    var videoLinkURL: URL?
 
     /// Video length in seconds. Synced so the duration badge shows on every device.
     var videoDuration: Double?
@@ -176,6 +191,8 @@ struct Film: MediaItem {
     // Film extras — a separate trailer video plus any number of BTS photos / stills.
     // Stored as deterministic file names (resolved via `mediaFileURL`), like `videoFileName`.
     var trailerFileName: String?
+    /// The trailer's Cloudflare R2 link (`filmTrailerURL`) when it was uploaded from the website.
+    var trailerLinkURL: URL?
     var btsImageFileNames: [String] = []
     var stillImageFileNames: [String] = []
 
@@ -289,6 +306,7 @@ struct Film: MediaItem {
                 at: thumbnailURL, maxDimension: 1000, tempName: id.uuidString + "_thumb.jpg"
             )
             record["filmThumbnail"] = try uploadAsset(at: uploadURL, field: "filmThumbnail")
+            setThumbnailSize(on: record, fromImageAt: uploadURL)
         }
 
         // Trailer video — a second, compressed video asset alongside the feature film.
@@ -392,6 +410,10 @@ struct Film: MediaItem {
             fileName: "\(id.uuidString)_video.mov",
             baseDirectory: FileManager.default.mediaCacheDirectory
         )
+        // Big website uploads live in Cloudflare R2 instead of a CloudKit asset; the
+        // record links to them. The player streams straight from the link.
+        film.videoLinkURL = record.getLink("filmVideoURL")
+        film.trailerLinkURL = record.getLink("filmTrailerURL")
 
         // Download thumbnail into the thumbnails directory (with the same reuse fallback).
         film.thumbnailFileName = FileManager.default.persistCloudKitAsset(
@@ -486,6 +508,11 @@ struct Music: MediaItem {
     /// running order. Empty for singles and performances.
     var trackFileNames: [String] = []
     var videoFileName: String?  // For music video
+    /// Where the audio plays from when it lives outside CloudKit: a big website upload in
+    /// Cloudflare R2, linked from the record's `musicAudioURL`. Nil for app uploads.
+    var audioLinkURL: URL?
+    /// R2 links for the additional EP/Album tracks (`musicTracksURLs`), in running order.
+    var trackLinkURLs: [URL] = []
 
     /// Audio track length in seconds, captured at upload and synced via CloudKit so the
     /// duration badge can show on every device — even ones that haven't downloaded the
@@ -658,6 +685,7 @@ struct Music: MediaItem {
                 at: thumbnailURL, maxDimension: 1000, tempName: id.uuidString + "_cover.jpg"
             )
             record["musicCover"] = try uploadAsset(at: uploadURL, field: "musicCover")
+            setThumbnailSize(on: record, fromImageAt: uploadURL)
         }
         
         return record
@@ -729,6 +757,10 @@ struct Music: MediaItem {
             submissionID: id.uuidString,
             preferredExtension: record.getString("musicAudioExt")
         )
+        // Big website uploads live in Cloudflare R2 instead of a CloudKit asset; the
+        // record links to them. The player streams straight from the link.
+        music.audioLinkURL = record.getLink("musicAudioURL")
+        music.trackLinkURLs = record.getLinks("musicTracksURLs")
 
         // Additional EP/Album tracks. Absent on singles, on performances, and on every
         // record saved before the `musicTracks` field existed — all of which read back
@@ -810,6 +842,9 @@ struct Reel: MediaItem {
 
     // Media files
     var videoFileName: String?
+    /// Where the video plays from when it lives outside CloudKit: a big website upload
+    /// in Cloudflare R2, linked from the record's `reelVideoURL`. Nil for app uploads.
+    var videoLinkURL: URL?
     /// The reel video's length in seconds, persisted so the duration badge shows on the
     /// feed even on devices that haven't downloaded the video (mirrors film/music).
     var videoDuration: Double?
@@ -922,6 +957,7 @@ struct Reel: MediaItem {
                 at: thumbnailURL, maxDimension: 1000, tempName: id.uuidString + "_thumb.jpg"
             )
             record["reelThumbnail"] = try uploadAsset(at: uploadURL, field: "reelThumbnail")
+            setThumbnailSize(on: record, fromImageAt: uploadURL)
         }
 
         // Showcase stills — an Asset List field (each image downscaled before upload),
@@ -991,6 +1027,9 @@ struct Reel: MediaItem {
             fileName: "\(id.uuidString)_video.mov",
             baseDirectory: FileManager.default.mediaCacheDirectory
         )
+        // Big website uploads live in Cloudflare R2 instead of a CloudKit asset; the
+        // record links to them. The player streams straight from the link.
+        reel.videoLinkURL = record.getLink("reelVideoURL")
 
         reel.thumbnailFileName = FileManager.default.persistCloudKitAsset(
             record.getAsset("reelThumbnail"),
@@ -1124,6 +1163,7 @@ struct Photography: MediaItem {
                 at: thumbnailURL, maxDimension: 1000, tempName: id.uuidString + "_thumb.jpg"
             )
             record["photographyThumbnail"] = try uploadAsset(at: uploadURL, field: "photographyThumbnail")
+            setThumbnailSize(on: record, fromImageAt: uploadURL)
         }
 
         return record
@@ -1237,6 +1277,9 @@ struct Design: MediaItem {
     var imageFileNames: [String] = []
     /// An optional single video, for motion/3D work.
     var videoFileName: String?
+    /// Where the video plays from when it lives outside CloudKit: a big website upload
+    /// in Cloudflare R2, linked from the record's `designVideoURL`. Nil for app uploads.
+    var videoLinkURL: URL?
 
     /// Video length in seconds, captured at upload and synced so other devices know the
     /// post HAS a video without the (heavy) asset riding along with the feed fetch.
@@ -1347,6 +1390,7 @@ struct Design: MediaItem {
                 at: thumbnailURL, maxDimension: 1000, tempName: id.uuidString + "_thumb.jpg"
             )
             record["designThumbnail"] = try uploadAsset(at: uploadURL, field: "designThumbnail")
+            setThumbnailSize(on: record, fromImageAt: uploadURL)
         }
 
         return record
@@ -1415,6 +1459,9 @@ struct Design: MediaItem {
             fileName: "\(id.uuidString)_video.mov",
             baseDirectory: FileManager.default.mediaCacheDirectory
         )
+        // Big website uploads live in Cloudflare R2 instead of a CloudKit asset; the
+        // record links to them. The player streams straight from the link.
+        design.videoLinkURL = record.getLink("designVideoURL")
 
         design.thumbnailFileName = FileManager.default.persistCloudKitAsset(
             record.getAsset("designThumbnail"),
@@ -2131,5 +2178,24 @@ extension CKRecord {
     /// Safely get a Double value from a CKRecord field
     func getDouble(_ key: String) -> Double? {
         return self[key] as? Double
+    }
+
+    /// A link to a file stored outside CloudKit (a big website upload in Cloudflare R2),
+    /// kept in a String field such as `filmVideoURL`. https only, so a stray value can't
+    /// point the player anywhere odd. Nil when the field is absent or not a usable link.
+    func getLink(_ key: String) -> URL? {
+        guard let string = self[key] as? String,
+              let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme == "https", url.host != nil else { return nil }
+        return url
+    }
+
+    /// Like `getLink` for a String List field (`musicTracksURLs`): the usable links, in order.
+    func getLinks(_ key: String) -> [URL] {
+        (self[key] as? [String] ?? []).compactMap { string in
+            guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  url.scheme == "https", url.host != nil else { return nil }
+            return url
+        }
     }
 }

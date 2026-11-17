@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-import { handlePeople } from "../src/people.ts";
+import { handlePeople, handlePeopleListed } from "../src/people.ts";
 
 function d1(db: DatabaseSync) {
     const prepare = (sql: string) => {
@@ -167,4 +167,13 @@ test("only the website can change featured collections", async () => {
 
 test("only the website can change staff picks", async () => {
     assert.equal((await call("/v1/web/people/picks/admin/save", { postID: "p1" }, null)).status, 403);
+});
+
+test("the public listing names everyone on each page, in order, without the UserProfile_ prefix", async () => {
+    await save("actors", "UserProfile_abc", "Ada");
+    await save("actors", "UserProfile_def", "Dee");
+    await save("musicians", "UserProfile_abc", "Ada");
+    const res = await handlePeopleListed(env);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { filmmakers: [], actors: ["abc", "def"], musicians: ["abc"] });
 });

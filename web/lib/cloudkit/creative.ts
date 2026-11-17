@@ -1,23 +1,26 @@
 import { cacheLife, cacheTag } from "next/cache";
-import { asset, lookup, modify, num, queryAll, str, updateFields, type CKField, type CKRecord } from "./client";
+import { asset, lookup, queryAll, str, updateFields, type CKField, type CKRecord } from "./client";
 import { isProfileStyle, parseDetails, type CreativeDetails, type CreativeProfile, type ProfileStyle } from "../profileStyle";
 
 /*
  * Profile styles in CloudKit, shared with the app (CreativeProfileStore.swift):
  *
- *   CreativeProfile   "CreativeProfile_<userRecordName>"
- *     style STRING · details STRING (JSON) · headshot ASSET · updatedAt TIMESTAMP
- *   DirectoryListing  "listing_<userRecordName>"   (moderator decisions)
- *     userID STRING · style STRING · status STRING ("approved"/"declined") · modifiedAt TIMESTAMP
+ *   On the person's own UserProfile record, "UserProfile_<userRecordName>" (2026-11-16;
+ *   there is no separate CreativeProfile record type):
+ *     style STRING · details STRING (JSON) · headshot ASSET (no updatedAt field: the
+ *     record's own modified time is used)
+ *   Also on the UserProfile record: directoryGroups STRING, "Actor,Filmmaker,Musician" —
+ *     which People pages the app's moderators have put the person on (read here, written
+ *     only by the app; see DirectoryPeopleGrid.swift).
  *
- * Both types have to exist in the Production schema (with recordName queryable) before
- * saves work; until then reads come back empty and saves return a clear message.
+ * The style fields have to be in the Production schema before saves work; until then
+ * reads come back empty and saves return a clear message.
  */
 
 export const creativeTag = (userRecordName: string) => `creative:${userRecordName}`;
 export const CREATIVE_ALL_TAG = "creative:all";
 
-const rawID = (id: string) => id.replace(/^(UserProfile_|CreativeProfile_|listing_)/, "");
+const rawID = (id: string) => id.replace(/^(UserProfile_|CreativeProfile_)/, "");
 
 function parse(r: CKRecord): CreativeProfile | null {
   const style = str(r, "style");
@@ -27,7 +30,7 @@ function parse(r: CKRecord): CreativeProfile | null {
     style,
     details: parseDetails(str(r, "details")),
     headshotUrl: asset(r, "headshot", "media.jpg"),
-    updatedAt: num(r, "updatedAt") ?? r.created?.timestamp ?? 0,
+    updatedAt: r.modified?.timestamp ?? r.created?.timestamp ?? 0,
   };
 }
 
@@ -38,7 +41,7 @@ export async function getCreativeProfile(id: string): Promise<CreativeProfile | 
   const user = rawID(id);
   cacheTag(creativeTag(user));
   try {
-    const r = await lookup(`CreativeProfile_${user}`);
+    const r = await lookup(`UserProfile_${user}`);
     return r ? parse(r) : null;
   } catch (error) {
     console.error("[creative] lookup:", error instanceof Error ? error.message : error);
@@ -46,14 +49,14 @@ export async function getCreativeProfile(id: string): Promise<CreativeProfile | 
   }
 }
 
-/** Every style profile, keyed by user record name. Empty until the record type exists. */
+/** Every style profile, keyed by user record name. Profiles with no style saved are skipped. */
 export async function allCreativeProfiles(): Promise<Map<string, CreativeProfile>> {
-  "use cache";
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(CREATIVE_ALL_TAG);
   const out = new Map<string, CreativeProfile>();
   try {
-    for (const r of await queryAll("CreativeProfile")) {
+    for (const r of await queryAll("UserProfile")) {
       const p = parse(r);
       if (p) out.set(p.userID, p);
     }
@@ -63,32 +66,31 @@ export async function allCreativeProfiles(): Promise<Map<string, CreativeProfile
   return out;
 }
 
-export type Listing = { userID: string; style: ProfileStyle; status: "approved" | "declined"; modifiedAt: number };
-
-/** Moderator decisions, keyed by user record name. */
-export async function allListings(): Promise<Map<string, Listing>> {
-  "use cache";
+/**
+ * The People pages the app's moderators have put each person on, keyed by user record
+ * name: the `directoryGroups` field on UserProfile, "Actor,Filmmaker,Musician". People
+ * with none are left out.
+ */
+export async function allDirectoryGroups(): Promise<Map<string, Set<ProfileStyle>>> {
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(CREATIVE_ALL_TAG);
-  const out = new Map<string, Listing>();
+  const out = new Map<string, Set<ProfileStyle>>();
   try {
-    for (const r of await queryAll("DirectoryListing")) {
-      const style = str(r, "style");
-      const status = str(r, "status");
-      if (!isProfileStyle(style) || (status !== "approved" && status !== "declined")) continue;
-      const userID = rawID(str(r, "userID") || r.recordName);
-      out.set(userID, { userID, style, status, modifiedAt: num(r, "modifiedAt") ?? 0 });
+    for (const r of await queryAll("UserProfile")) {
+      const groups = new Set(str(r, "directoryGroups").split(",").map((g) => g.trim()).filter(isProfileStyle));
+      if (groups.size) out.set(rawID(r.recordName), groups);
     }
   } catch (error) {
-    console.error("[creative] listings:", error instanceof Error ? error.message : error);
+    console.error("[creative] directory groups:", error instanceof Error ? error.message : error);
   }
   return out;
 }
 
 /**
- * Saves someone's style and details. Updates the record when it exists (so an
- * existing headshot is kept unless a new one is given), otherwise creates it.
- * Returns a message on failure.
+ * Saves someone's style and details onto their UserProfile record. Only these fields
+ * are written, so the rest of the profile (and an existing headshot, unless a new one
+ * is given) is kept. Returns a message on failure.
  */
 export async function writeCreativeProfile(
   userRecordName: string,
@@ -96,20 +98,17 @@ export async function writeCreativeProfile(
   details: CreativeDetails,
   headshot?: CKField,
 ): Promise<string | null> {
-  const recordName = `CreativeProfile_${userRecordName}`;
+  const recordName = `UserProfile_${rawID(userRecordName)}`;
   const fields: Record<string, CKField> = {
     style: { value: style, type: "STRING" },
     details: { value: JSON.stringify(details), type: "STRING" },
-    updatedAt: { value: Date.now(), type: "TIMESTAMP" },
   };
   if (headshot) fields.headshot = headshot;
   try {
-    const existing = await lookup(recordName);
-    if (existing) {
-      const error = await updateFields("CreativeProfile", recordName, fields);
-      if (error) return describe(error.code, error.reason);
-    } else {
-      await modify([{ kind: "save", recordType: "CreativeProfile", recordName, fields }]);
+    const error = await updateFields("UserProfile", recordName, fields);
+    if (error) {
+      console.error("[creative] save:", error.code, error.reason);
+      return describe(error.code, error.reason);
     }
     return null;
   } catch (error) {
@@ -121,26 +120,11 @@ export async function writeCreativeProfile(
 
 function describe(code: string, reason: string): string {
   const text = `${code} ${reason}`;
-  if (/did not find record type|unknown.*type|BAD_REQUEST.*CreativeProfile|Cannot create new type/i.test(text)) {
-    return "Profile styles aren't set up in CloudKit yet. Add the CreativeProfile record type in CloudKit Dashboard, then try again.";
+  if (/NOT_FOUND|record not found/i.test(text) && !/field|type/i.test(reason)) {
+    return "Couldn't find your Nexus profile to save this on.";
   }
-  return "Couldn't save your profile style. Try again in a moment.";
-}
-
-/** Moderator decision: puts a profile on (or keeps it off) its style's page in the app too. */
-export async function writeListing(userRecordName: string, style: ProfileStyle, status: "approved" | "declined"): Promise<void> {
-  const user = rawID(userRecordName);
-  await modify([
-    {
-      kind: "save",
-      recordType: "DirectoryListing",
-      recordName: `listing_${user}`,
-      fields: {
-        userID: { value: user, type: "STRING" },
-        style: { value: style, type: "STRING" },
-        status: { value: status, type: "STRING" },
-        modifiedAt: { value: Date.now(), type: "TIMESTAMP" },
-      },
-    },
-  ]);
+  if (/field|schema|record.?type|BAD_REQUEST/i.test(text)) {
+    return "CloudKit's UserProfile is missing a field in Production. It needs style (String), details (String) and headshot (Asset), deployed to Production.";
+  }
+  return "Couldn't save your actor, filmmaker and musician info. Try again in a moment.";
 }

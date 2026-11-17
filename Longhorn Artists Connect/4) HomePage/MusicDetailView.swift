@@ -106,7 +106,7 @@ struct MusicDetailView: View {
         }
         guard resolvedAudioURL == nil, !isLoadingAudio else { return }
         isLoadingAudio = true
-        let resolution = await CloudKitManager.shared.streamResolution(submissionID: music.id, type: .music)
+        let resolution = await CloudKitManager.shared.streamResolution(for: music)
         switch resolution {
         case .streaming(let streamURL):
             resolvedAudioURL = streamURL
@@ -137,7 +137,7 @@ struct MusicDetailView: View {
             return
         }
         isLoadingTracks = true
-        additionalTrackURLs = await CloudKitManager.shared.musicTrackStreamURLs(submissionID: music.id)
+        additionalTrackURLs = await CloudKitManager.shared.musicTrackStreamURLs(for: music)
         isLoadingTracks = false
     }
 

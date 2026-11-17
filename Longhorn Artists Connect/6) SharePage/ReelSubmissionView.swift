@@ -853,9 +853,9 @@ struct ReelEditView: View {
                 crewInfo: $crewInfo,
                 isEditing: true,
                 selfID: submission.id,
-                loadExistingVideo: { [submissionID = submission.id] in
+                loadExistingVideo: { [submission] in
                     // The streaming link gives the first frame without a download.
-                    await CloudKitManager.shared.streamingURL(submissionID: submissionID, type: .reel)
+                    await CloudKitManager.shared.streamingURL(for: submission)
                 },
                 videoCrop: $edited.videoCrop
             )

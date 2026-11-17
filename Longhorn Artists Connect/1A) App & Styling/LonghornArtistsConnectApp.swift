@@ -64,7 +64,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         let subscriptionID = (notification as? CKQueryNotification)?.subscriptionID
         Task { @MainActor in
             switch subscriptionID {
-            case "MessageSubscription", "ConversationSubscription":
+            case let id? where MessageStore.subscriptionIDs.contains(id):
+                // One-to-one and group message / conversation pushes.
                 await MessageStore.shared.handleRemoteNotification(userInfo)
             case let id? where ConnectionsManager.subscriptionIDs.contains(id):
                 // Someone sent or accepted a connection request: reload the edge sets so
@@ -100,11 +101,18 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let userInfo = notification.request.content.userInfo
-        if let ck = CKQueryNotification(fromRemoteNotificationDictionary: userInfo),
-           let senderID = ck.recordFields?["senderUserID"] as? String,
-           ConversationPreferencesManager.shared.isMuted(senderID) {
-            completionHandler([])   // muted: no banner/sound while app is open
-            return
+        if let ck = CKQueryNotification(fromRemoteNotificationDictionary: userInfo), let fields = ck.recordFields {
+            let prefs = ConversationPreferencesManager.shared
+            // Group pushes carry `groupName` + `conversationID` and are muted per group;
+            // one-to-one pushes are muted per sender.
+            let isGroupPush = (fields["groupName"] as? String).map { !$0.isEmpty } ?? false
+            let muted = isGroupPush
+                ? (fields["conversationID"] as? String).map(prefs.isMuted) ?? false
+                : (fields["senderUserID"] as? String).map(prefs.isMuted) ?? false
+            if muted {
+                completionHandler([])   // muted: no banner/sound while app is open
+                return
+            }
         }
         completionHandler([.banner, .sound, .badge])
     }

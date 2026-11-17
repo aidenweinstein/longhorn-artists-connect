@@ -795,9 +795,9 @@ struct FilmEditView: View {
                 onGenerateThumbnail: { _ in },
                 onTrailerPickerResult: { result in handleTrailerPick(result) },
                 isEditing: true,
-                loadExistingVideo: { [submissionID = submission.id] in
+                loadExistingVideo: { [submission] in
                     // The streaming link gives the first frame without a download.
-                    await CloudKitManager.shared.streamingURL(submissionID: submissionID, type: .film)
+                    await CloudKitManager.shared.streamingURL(for: submission)
                 },
                 videoCrop: $edited.videoCrop
             )

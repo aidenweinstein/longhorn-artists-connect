@@ -31,7 +31,8 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
     const account = sampleAccount(sample);
     return (
       <ProfileView
-        styled={<StyledProfile account={account} posts={[]} creative={sampleStyle} events={[]} />}
+        styled={<StyledProfile part="lists" account={account} posts={[]} creative={sampleStyle} events={[]} />}
+        info={<StyledProfile part="info" account={account} posts={[]} creative={sampleStyle} events={[]} />}
         account={account}
         posts={[]}
         note="Sample profile. Not a real person."
@@ -61,10 +62,13 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
   return (
     <ProfileView
       collaborators={collaborators}
-      styled={<StyledProfile account={account} posts={posts} creative={creative} events={events} isOwn={isMe} />}
+      styled={<StyledProfile part="lists" account={account} posts={posts} creative={creative} events={events} isOwn={isMe} />}
+        info={<StyledProfile part="info" account={account} posts={posts} creative={creative} events={events} isOwn={isMe} />}
       account={account}
       posts={posts}
       actions={isMe ? <SignOutButton /> : undefined}
+      editableStatus={isMe}
+      canEditGrid={isMe}
       profileActions={canInteract ? <ProfileActions profileID={account.profileID} name={account.name} initialState={connection} /> : undefined}
       note={linked ? undefined : "Credited on Nexus, but not linked to a Nexus profile yet."}
       emptyText={`No credited work from ${account.name.split(" ")[0] || "them"} yet.`}

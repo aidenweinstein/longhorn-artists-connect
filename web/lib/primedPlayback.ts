@@ -11,7 +11,7 @@ import { forgetOffPage, trackOffPage } from "./autoplay";
 let primed: { postID: string; el: HTMLVideoElement; timer: ReturnType<typeof setTimeout> } | null = null;
 
 /** If no player adopts the element soon (navigation cancelled, slow load), silence it for good. */
-const GIVE_UP_MS = 8000;
+const GIVE_UP_MS = 20000;
 
 function discard(el: HTMLVideoElement) {
   el.pause();

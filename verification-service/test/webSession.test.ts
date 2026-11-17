@@ -91,8 +91,8 @@ function post(path: string, body: unknown, { token = TOKEN, ip = "203.0.113.7" }
     });
 }
 
-async function requestCode(email: string) {
-    const res = await handleWebSessionRequest(post("/v1/web/session/request", { email }), env, lookup);
+async function requestCode(email: string, purpose?: string) {
+    const res = await handleWebSessionRequest(post("/v1/web/session/request", { email, purpose }), env, lookup);
     return { res, body: (await res.json()) as any };
 }
 
@@ -181,6 +181,30 @@ test("unknown and alumni domains are refused without sending mail", async () => 
     assert.equal(sent.length, 0);
 });
 
+test("a guest confirms any email and gets no school, account or account token", async () => {
+    const { res, body } = await requestCode("Someone@Gmail.com", "guest");
+    assert.equal(res.status, 200);
+    assert.equal(sent[0].to, "someone@gmail.com");
+    assert.match(sent[0].text, /continue as a guest/);
+
+    const confirm = (code: string) => handleWebSessionConfirm(post("/v1/web/session/confirm", { pendingID: body.pendingID, code }), env);
+    const wrong = lastCode() === "000000" ? "000001" : "000000";
+    assert.equal((await confirm(wrong)).status, 400, "a guest still needs the right code");
+
+    const ok = await confirm(lastCode());
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { email: "someone@gmail.com", schoolID: "", schoolName: "", domainKind: "guest" });
+    assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM web_account_claims`).get() as any).n, 0);
+    assert.equal((await confirm(lastCode())).status, 400, "a code can't be reused");
+});
+
+test("a guest with an app-verified school email is still only a guest", async () => {
+    await verifyInApp("jane@utexas.edu", "_abc123");
+    const { body } = await requestCode("jane@utexas.edu", "guest");
+    const ok = await handleWebSessionConfirm(post("/v1/web/session/confirm", { pendingID: body.pendingID, code: lastCode() }), env);
+    assert.deepEqual(await ok.json(), { email: "jane@utexas.edu", schoolID: "", schoolName: "", domainKind: "guest" });
+});
+
 test("a code from the app's flow can't confirm a web sign-in", async () => {
     const { body } = await requestCode("jane@utexas.edu");
     // Same pendingID and code, but hashed the way /v1/verify/* hashes it.
@@ -242,6 +266,16 @@ function create(body: Record<string, unknown>, writer: AccountWriter) {
 test("an email already linked to an account gets no account token", async () => {
     await verifyInApp("jane@utexas.edu", "_app_user_123");
     assert.ok(!("accountToken" in (await signIn("jane@utexas.edu"))));
+});
+
+test("an educator account is a Professor with no graduation year", async () => {
+    const { accountToken } = (await signIn("prof@utexas.edu")) as any;
+    const { writer, profiles } = fakeWriter();
+    const r = await create({ accountToken, firstName: "Pat", lastName: "Lee", major: "Radio-Television-Film", userTypes: "Director, Writer", role: "educator" }, writer);
+    assert.equal(r.status, 200);
+    assert.equal(profiles[0].fields.schoolRole.value, "Professor");
+    assert.equal(profiles[0].fields.userTypes.value, "Director, Writer");
+    assert.equal(profiles[0].fields.graduationYear.value, "");
 });
 
 test("an account token creates a website account linked to the email", async () => {

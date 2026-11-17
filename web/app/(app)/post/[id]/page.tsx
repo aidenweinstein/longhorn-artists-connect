@@ -3,6 +3,7 @@ import MaskImage from "@/components/MaskImage";
 import MediaViewer from "@/components/MediaViewer";
 import Avatar from "@/components/Avatar";
 import { TINT, creditPrefix } from "@/components/ContentGrid";
+import { avatarSource, gallerySources, thumbSrc } from "@/lib/smallImage";
 import PersonLink, { MainArtistLinks } from "@/components/PersonLink";
 import AvatarStack from "@/components/AvatarStack";
 import ImageCarousel from "@/components/ImageCarousel";
@@ -12,8 +13,10 @@ import { detailsFor, type Credit } from "@/lib/postDetails";
 import PostMedia from "@/components/PostMedia";
 import Player from "@/components/Player";
 import MusicPlayer from "@/components/MusicPlayer";
+import VideoPlaylist from "@/components/VideoPlaylist";
 import ServiceBadge from "@/components/ServiceBadge";
 import PostLink from "@/components/PostLink";
+import EditPostLink from "@/components/EditPostLink";
 import PostActions from "@/components/PostActions";
 import Timecode from "@/components/Timecode";
 
@@ -50,7 +53,9 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
   // Photo and design posts show their pictures in the main carousel; posts led by
   // a video or song get a second carousel for their stills further down.
   const playsMedia = Boolean(post.videoUrl || post.audioUrl);
-  const gallery = post.images ?? [];
+  // Screen-sized copies load in the carousel; each picture's upload opens from "Full size".
+  const originals = post.images ?? [];
+  const gallery = gallerySources(post);
   const pictures = playsMedia ? [] : gallery.length ? gallery : post.thumbnailUrl ? [post.thumbnailUrl] : [];
   const more = feed.filter((p) => p.id !== post.id && p.category === post.category)
     .concat(feed.filter((p) => p.category !== post.category))
@@ -59,14 +64,16 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
   return (
     <div className="mx-auto flex max-w-[1920px] flex-col gap-6 xl:flex-row">
       <div className="min-w-0 flex-1">
-        {post.videoUrl ? (
-          <Player key={post.id} postID={post.id} src={post.videoUrl} poster={post.thumbnailUrl} aspect={post.aspect} autoStart />
+        {post.videos ? (
+          <VideoPlaylist key={post.id} postID={post.id} videos={post.videos} poster={post.thumbnailUrl} aspect={post.aspect} crop={post.videoCrop} autoStart />
+        ) : post.videoUrl ? (
+          <Player key={post.id} postID={post.id} src={post.videoUrl} poster={post.thumbnailUrl} aspect={post.aspect} crop={post.videoCrop} autoStart />
         ) : post.tracks ? (
           <MusicPlayer key={post.id} tracks={post.tracks} poster={post.thumbnailUrl} aspect={post.aspect} firstDuration={post.duration} autoStart />
         ) : post.audioUrl ? (
           <Player key={post.id} postID={post.id} src={post.audioUrl} poster={post.thumbnailUrl} aspect={post.aspect} audioOnly autoStart />
         ) : pictures.length > 0 ? (
-          <ImageCarousel key={post.id} images={pictures} aspect={post.aspect} />
+          <ImageCarousel key={post.id} images={pictures} originals={originals} aspect={post.aspect} />
         ) : (
           <MediaViewer aspect={post.aspect}>
             <PostMedia post={post} />
@@ -75,7 +82,10 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
 
         <div className="mt-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
           <h1 className="min-w-0 text-2xl font-bold leading-tight">{post.title}</h1>
-          <PostActions postID={post.id} title={post.title} />
+          <div className="flex items-center gap-2">
+            <EditPostLink postID={post.id} />
+            <PostActions postID={post.id} title={post.title} />
+          </div>
         </div>
         {d.byline && (
           <p className="mt-1 text-lg text-muted">
@@ -108,7 +118,7 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
           {d.studio && (
             // The studio or organization behind the work, opposite the main credits.
             <div className="min-w-0 shrink text-right">
-              <p className="text-xs uppercase tracking-wide text-muted">Studio</p>
+              <p className="text-xs uppercase tracking-wide text-muted">Org/Class</p>
               <p className="truncate font-semibold">{d.studio}</p>
             </div>
           )}
@@ -130,7 +140,7 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
                   <li key={`${c.role}-${c.name}`} className="flex items-center justify-between gap-4 py-2.5">
                     <span className="text-sm text-muted">{c.role}</span>
                     <PersonLink name={c.name} profileID={c.profileID} className="group/person flex items-center gap-2.5 hover:no-underline">
-                      {c.profileID && <Avatar name={c.name} src={c.avatarUrl} size="sm" />}
+                      {c.profileID && <Avatar name={c.name} src={avatarSource(c)} size="sm" />}
                       <span className={`text-sm font-medium ${c.profileID ? "group-hover/person:underline" : ""}`}>{c.name}</span>
                     </PersonLink>
                   </li>
@@ -215,7 +225,7 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">Gallery</h2>
               <div className="mt-3">
-                <ImageCarousel images={gallery} aspect={16 / 9} />
+                <ImageCarousel images={gallery} originals={originals} aspect={16 / 9} />
               </div>
             </div>
           )}
@@ -247,7 +257,7 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
                       <MaskImage src={c.icon} ratio={c.ratio} className="h-7 text-white/35" />
                       {p.thumbnailUrl && (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={p.thumbnailUrl} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
+                        <img src={thumbSrc(p)} alt="" loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
                       )}
                       {(p.duration || p.videoUrl || p.audioUrl) && (
                         <Timecode seconds={p.duration} src={p.videoUrl ?? p.audioUrl} kind={p.videoUrl ? "video" : "audio"} small />

@@ -16,6 +16,9 @@ export type InboxThread = {
   lastMessage: string;
   time: string;
   unread: number;
+  /** Group chats: no profile to link to, and a head count under the name. */
+  isGroup?: boolean;
+  memberCount?: number;
 };
 
 export type OpenThread = {
@@ -23,15 +26,21 @@ export type OpenThread = {
   name: string;
   imageUrl?: string;
   profileID?: string;
+  isGroup?: boolean;
+  memberCount?: number;
   messages: {
     id: string;
     fromMe: boolean;
     text: string;
     at: number;
     time?: string;
+    /** Group chats: who sent a received message, shown above its bubble. */
+    senderName?: string;
     attachmentType?: "image" | "video" | "document" | "post";
     attachmentUrl?: string;
     postID?: string;
+    /** The shared post's picture, title and page, when it's still on Nexus. */
+    post?: { title: string; imageUrl?: string; href: string };
   }[];
 };
 
@@ -77,12 +86,25 @@ export default function NetworkInbox({
     bottom.current?.scrollIntoView({ block: "end" });
   }, [openID, open?.messages.length]);
 
-  // Pick up new messages while the page is open.
+  // Pick up new messages while the page is open. Each check is one small request; the
+  // page itself is only rebuilt when something in the conversations has changed.
   useEffect(() => {
     if (!canSend) return;
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") router.refresh();
-    }, REFRESH_MS);
+    let last: string | null | undefined;
+    const check = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const res = await fetch("/api/network/pulse", { cache: "no-store" });
+        if (!res.ok) return;
+        const { pulse } = (await res.json()) as { pulse: string | null };
+        if (last !== undefined && pulse !== last) router.refresh();
+        last = pulse;
+      } catch {
+        /* offline for a moment: try again on the next tick */
+      }
+    };
+    check();
+    const timer = setInterval(check, REFRESH_MS);
     return () => clearInterval(timer);
   }, [canSend, router]);
 
@@ -112,7 +134,7 @@ export default function NetworkInbox({
             New message
           </button>
         </li>
-        {threads.length === 0 && (
+{threads.length === 0 && (
           <li className="px-4 py-6 text-sm text-muted">
             {/* On phones only this pane shows, so the notice goes here too. */}
             <span className="md:hidden">{notice ? `${notice.title}. ${notice.body}` : "No conversations yet."}</span>
@@ -163,7 +185,10 @@ export default function NetworkInbox({
                   {open.name}
                 </Link>
               ) : (
-                <p className="font-semibold">{open.name}</p>
+                <span className="min-w-0">
+                  <p className="truncate font-semibold">{open.name}</p>
+                  {open.isGroup && open.memberCount ? <p className="text-xs text-muted">{open.memberCount} people</p> : null}
+                </span>
               )}
             </header>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-4">
@@ -175,9 +200,12 @@ export default function NetworkInbox({
                 const bubble = `max-w-[75%] rounded-2xl px-3.5 py-2 text-sm ${
                   m.fromMe ? "self-end rounded-br-md bg-brand text-white" : "self-start rounded-bl-md bg-surface"
                 }`;
+                // Group chats: name the sender when they change (or after a time gap).
+                const sender = m.senderName && (stamp || !prev || prev.senderName !== m.senderName || prev.fromMe) ? m.senderName : null;
                 return (
                   <div key={m.id} className="contents">
                     {stamp && <p className="my-2 text-center text-xs text-muted">{m.time}</p>}
+                    {sender && <p className="ml-3 self-start text-xs text-muted">{sender}</p>}
                     {m.attachmentType === "image" && m.attachmentUrl && (
                       <a href={m.attachmentUrl} target="_blank" rel="noopener noreferrer" className={m.fromMe ? "self-end" : "self-start"}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -193,8 +221,20 @@ export default function NetworkInbox({
                       </a>
                     )}
                     {m.attachmentType === "post" && m.postID && (
-                      <Link href={`/post/${m.postID}`} className={`${bubble} underline`}>
-                        Shared a post
+                      // Like the app's bubble: the post's artwork at its own shape, title underneath.
+                      <Link
+                        href={m.post?.href ?? `/post/${m.postID}`}
+                        className={`flex w-[200px] max-w-[75%] flex-col items-center gap-2 rounded-[20px] p-2.5 transition hover:brightness-95 ${
+                          m.fromMe ? "self-end bg-brand text-white" : "self-start bg-surface"
+                        }`}
+                      >
+                        {m.post?.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={m.post.imageUrl} alt="" className="max-h-72 w-full rounded-[10px] object-contain" />
+                        ) : (
+                          <div className="aspect-[7/9] w-full rounded-[10px] bg-foreground/15" />
+                        )}
+                        <span className="line-clamp-2 text-center text-sm font-semibold">{m.post?.title ?? "Shared post"}</span>
                       </Link>
                     )}
                     {m.text && <p className={`${bubble} whitespace-pre-line break-words`}>{m.text}</p>}
@@ -217,7 +257,7 @@ export default function NetworkInbox({
                   disabled={!canSend}
                   maxLength={4000}
                   onChange={(e) => setDraft(e.target.value)}
-                  placeholder={canSend ? `Message ${open.name.split(" ")[0]}` : "Connect CloudKit to send messages."}
+                  placeholder={canSend ? `Message ${open.isGroup ? open.name : open.name.split(" ")[0]}` : "Connect CloudKit to send messages."}
                   className="min-w-0 flex-1 rounded-full border border-border bg-background px-4 py-2 text-sm outline-none focus:border-brand disabled:opacity-60"
                 />
                 <button
@@ -247,3 +287,4 @@ export default function NetworkInbox({
     </div>
   );
 }
+

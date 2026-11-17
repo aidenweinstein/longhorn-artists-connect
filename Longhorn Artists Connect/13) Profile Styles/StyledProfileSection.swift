@@ -5,13 +5,16 @@
 //  The part of a profile that the person's role tags unlock, placed under the bio on
 //  the user's own Portfolio and on everyone else's profile (see CreativeGroup.swift):
 //
-//  • Actor / Dancer tags — like Actors Access: headshot beside the stats sheet (age
-//    range, gender, height…), their reel, a resume of every role (Nexus credits plus
-//    ones they typed in), and skills, languages and training.
+//  First, a compact card per group with what they filled in (Actor stats; Filmmaker
+//  studios, certifications and gear; Musician names, instruments, genres and streaming
+//  pages), only for groups with something filled in. Then, per group:
+//
+//  • Actor / Dancer tags — like Actors Access: headshot, their reel, a resume of every
+//    role (Nexus credits plus ones they typed in), and skills, languages and training.
 //  • Film tags — like IMDb: a filmography grouped by job, newest first, with year,
 //    title and type, then a grid of stills from their work.
-//  • Musician / Singer / Composer tags — like Spotify: streaming links, songs, albums
-//    & EPs, and upcoming shows.
+//  • Musician / Singer / Composer tags — like Spotify: songs, albums & EPs, and
+//    upcoming shows.
 //
 //  Someone with tags in more than one group gets every matching section. People
 //  with none of these tags show nothing extra.
@@ -89,6 +92,18 @@ struct StyledProfileSection: View {
                 .frame(height: 0)
                 .task { await creative.refresh() }
 
+            // Compact Actor / Filmmaker / Musician cards right under the bio — only the
+            // ones with something filled in, Actor always first.
+            let cards = groups.filter(hasCardInfo)
+            if !cards.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(cards) { group in
+                        infoCard(group)
+                    }
+                }
+                .padding(.bottom, 20)
+            }
+
             if !groups.isEmpty {
                 VStack(alignment: .leading, spacing: 24) {
                     ForEach(groups) { group in
@@ -117,6 +132,79 @@ struct StyledProfileSection: View {
         .sheet(item: $selectedEvent) { event in
             EventDetailView(event: event)
         }
+    }
+
+    // MARK: - Info Cards
+
+    /// The label/value rows a group's card shows, skipping blanks.
+    private func cardRows(_ group: CreativeGroup) -> [(label: String, value: String)] {
+        let rows: [(String, String)]
+        switch group {
+        case .actor:
+            return details.actor.statRows
+        case .filmmaker:
+            let f = details.filmmaker
+            rows = [("Studio(s)", f.studios), ("Certifications", f.certifications), ("Gear", f.gear)]
+        case .musician:
+            let m = details.musician
+            rows = [("Solo act", m.soloName), ("Band", m.bandName),
+                    ("Instruments", m.instrumentList.joined(separator: ", ")),
+                    ("Genres", m.genreList.joined(separator: ", "))]
+        }
+        return rows
+            .filter { !$0.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { (label: $0.0, value: $0.1) }
+    }
+
+    private func hasCardInfo(_ group: CreativeGroup) -> Bool {
+        !cardRows(group).isEmpty || (group == .musician && !details.musician.links.isEmpty)
+    }
+
+    private func infoCard(_ group: CreativeGroup) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(group.rawValue, systemImage: group.symbol)
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(Color.brandOrange)
+            ForEach(cardRows(group), id: \.label) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 104, alignment: .leading)
+                    Text(row.value)
+                        .font(.footnote.weight(.medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if group == .musician {
+                let links = details.musician.links
+                if !links.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(links, id: \.service) { link in
+                                Button {
+                                    openURL(link.url)
+                                } label: {
+                                    Label(link.service.rawValue, systemImage: link.service.symbol)
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Color.brandOrange, in: Capsule())
+                                        .foregroundStyle(.white)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.15)))
     }
 
     private func header(_ group: CreativeGroup) -> some View {
@@ -151,46 +239,17 @@ struct StyledProfileSection: View {
 
     @ViewBuilder
     private func actorLayout(_ details: ActorDetails) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Group {
-                if let headshot = headshotImage {
-                    Image(uiImage: headshot)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Rectangle()
-                        .fill(Color.secondary.opacity(0.12))
-                        .overlay(
-                            VStack(spacing: 4) {
-                                Image(systemName: "person.crop.rectangle")
-                                    .font(.title)
-                                Text("No headshot").font(.caption2)
-                            }
-                            .foregroundStyle(.secondary)
-                        )
-                }
-            }
-            .frame(width: 120, height: 160)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 6) {
-                if details.statRows.isEmpty {
-                    Text(isOwn ? "Add your headshot, age range, height and more with Edit." : "No details yet.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(details.statRows, id: \.label) { row in
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(row.label)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                        Text(row.value)
-                            .font(.subheadline.weight(.medium))
-                    }
-                }
-            }
-            Spacer(minLength: 0)
+        // The stats are on the Actor card under the bio; the headshot leads the section.
+        if let headshot = headshotImage {
+            Image(uiImage: headshot)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 120, height: 160)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else if isOwn {
+            Text("Add your headshot, playable age, height and more with Edit.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
 
         if let reelID = details.reelPostID,
@@ -395,22 +454,6 @@ struct StyledProfileSection: View {
     private func filmmakerLayout(_ details: FilmmakerDetails) -> some View {
         let groups = filmographyGroups
 
-        if !details.specialties.isEmpty || !details.gear.isEmpty || details.openToCrew {
-            VStack(alignment: .leading, spacing: 6) {
-                if details.openToCrew {
-                    StatusPill(text: "Open to joining crews", emphasized: true)
-                }
-                if !details.specialties.isEmpty {
-                    Text(details.specialties).font(.subheadline)
-                }
-                if !details.gear.isEmpty {
-                    Text("Gear: \(details.gear)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-
         VStack(alignment: .leading, spacing: 14) {
             Text("Filmography").font(.title3.bold())
             if groups.isEmpty {
@@ -484,7 +527,7 @@ struct StyledProfileSection: View {
     /// isolated, and a loop body in this (main-actor) view stays isolated where a
     /// closure wouldn't.
     private func releases(_ details: MusicianDetails) -> [Submission] {
-        let names = Set([name, details.artistName].map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty })
+        let names = Set(([name] + details.actNames).map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty })
         var result: [Submission] = []
         for post in store.visibleApprovedSubmissions where post.type == .music {
             if names.contains(Collaborator.nameKey(for: post.artist)) || !post.credits(where: isPerson).isEmpty {
@@ -498,7 +541,7 @@ struct StyledProfileSection: View {
     }
 
     private func upcomingShows(_ details: MusicianDetails) -> [Submission] {
-        let names = [name, details.artistName].map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty }
+        let names = ([name] + details.actNames).map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty }
         var result: [Submission] = []
         for event in store.visibleApprovedSubmissions where event.isUpcomingEvent {
             let lineup = (event.eventLineup ?? "").lowercased()
@@ -517,47 +560,6 @@ struct StyledProfileSection: View {
         let songs = all.filter { !["EP", "Album"].contains($0.musicCategory) }
         let records = all.filter { ["EP", "Album"].contains($0.musicCategory) }
         let shows = upcomingShows(details)
-
-        VStack(alignment: .leading, spacing: 6) {
-            if !details.artistName.isEmpty {
-                Text(details.artistName).font(.title2.bold())
-            }
-            let facts = [details.genres, details.instruments].filter { !$0.isEmpty }
-            if !facts.isEmpty {
-                Text(facts.joined(separator: " · "))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            if !details.availability.isEmpty {
-                ChipRow(chips: details.availability.map { "Available: \($0)" })
-            }
-        }
-
-        // Streaming pages — buttons out to Spotify, Apple Music, etc.
-        let links = details.links
-        if !links.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(links, id: \.service) { link in
-                        Button {
-                            openURL(link.url)
-                        } label: {
-                            Label(link.service.rawValue, systemImage: link.service.symbol)
-                                .font(.footnote.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color.brandOrange, in: Capsule())
-                                .foregroundStyle(.white)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        } else if isOwn {
-            Text("Add links to your Spotify, Apple Music or other pages with Edit.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
 
         if !shows.isEmpty {
             VStack(alignment: .leading, spacing: 8) {

@@ -5,8 +5,19 @@ import { updateTag } from "next/cache";
 import { PROFILES_TAG, accountTag } from "@/lib/cloudkit/content";
 import { CREATIVE_ALL_TAG, creativeTag, writeCreativeProfile } from "@/lib/cloudkit/creative";
 import { callPeople } from "@/lib/featured";
+import { ROLE_TAGS } from "@/lib/profileFields";
 import { STYLE_INFO, emptyDetails, isProfileStyle } from "@/lib/profileStyle";
-import { SESSION_COOKIE, SESSION_COOKIE_OPTIONS, decodeSession, encodeSession, type Session } from "@/lib/session";
+import {
+  GUEST_COOKIE,
+  GUEST_COOKIE_OPTIONS,
+  SESSION_COOKIE,
+  SESSION_COOKIE_OPTIONS,
+  decodeSession,
+  encodeGuestPass,
+  encodeSession,
+  type Session,
+} from "@/lib/session";
+import { domainList, isSchoolEmail, isSignupRole, signupSchool, type SignupRole } from "@/lib/signupSchools";
 import { confirmCode, createAccount, requestCode, type RequestResult } from "@/lib/verification";
 
 async function clientIP(): Promise<string> {
@@ -22,7 +33,20 @@ async function startSession(session: Omit<Session, "issuedAt">) {
   );
 }
 
-export async function requestCodeAction(email: string): Promise<RequestResult> {
+/**
+ * Sends the email code. Sign-up passes the school the person picked and whether they're
+ * a student or an educator, and the email must then be at that school's domain for them
+ * (UT Austin students: @my.utexas.edu).
+ */
+export async function requestCodeAction(email: string, schoolID?: string, role?: SignupRole): Promise<RequestResult> {
+  if (schoolID !== undefined) {
+    const school = signupSchool(schoolID);
+    // Sign-in passes the school with no role: any of that school's domains will do.
+    if (!school || (role !== undefined && !isSignupRole(role))) return { ok: false, message: "Pick your school first." };
+    if (!isSchoolEmail(email, school, role)) {
+      return { ok: false, message: `Use your ${domainList(school, role)} email address.` };
+    }
+  }
   return requestCode(email, await clientIP());
 }
 
@@ -38,6 +62,8 @@ export async function confirmCodeAction(
 
   const result = await confirmCode(pendingID, code, await clientIP());
   if (!result.ok) return result;
+  // A guest's code proves a personal address, never a school one: it can't sign anyone in.
+  if (result.domainKind === "guest") return { ok: false, message: "Sign in with your school email address." };
 
   await startSession({
     email: result.email,
@@ -50,12 +76,39 @@ export async function confirmCodeAction(
   return { ok: true, hasAccount: !!result.userRecordName };
 }
 
+/** "Continue as guest", step 1: emails a code to any address the visitor gives. */
+export async function requestGuestCodeAction(email: string): Promise<RequestResult> {
+  return requestCode(email, await clientIP(), "guest");
+}
+
+/**
+ * "Continue as guest", step 2: the code is right, so the visitor may browse. They get a
+ * guest pass, not a session: no account, and nothing that needs one.
+ */
+export async function confirmGuestCodeAction(
+  pendingID: string,
+  code: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!/^\d{6}$/.test(code)) return { ok: false, message: "Enter the 6-digit code." };
+
+  const result = await confirmCode(pendingID, code, await clientIP());
+  if (!result.ok) return result;
+
+  (await cookies()).set(GUEST_COOKIE, encodeGuestPass(result.email), GUEST_COOKIE_OPTIONS);
+  return { ok: true };
+}
+
 export type NewAccount = {
   firstName: string;
   lastName: string;
   major: string;
   classOf: string;
-  style: string;
+  /** Role tags picked at sign-up ("Director", "Editor"...); only the app's known tags are kept. */
+  tags?: string[];
+  /** Sign-up no longer asks for a profile style; one passed here is still saved. */
+  style?: string;
+  /** Educators give a department as `major` and have no class year. */
+  role?: SignupRole;
 };
 
 /**
@@ -73,14 +126,33 @@ export async function createAccountAction(
     return { ok: false, message: "Your sign-in expired. Sign in again to finish.", signInAgain: true };
   }
 
+  // Same rule as sign-up's email step, for someone who got here through Sign in:
+  // at a sign-up school, a student needs its student address and an educator one of
+  // its educator addresses.
+  const role: SignupRole = input.role === "educator" ? "educator" : "student";
+  const school = signupSchool(session.schoolID);
+  if (school && !isSchoolEmail(session.email, school, role)) {
+    return {
+      ok: false,
+      message: `New ${school.name} ${role} accounts need an ${domainList(school, role)} email. Sign in again with that address.`,
+      signInAgain: true,
+    };
+  }
+
   const firstName = input.firstName.trim();
   const lastName = input.lastName.trim();
   if (!firstName || !lastName) return { ok: false, message: "Enter your first and last name." };
-  if (!/^\d{4}$/.test(input.classOf)) return { ok: false, message: "Pick your graduation year." };
+  if (role === "student" && !/^\d{4}$/.test(input.classOf)) return { ok: false, message: "Enter your graduation year as four digits, like 2028." };
+
+  // Stored the way Edit profile stores them: the app's tags, sorted, comma-separated.
+  const picked = Array.isArray(input.tags) ? input.tags : [];
+  const userTypes = ROLE_TAGS.filter((tag) => picked.includes(tag)).sort().join(", ");
 
   const result = await createAccount(
     session.accountToken,
-    { firstName, lastName, major: input.major.trim(), graduationYear: input.classOf },
+    role === "educator"
+      ? { firstName, lastName, major: input.major.trim(), graduationYear: "", userTypes, role }
+      : { firstName, lastName, major: input.major.trim(), graduationYear: input.classOf, userTypes },
     await clientIP(),
   );
   if (!result.ok) return result;
@@ -94,17 +166,18 @@ export async function createAccountAction(
     userRecordName: user, // and the spent accountToken is dropped
   });
 
-  if (isProfileStyle(input.style)) {
-    const error = await writeCreativeProfile(user, input.style, emptyDetails());
+  const style = input.style;
+  if (isProfileStyle(style)) {
+    const error = await writeCreativeProfile(user, style, emptyDetails());
     if (error) console.error("[signup] style:", error);
     // Ask the moderators to list them on their style's People page, as picking a style does.
     try {
       await callPeople("apply", {
-        category: STYLE_INFO[input.style].slug,
+        category: STYLE_INFO[style].slug,
         email: session.email,
         profileID: `UserProfile_${user}`,
         name: `${firstName} ${lastName}`,
-        message: `Picked the ${input.style} profile style on Nexus.`,
+        message: `Picked the ${style} profile style on Nexus.`,
         links: "",
       });
     } catch (error) {

@@ -237,16 +237,7 @@ export default function ProfileEditForm({
       </section>
 
       <section className="space-y-4">
-        <label className="flex items-center gap-3 text-sm font-medium">
-          <input
-            type="checkbox"
-            checked={p.isIndustryProfessional}
-            onChange={(e) => set("isIndustryProfessional", e.target.checked)}
-            className="h-4 w-4 accent-[var(--brand)]"
-          />
-          I&rsquo;m an industry professional
-        </label>
-
+        {/* No toggle here: accounts already marked as industry professionals keep their company fields. */}
         {p.isIndustryProfessional ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Role">
@@ -285,18 +276,7 @@ export default function ProfileEditForm({
         {school && <p className="text-sm text-muted">School: {school}. It comes from your verified email, so it can&rsquo;t be changed here.</p>}
       </section>
 
-      <section className="grid gap-4 sm:grid-cols-2">
-        <Field label="Instagram" hint="(optional)">
-          <div className="flex items-center rounded-xl border border-border bg-background focus-within:border-brand">
-            <span className="pl-3 text-sm text-muted">@</span>
-            <input
-              className="w-full bg-transparent px-1 py-2.5 text-sm outline-none"
-              value={p.instagramHandle.replace(/^@/, "")}
-              maxLength={60}
-              onChange={(e) => set("instagramHandle", e.target.value)}
-            />
-          </div>
-        </Field>
+      <section>
         <Field label="Website" hint="(optional)">
           <input className={field} value={p.websiteURL} maxLength={300} placeholder="yourname.com" onChange={(e) => set("websiteURL", e.target.value)} />
         </Field>

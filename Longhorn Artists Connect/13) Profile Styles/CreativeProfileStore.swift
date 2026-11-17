@@ -4,7 +4,7 @@
 //
 //  The extra profile details your tags unlock (see CreativeGroup.swift) — an actor's
 //  Actors Access sheet and headshot, a musician's streaming links, a filmmaker's
-//  specialties — in CloudKit, plus the signed-in user's own copy and audition list.
+//  gear — in CloudKit, plus the signed-in user's own copy and audition list.
 //
 //  One public-database record type (create it in CloudKit Dashboard, in BOTH
 //  environments, then deploy — see the schema table in CloudKitRecordTypes.swift):

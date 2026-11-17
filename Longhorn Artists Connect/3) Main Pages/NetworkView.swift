@@ -20,6 +20,9 @@ struct NetworkConversation: Identifiable {
     /// Crew Call they posted or are on the team of, whose shoot hasn't wrapped).
     /// `nil` when they have none; shown to the right of their name.
     let currentProject: String?
+    /// True for a group chat; `groupMembers` then supplies the collage avatar.
+    var isGroup: Bool = false
+    var groupMembers: [DirectoryUser] = []
 
     /// True for a connection you haven't messaged yet — the row invites you to
     /// "Say hi!" instead of showing a last message.
@@ -80,6 +83,24 @@ struct NetworkView: View {
         return messageStore.visibleConversations
             .sorted { ($0.lastMessageTimestamp ?? .distantPast) > ($1.lastMessageTimestamp ?? .distantPast) }
             .compactMap { convo -> (otherUserID: String, row: NetworkConversation)? in
+                // Group chats: titled by name or members, with a collage avatar.
+                if convo.isGroup {
+                    let members = convo.allMemberIDs.compactMap { userProfileManager.findUser(byID: $0) }
+                    let title = convo.displayTitle(for: currentUserID) { userProfileManager.findUser(byID: $0)?.firstName }
+                    let row = NetworkConversation(
+                        conversationID: convo.id,
+                        name: title,
+                        lastMessage: convo.lastMessagePreview ?? "",
+                        timestamp: convo.lastMessageTimestamp ?? Date(),
+                        unread: messageStore.unreadCount(for: convo.id) > 0,
+                        avatarImageData: nil,
+                        currentProject: nil,
+                        isGroup: true,
+                        groupMembers: members
+                    )
+                    return (otherUserID: "", row: row)
+                }
+
                 let otherID = convo.otherParticipant(for: currentUserID)
 
                 // Hide self-conversations. These show up as a confusing "Unknown"
@@ -237,7 +258,9 @@ struct NetworkView: View {
                                     // Avatar — the participant's real profile
                                     // photo, falling back to a person symbol.
                                     Group {
-                                        if let data = conversation.avatarImageData,
+                                        if conversation.isGroup {
+                                            GroupAvatarView(members: conversation.groupMembers, size: feedFormat.avatarSize)
+                                        } else if let data = conversation.avatarImageData,
                                            let uiImage = UIImage(data: data) {
                                             Image(uiImage: uiImage)
                                                 .resizable()
@@ -345,14 +368,18 @@ struct NetworkView: View {
                 // newly-messaged person appears (and re-sorts to the top).
                 Task { await loadConversations() }
             }) { conversation in
-                let uid = otherUserID(forName: conversation.name)
                 NavigationStack {
-                    InMessageView(
-                        conversationID: existingConversationID(forOtherUser: uid) ?? UUID(),
-                        otherUserID: uid,
-                        otherUserName: conversation.name,
-                        otherUserRole: otherUserRole(forName: conversation.name)
-                    )
+                    if conversation.isGroup, let groupID = conversation.conversationID {
+                        InMessageView(thread: .group(groupID))
+                    } else {
+                        let uid = otherUserID(forName: conversation.name)
+                        InMessageView(
+                            conversationID: existingConversationID(forOtherUser: uid) ?? UUID(),
+                            otherUserID: uid,
+                            otherUserName: conversation.name,
+                            otherUserRole: otherUserRole(forName: conversation.name)
+                        )
+                    }
                 }
                 .presentationDragIndicator(.hidden)
             }

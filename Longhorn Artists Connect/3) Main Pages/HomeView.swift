@@ -37,11 +37,6 @@ struct HomeView_1: View {
         }
     }
 
-    // MARK: - Feed Mode
-    /// Re-tapping the selected category's icon toggles it between the normal feed and
-    /// "connections only" — just posts by or crediting people you're connected with.
-    /// The highlight bubble behind the icon reflects the mode. (`fire` and `saved` are
-    /// the retired trending / saved modes; nothing switches into them any more.)
     enum FeedMode: Hashable {
         case normal
         case fire
@@ -65,22 +60,12 @@ struct HomeView_1: View {
     @State private var isSearching = false
     @State private var searchText = ""
     @FocusState private var isTextFieldFocused: Bool
-
-    // Recommendation-feed state (see Algorithms.swift). `feedSeed` fixes the random order
-    // of equal-like-count posts for this load; `seenSnapshot` is the set of already-opened
-    // posts as of this load, so opening a post only sinks it to the bottom on the next
-    // reload. Both are refreshed by `reloadFeedOrdering()` on appear and pull-to-refresh.
+    
     @State private var feedSeed: UInt64 = 0
     @State private var seenSnapshot: Set<UUID> = []
 
-    // Set after the first `onAppear`. The view stays alive inside the TabView, so
-    // `onAppear` fires again every time the user switches back to Home; without this
-    // guard each tab switch would re-roll the ordering and reshuffle the feed.
     @State private var hasLoadedFeed = false
 
-    // The `feedTaskID` whose trending like counts were last fetched. `.task(id:)`
-    // re-runs on every re-appear too, so this lets the fetch skip when the category and
-    // mode haven't actually changed since the last run.
     @State private var lastLikeFetchID: String?
 
     // Pull-to-refresh count for this visit. Once it reaches

@@ -6,7 +6,8 @@ import type { ProfileFields } from "../profileFields";
 import { cleanWorkStatus } from "../workStatus";
 import type { Credit, CreditGroup } from "../postDetails";
 import { imageAspect } from "./imageSize";
-import { asset, assets, isCloudKitConfigured, list, lookup, num, queryAll, str, type CKRecord } from "./client";
+import { posterSource, profileImage } from "../smallImage";
+import { asset, assetChecksum, assetChecksums, assets, fileURL, fileURLs, isCloudKitConfigured, list, lookup, num, queryAll, str, type CKRecord } from "./client";
 
 /**
  * Real content from the app's public CloudKit database, mapped into the website's
@@ -14,6 +15,10 @@ import { asset, assets, isCloudKitConfigured, list, lookup, num, queryAll, str, 
  * ones, and festival-bound films stay out of the feed.
  *
  * Cached for a few minutes; asset download URLs are refreshed with each fetch.
+ * The site-wide lists use `use cache: remote`: on Vercel every server instance shares
+ * one copy, so a visitor almost never waits on CloudKit. Plain `use cache` lives in
+ * one instance's memory, and serverless instances come and go, so most visits would
+ * have redone the whole fetch.
  */
 
 const DEFAULT_ASPECT: Record<Post["category"], number> = {
@@ -69,8 +74,10 @@ function film(r: CKRecord): Post {
     ...p,
     thumbnailUrl: asset(r, "filmThumbnail", "media.jpg"),
     duration: num(r, "filmVideoDuration"),
-    videoUrl: asset(r, "filmVideo", "media.mp4"),
+    videoUrl: fileURL(r, "filmVideo", "media.mp4"),
+    videoCrop: str(r, "filmVideoCrop") || undefined,
     images: [...assets(r, "filmStills", "media.jpg"), ...assets(r, "filmBTS", "media.jpg")],
+    imageKeys: [...assetChecksums(r, "filmStills"), ...assetChecksums(r, "filmBTS")],
     details: {
       ageRating: str(r, "filmAgeRating") || undefined,
       genres: list(r, "filmGenres"),
@@ -80,7 +87,7 @@ function film(r: CKRecord): Post {
       logline: str(r, "filmLogline") || undefined,
       description: str(r, "filmDescription"),
       creditGroups: groups(["Cast", credits(r, "filmCast", "filmCastIDs")], ["Crew", credits(r, "filmCrew", "filmCrewIDs")]),
-      trailerUrl: asset(r, "filmTrailer", "media.mp4"),
+      trailerUrl: fileURL(r, "filmTrailer", "media.mp4"),
       submittedBy: str(r, "submittedBy"),
     },
   };
@@ -97,12 +104,16 @@ function music(r: CKRecord): Post {
     ["YouTube Music", str(r, "youtubeMusicLink")],
     ["SoundCloud", str(r, "soundcloudLink")],
   ].filter(([, url]) => url) as [string, string][];
-  const audioUrl = asset(r, "musicAudio", `media.${ext}`);
+  const audioUrl = fileURL(r, "musicAudio", `media.${ext}`);
   // EP/Album tracks after the first, saved by the app as a parallel asset + extension list.
   const exts = list(r, "musicTrackExts");
-  const extra = ((r.fields["musicTracks"]?.value as { downloadURL?: string }[] | undefined) ?? []).flatMap((a, i) =>
-    a?.downloadURL ? [a.downloadURL.replace("${f}", `media.${(exts[i] || "m4a").replace(/^\./, "")}`)] : [],
-  );
+  // Big website uploads keep R2 links instead (musicTracksURLs), already named with their extension.
+  const trackLinks = list(r, "musicTracksURLs");
+  const extra = trackLinks.length
+    ? fileURLs(r, "musicTracks", "media.m4a")
+    : ((r.fields["musicTracks"]?.value as { downloadURL?: string }[] | undefined) ?? []).flatMap((a, i) =>
+        a?.downloadURL ? [a.downloadURL.replace("${f}", `media.${(exts[i] || "m4a").replace(/^\./, "")}`)] : [],
+      );
   const tracks = audioUrl && extra.length ? [audioUrl, ...extra] : undefined;
   return {
     ...p,
@@ -110,7 +121,7 @@ function music(r: CKRecord): Post {
     duration: num(r, "musicAudioDuration"),
     audioUrl,
     tracks,
-    videoUrl: asset(r, "musicVideo", "media.mp4"),
+    videoUrl: fileURL(r, "musicVideo", "media.mp4"),
     details: {
       byline: artist || undefined,
       genres: list(r, "musicGenres"),
@@ -130,11 +141,19 @@ function reel(r: CKRecord): Post {
   const artist = str(r, "reelArtist");
   const p = base(r, "performance", str(r, "reelTitle"), artist);
   const featured = [...list(r, "featuredWorkManual")];
+  const videoUrl = fileURL(r, "reelVideo", "media.mp4");
+  // A showcase's videos after the first (website posts), with one title per video in reelVideoTitles.
+  const extra = fileURLs(r, "reelVideos", "media.mp4");
+  const titles = list(r, "reelVideoTitles");
+  const videos = videoUrl && extra.length ? [videoUrl, ...extra].map((url, i) => ({ url, title: titles[i] ?? "" })) : undefined;
   return {
     ...p,
     thumbnailUrl: asset(r, "reelThumbnail", "media.jpg"),
     duration: num(r, "reelVideoDuration"),
-    videoUrl: asset(r, "reelVideo", "media.mp4"),
+    videoUrl,
+    videoCrop: str(r, "reelVideoCrop") || undefined,
+    videos,
+    playlistPostIDs: list(r, "reelPlaylistPostIDs").length ? list(r, "reelPlaylistPostIDs") : undefined,
     details: {
       byline: artist || undefined,
       genres: [],
@@ -172,6 +191,7 @@ function photography(r: CKRecord): Post {
     ...p,
     thumbnailUrl: asset(r, "photographyThumbnail", "media.jpg") ?? images[0],
     images,
+    imageKeys: assetChecksums(r, "photographyImages"),
     details: {
       byline: artist || undefined,
       genres: [],
@@ -192,7 +212,9 @@ function design(r: CKRecord): Post {
     thumbnailUrl: asset(r, "designThumbnail", "media.jpg") ?? images[0],
     duration: num(r, "designVideoDuration"),
     images,
-    videoUrl: asset(r, "designVideo", "media.mp4"),
+    imageKeys: assetChecksums(r, "designImages"),
+    videoUrl: fileURL(r, "designVideo", "media.mp4"),
+    videoCrop: str(r, "designVideoCrop") || undefined,
     details: {
       genres: [],
       kindLabel: str(r, "designCategory") || undefined,
@@ -220,6 +242,8 @@ function project(r: CKRecord): Project {
     castNeeded,
     crewNeeded,
     posterUrl: asset(r, "projectPoster", "media.jpg"),
+    posterKey: assetChecksum(r, "projectPoster"),
+    posterSmallUrl: posterSource(r.recordName, assetChecksum(r, "projectPoster"), asset(r, "projectPoster", "media.jpg")),
     slides: assets(r, "projectSlides", "media.jpg"),
     genres: list(r, "projectGenres"),
     shootStart: num(r, "projectShootStart"),
@@ -248,6 +272,8 @@ function event(r: CKRecord): NexusEvent {
     logline: str(r, "eventDescription"),
     ticketed: !!str(r, "eventTicketsURL"),
     flyerUrl: asset(r, "eventFlyer", "media.jpg"),
+    flyerKey: assetChecksum(r, "eventFlyer"),
+    flyerSmallUrl: posterSource(r.recordName, assetChecksum(r, "eventFlyer"), asset(r, "eventFlyer", "media.jpg")),
     startsAt: start,
     endsAt: num(r, "eventEndTime") ?? num(r, "eventEndDate"),
     category: str(r, "eventCategory") || undefined,
@@ -276,9 +302,9 @@ function describeError(error: unknown): string {
   return cause ? `${error.message} (${[cause.code, cause.message].filter(Boolean).join(": ")})` : error.message;
 }
 
-async function safeQuery(type: string): Promise<CKRecord[]> {
+async function safeQuery(type: string, desiredKeys?: string[]): Promise<CKRecord[]> {
   try {
-    return await queryAll(type);
+    return await queryAll(type, 2000, desiredKeys);
   } catch (error) {
     // One missing or misconfigured record type shouldn't take the whole site down.
     console.error(`[cloudkit] ${type}:`, describeError(error));
@@ -295,11 +321,73 @@ async function removedIDs(): Promise<Set<string>> {
 const visible = (removed: Set<string>) => (r: CKRecord) =>
   num(r, "isApproved") === 1 && !removed.has(r.recordName.toUpperCase());
 
+/**
+ * Placeholder posts from an early app build that are still in the public database.
+ * Hardcoded so they never show (same list as the app's `PlaceholderData.swift`):
+ * the five fixed record IDs, plus three that come back under other IDs, by title.
+ */
+const PLACEHOLDER_TITLES = new Set(["morgan taylor - acting reel 2026", "the midnight garden", "neon dreams"]);
+const PLACEHOLDER_ID = /^00000000-0000-0000-0000-00000000000[1-5]$/;
+const notPlaceholder = (p: { id: string; title: string }) =>
+  !PLACEHOLDER_ID.test(p.id) &&
+  !PLACEHOLDER_TITLES.has(p.title.replace(/[\u2013\u2014]/g, "-").trim().toLowerCase());
+
 /** Tag on the feed caches, so a post made on the website shows up right away. */
 export const POSTS_TAG = "posts";
 
-export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set<string> }> {
-  "use cache";
+/**
+ * Fills in playlists made of existing posts: each one plays its own uploaded videos, then
+ * the posts it lists, under those posts' titles. Returns the IDs of every post that sits
+ * in a playlist; those stay off the feeds (still on portfolios and at their own address).
+ */
+function resolvePlaylists(posts: Post[]): Set<string> {
+  const byID = new Map(posts.map((p) => [p.id.toUpperCase(), p]));
+  const inPlaylist = new Set<string>();
+  for (const p of posts) {
+    if (!p.playlistPostIDs?.length) continue;
+    const items = p.playlistPostIDs.flatMap((id) => {
+      const q = byID.get(id.toUpperCase());
+      // Never another playlist, so two can't hide each other.
+      return q && q.id !== p.id && q.videoUrl && !q.playlistPostIDs?.length ? [q] : [];
+    });
+    if (items.length === 0) continue;
+    for (const q of items) inPlaylist.add(q.id);
+    const own = p.videos ?? (p.videoUrl ? [{ url: p.videoUrl, title: "" }] : []);
+    p.videos = [...own, ...items.map((q) => ({ url: q.videoUrl!, title: q.title, postID: q.id }))];
+    // A playlist with no upload of its own previews and opens on its first video.
+    if (!p.videoUrl) {
+      p.videoUrl = p.videos[0].url;
+      p.duration = items[0].duration;
+    }
+  }
+  return inPlaylist;
+}
+
+/**
+ * One post straight from CloudKit by its record name. For a post too new to be in
+ * getAllPosts yet: CloudKit's queries take a few seconds to list a new record, but
+ * looking one up by name finds it at once. Same rules as the feed (approved, not removed).
+ */
+export async function postByID(id: string): Promise<Post | undefined> {
+  "use cache: remote";
+  cacheLife({ stale: 30, revalidate: 60, expire: 300 });
+  cacheTag(POSTS_TAG);
+  if (!/^[0-9A-Fa-f-]{36}$/.test(id)) return undefined;
+  const [r, removed] = await Promise.all([lookup(id).catch(() => null), removedIDs()]);
+  if (!r || !visible(removed)(r)) return undefined;
+  const map: Record<string, (r: CKRecord) => Post> = {
+    FilmSubmission: film,
+    MusicSubmission: music,
+    ReelSubmission: reel,
+    PhotographySubmission: photography,
+    DesignSubmission: design,
+  };
+  const post = map[r.recordType]?.(r);
+  return post && notPlaceholder(post) ? post : undefined;
+}
+
+export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set<string>; inPlaylist: Set<string> }> {
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(POSTS_TAG);
 
@@ -320,17 +408,39 @@ export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set
     ...reels.filter(ok).map(reel),
     ...photos.filter(ok).map(photography),
     ...designs.filter(ok).map(design),
-  ];
+  ].filter(notPlaceholder);
   const order = new Map([...films, ...musics, ...reels, ...photos, ...designs].map((r) => [r.recordName, created(r)]));
   posts.sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0));
   applyMainCredit(posts);
   attachAvatars(posts, people);
-  await withTrueAspects(posts);
-  return { posts, festivalBound };
+  const thumbKeys = new Map(
+    [
+      ...films.map((r) => [r.recordName, assetChecksum(r, "filmThumbnail")] as const),
+      ...musics.map((r) => [r.recordName, assetChecksum(r, "musicCover")] as const),
+      ...reels.map((r) => [r.recordName, assetChecksum(r, "reelThumbnail")] as const),
+      ...photos.map((r) => [r.recordName, assetChecksum(r, "photographyThumbnail") ?? assetChecksum(r, "photographyImages")] as const),
+      ...designs.map((r) => [r.recordName, assetChecksum(r, "designThumbnail") ?? assetChecksum(r, "designImages")] as const),
+    ].filter((e): e is readonly [string, string] => !!e[1]),
+  );
+  // The checksum also names the picture in the site's small-image addresses (lib/smallImage.ts).
+  // Posts saved with their thumbnail's size (thumbWidth / thumbHeight) need no measuring.
+  const savedAspect = new Map(
+    [...films, ...musics, ...reels, ...photos, ...designs].flatMap((r) => {
+      const w = num(r, "thumbWidth");
+      const h = num(r, "thumbHeight");
+      return w && h && w > 0 && h > 0 ? [[r.recordName, w / h] as const] : [];
+    }),
+  );
+  for (const p of posts) {
+    p.thumbnailKey = thumbKeys.get(p.id);
+    p.aspect = savedAspect.get(p.id) ?? p.aspect;
+  }
+  await withTrueAspects(posts.filter((p) => !savedAspect.has(p.id)), thumbKeys);
+  return { posts, festivalBound, inPlaylist: resolvePlaylists(posts) };
 }
 
 export async function getDiscoverItems(): Promise<(Project | NexusEvent)[]> {
-  "use cache";
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(POSTS_TAG);
 
@@ -340,15 +450,24 @@ export async function getDiscoverItems(): Promise<(Project | NexusEvent)[]> {
     safeQuery("EventSubmission"),
   ]);
   const ok = visible(removed);
-  const items = [...projects.filter(ok).map(project), ...events.filter(ok).map(event)];
+  const items = [...projects.filter(ok).map(project), ...events.filter(ok).map(event)].filter(notPlaceholder);
   const order = new Map([...projects, ...events].map((r) => [r.recordName, created(r)]));
   return items.sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0));
 }
 
-type Profile = { id: string; name: string; imageUrl?: string; roles: string[] };
+type Profile = {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  imageKey?: string;
+  /** In profileDirectory, `imageUrl` is a small copy and this is the full-size upload. */
+  fullImageUrl?: string;
+  roles: string[];
+};
 
 async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile> }> {
-  const records = await safeQuery("UserProfile");
+  // Only the fields used here: profiles also hold bios, links and more that no list needs.
+  const records = await safeQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes"]);
   const byID = new Map<string, Profile>();
   const nameCounts = new Map<string, number>();
   const byName = new Map<string, Profile>();
@@ -358,6 +477,7 @@ async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<str
       id: r.recordName,
       name,
       imageUrl: asset(r, "profileImage", "media.jpg"),
+      imageKey: assetChecksum(r, "profileImage"),
       // The app's role tags ("Director", "Actor"...), stored as one comma-separated string.
       roles: str(r, "userTypes").split(",").map((t) => t.trim()).filter(Boolean),
     };
@@ -378,11 +498,24 @@ export const PROFILES_TAG = "profiles";
 
 /** Every app profile with a name, A to Z, for picking someone to feature. */
 export async function profileDirectory(): Promise<Profile[]> {
-  "use cache";
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(PROFILES_TAG);
   const { byID } = await profiles();
-  return [...byID.values()].filter((p) => p.name).sort((a, b) => a.name.localeCompare(b.name));
+  return [...byID.values()]
+    .filter((p) => p.name)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    // Lists and cards show a small copy; the upload itself stays available as fullImageUrl.
+    .map((p) => ({ ...p, fullImageUrl: p.imageUrl, imageUrl: profileImage(p.id, p.imageKey, p.imageUrl) }));
+}
+
+/** A profile picture's full-size link and checksum as they are now, for the small-image route. */
+export async function profileImageSource(profileID: string): Promise<{ url?: string; key?: string } | undefined> {
+  const listed = (await profileDirectory()).find((p) => p.id === profileID);
+  if (listed) return { url: listed.fullImageUrl, key: listed.imageKey };
+  // Not in the list (no name yet, or newer than the list): read the one record.
+  const r = await lookup(profileID).catch(() => null);
+  return r?.recordType === "UserProfile" ? { url: asset(r, "profileImage", "media.jpg"), key: assetChecksum(r, "profileImage") } : undefined;
 }
 
 /**
@@ -395,11 +528,13 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
   for (const post of posts) {
     const creator = find(post.creatorProfileID, post.creator);
     post.creatorAvatarUrl = creator?.imageUrl;
+    post.creatorAvatarKey = creator?.imageKey;
     post.creatorProfileID = creator?.id ?? post.creatorProfileID;
     for (const group of post.details?.creditGroups ?? []) {
       for (const c of group.credits) {
         const person = find(c.profileID, c.name);
         c.avatarUrl = person?.imageUrl;
+        c.avatarKey = person?.imageKey;
         c.profileID = person?.id ?? c.profileID;
       }
     }
@@ -447,16 +582,32 @@ function applyMainCredit(posts: Post[]) {
   }
 }
 
-/** Replaces each post's default aspect with its thumbnail's real one, a few at a time. */
-async function withTrueAspects(posts: Post[]) {
-  const queue = posts.filter((p) => p.thumbnailUrl);
+/**
+ * Thumbnail shapes already measured, by the file's checksum. The download URL changes
+ * on every fetch but the checksum only changes with the picture, so each refresh
+ * re-reads just new or replaced thumbnails instead of every one on the site.
+ */
+const aspectByChecksum = new Map<string, number>();
+
+/** Replaces each post's default aspect with its thumbnail's real one, many at a time. */
+async function withTrueAspects(posts: Post[], thumbKeys: Map<string, string>) {
+  const queue: Post[] = [];
+  for (const p of posts) {
+    if (!p.thumbnailUrl) continue;
+    const known = aspectByChecksum.get(thumbKeys.get(p.id) ?? "");
+    if (known) p.aspect = known;
+    else queue.push(p);
+  }
   const worker = async () => {
     for (let p = queue.shift(); p; p = queue.shift()) {
       const aspect = await imageAspect(p.thumbnailUrl!);
-      if (aspect) p.aspect = aspect;
+      if (!aspect) continue;
+      p.aspect = aspect;
+      const key = thumbKeys.get(p.id);
+      if (key) aspectByChecksum.set(key, aspect);
     }
   };
-  await Promise.all(Array.from({ length: 8 }, worker));
+  await Promise.all(Array.from({ length: 16 }, worker));
 }
 
 export { isCloudKitConfigured };
@@ -515,7 +666,7 @@ export async function getAccount(userRecordName: string): Promise<Account | null
   return {
     profileID,
     name: `${str(r, "firstName")} ${str(r, "lastName")}`.trim(),
-    imageUrl: asset(r, "profileImage", "media.jpg"),
+    imageUrl: profileImage(profileID, assetChecksum(r, "profileImage"), asset(r, "profileImage", "media.jpg")),
     bio: str(r, "bio"),
     academicLine,
     major: pro ? undefined : str(r, "major") || undefined,

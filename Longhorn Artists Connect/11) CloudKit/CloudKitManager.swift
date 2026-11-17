@@ -572,7 +572,10 @@ class CloudKitManager: ObservableObject {
             // shows when there is genuinely no video attached to the post.
             "filmVideoDuration",
             // The playback crop — a tiny string the player applies to the streamed video.
-            "filmVideoCrop"
+            "filmVideoCrop",
+            // Links to big website uploads kept in Cloudflare R2 rather than as CloudKit
+            // assets. Tiny strings; the player streams straight from them.
+            "filmVideoURL", "filmTrailerURL"
         ]
         static let music: [CKRecord.FieldKey] = [
             "musicTitle", "musicDescription", "isApproved", "submittedBy", "createdDate",
@@ -585,7 +588,10 @@ class CloudKitManager: ObservableObject {
             // always nil, so the duration badge falls back to reading the local audio file
             // and never appears on a device that hasn't downloaded the track — exactly what
             // persisting the duration was meant to avoid.
-            "musicAudioDuration"
+            "musicAudioDuration",
+            // Links to big website uploads kept in Cloudflare R2 rather than as CloudKit
+            // assets. Tiny strings; the player streams straight from them.
+            "musicAudioURL", "musicTracksURLs"
         ]
         static let reel: [CKRecord.FieldKey] = [
             "reelTitle", "reelDescription", "isApproved", "submittedBy", "createdDate",
@@ -602,7 +608,10 @@ class CloudKitManager: ObservableObject {
             // without downloading the video — mirrors "filmVideoDuration" above.
             "reelVideoDuration",
             // The playback crop — a tiny string the player applies to the streamed video.
-            "reelVideoCrop"
+            "reelVideoCrop",
+            // Link to a big website upload kept in Cloudflare R2 rather than as a CloudKit
+            // asset. A tiny string; the player streams straight from it.
+            "reelVideoURL"
         ]
         static let project: [CKRecord.FieldKey] = [
             "projectTitle", "projectDescription", "isApproved", "submittedBy", "createdDate",
@@ -650,7 +659,10 @@ class CloudKitManager: ObservableObject {
         static let design: [CKRecord.FieldKey] = [
             "designTitle", "designDescription", "isApproved", "submittedBy", "designCreatedDate",
             "designLastEditedDate", "designCategory", "designReleaseYear", "designImages",
-            "designVideoDuration", "designVideoCrop", "orderedCrew", "orderedCrewIDs"
+            "designVideoDuration", "designVideoCrop", "orderedCrew", "orderedCrewIDs",
+            // Link to a big website upload kept in Cloudflare R2 rather than as a CloudKit
+            // asset. A tiny string; the player streams straight from it.
+            "designVideoURL"
         ]
     }
 
@@ -778,6 +790,14 @@ class CloudKitManager: ObservableObject {
     /// no network is used; otherwise reads the asset's `size` from CloudKit Web Services
     /// **without downloading the file**. Returns nil when there's no heavy media or the
     /// size can't be determined (e.g. web services not configured and nothing cached).
+    func contentByteSize(for post: Submission) async -> Int64? {
+        // A big website upload lives in Cloudflare R2: ask the file itself for its size.
+        if let link = post.mediaLinkURL {
+            return await CloudKitWebServices.remoteFileSize(at: link)
+        }
+        return await contentByteSize(submissionID: post.id, type: post.type)
+    }
+
     func contentByteSize(submissionID: UUID, type: MediaType) async -> Int64? {
         // Local cached copy → exact on-disk size, free.
         if let local = localMediaByteSize(submissionID: submissionID, type: type) {
@@ -831,6 +851,42 @@ class CloudKitManager: ObservableObject {
     /// collapsing every failure into a single nil / "Coming Soon".
     func streamResolution(submissionID: UUID, type: MediaType) async -> StreamResolution {
         await streamResolutionDetailed(submissionID: submissionID, type: type).0
+    }
+
+    // MARK: Streaming for a post already in hand
+    //
+    // A post whose media was uploaded from the website and is too big for CloudKit lives
+    // in Cloudflare R2; the feed record carries its public link (`Submission.mediaLinkURL`
+    // and friends, parsed from `<field>URL`). These overloads play straight from that
+    // link — no CloudKit lookup, and no dependence on the web-services API token — and
+    // otherwise fall through to the lookup by record.
+
+    func streamingURL(for post: Submission) async -> URL? {
+        if case .streaming(let url) = await streamResolution(for: post) { return url }
+        return nil
+    }
+
+    func streamResolution(for post: Submission) async -> StreamResolution {
+        await streamResolutionDetailed(for: post).0
+    }
+
+    func streamResolutionDetailed(for post: Submission) async -> (StreamResolution, String) {
+        if let link = post.mediaLinkURL {
+            return (.streaming(link), "external host=\(link.host ?? "?")")
+        }
+        return await streamResolutionDetailed(submissionID: post.id, type: post.type)
+    }
+
+    /// Tracks 2..n of an EP/Album, preferring the R2 links the feed already carries.
+    func musicTrackStreamURLs(for post: Submission) async -> [URL] {
+        if let links = post.musicTrackLinkURLs, !links.isEmpty { return links }
+        return await musicTrackStreamURLs(submissionID: post.id)
+    }
+
+    /// The film's trailer, preferring the R2 link the feed already carries.
+    func trailerStreamingURL(for post: Submission) async -> URL? {
+        if let link = post.trailerLinkURL { return link }
+        return await trailerStreamingURL(submissionID: post.id)
     }
 
     /// Like `streamResolution`, but also returns a compact diagnostic of what the server

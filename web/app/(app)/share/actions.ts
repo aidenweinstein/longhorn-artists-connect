@@ -1,31 +1,63 @@
 "use server";
 
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { updateTag } from "next/cache";
 import { currentAccount } from "@/lib/account";
-import { assetUploadURLs, createRecord, isCloudKitConfigured, type CKField } from "@/lib/cloudkit/client";
-import { POSTS_TAG, accountTag } from "@/lib/cloudkit/content";
+import { createRecord, isCloudKitConfigured, queryAll, list as readList, str as readStr, updateRecord, uploadAsset, type CKField, type CKRecord } from "@/lib/cloudkit/client";
+import { ownedPost, recordHasFile } from "@/lib/editPost";
+import { POSTS_TAG, accountTag, getAllPosts, profileDirectory } from "@/lib/cloudkit/content";
+import { isAdmin } from "@/lib/featured";
+import {
+  abortMultipartUpload,
+  completeMultipartUpload,
+  createMultipartUpload,
+  deleteObject,
+  getObject,
+  isR2Configured,
+  keyFromPublicURL,
+  listObjects,
+  listUnfinishedUploads,
+  objectSize,
+  partUploadURLs,
+  publicURLFor,
+} from "@/lib/r2";
 import { signValue } from "@/lib/session";
+import { encodeCrop, parseCrop } from "@/lib/videoCrop";
 import {
   ASSET_FIELDS,
+  CLOUDKIT_MAX_BYTES,
+  DAILY_LARGE_BYTES_PER_ACCOUNT,
+  LARGE_FILE_FIELDS,
+  LARGE_PART_BYTES,
   MAX_FILES_PER_FIELD,
+  MAX_LARGE_BYTES_PER_POST,
+  MAX_LARGE_FILES_PER_POST,
+  MAX_LARGE_FILE_BYTES,
   RECORD_TYPES,
   type AssetReceipt,
   type CreditInput,
+  type LargeFileSpec,
+  type LargeUploadDone,
+  type LargeUploadSlot,
   type PostInput,
   type PublishResult,
   type ShareTypeID,
   type StartResult,
+  THUMBNAIL_FIELD,
+  urlFieldFor,
 } from "@/lib/sharePost";
 
 /**
  * Posting from the website. Two steps, so files never pass through this server
  * (Vercel caps a request at 4.5 MB, and films upload at full original quality):
  *
- * 1. startPost hands the browser CloudKit upload URLs for a new record name.
- * 2. The browser sends each file straight to Apple, then publishPost saves the
- *    record with the receipts, written the way the app's MediaModels write it:
- *    auto-approved, owned by the signed-in app account, stamped with its school.
+ * 1. startPost hands the browser CloudKit upload URLs for a new record name, plus
+ *    Cloudflare R2 part URLs for files too big for CloudKit (over 45 MB: films and
+ *    other videos, up to 10 GB; see lib/r2.ts).
+ * 2. The browser sends each file straight to Apple or R2, then publishPost finishes
+ *    the R2 uploads and saves the record with the receipts and R2 links, written the
+ *    way the app's MediaModels write it: auto-approved, owned by the signed-in app
+ *    account, stamped with its school.
  */
 
 const NOT_LINKED = "To post, finish creating your Nexus account (Sign up), or sign in with an email that has one.";
@@ -43,34 +75,142 @@ function isShareType(type: unknown): type is ShareTypeID {
   return typeof type === "string" && type in RECORD_TYPES;
 }
 
-export async function startPost(type: ShareTypeID, counts: Record<string, number>): Promise<StartResult> {
+/** R2 part URLs stay usable for a day, long enough for a 10 GB film on a slow connection. */
+const PART_URL_SECONDS = 24 * 60 * 60;
+
+/**
+ * Big files are stored as posts/<account>/<record>/<field>-<n>-<bytes>.<ext>: by account,
+ * so one listing finds everything an account uploaded (for the daily limit), and with the
+ * declared size, so an unfinished upload still counts and a finished one can be checked.
+ */
+const accountPrefix = (userRecordName: string) =>
+  `posts/${/^[\w-]{1,100}$/.test(userRecordName) ? userRecordName : createHash("sha256").update(userRecordName).digest("hex").slice(0, 40)}/`;
+const keyPrefix = (userRecordName: string, recordName: string, field: string, staging = false) =>
+  `${accountPrefix(userRecordName)}${recordName}/${staging ? "staging/" : ""}${field}-`;
+const declaredBytes = (key: string) => Number(/-(\d{1,12})\.[a-z0-9]{1,8}$/.exec(key)?.[1] ?? NaN);
+const gb = (bytes: number) => `${Math.floor((bytes / 1024 ** 3) * 10) / 10} GB`;
+
+/** Bytes of big files this account started uploading in the last 24 hours, finished or not. */
+async function largeBytesToday(userRecordName: string): Promise<number> {
+  const prefix = accountPrefix(userRecordName);
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const [stored, unfinished] = await Promise.all([listObjects(prefix), listUnfinishedUploads(prefix)]);
+  const done = stored.filter((o) => o.modified >= since).reduce((sum, o) => sum + o.size, 0);
+  // An unfinished upload's size isn't known to R2 yet: count what it was declared as.
+  const pending = unfinished.filter((u) => u.started >= since).reduce((sum, u) => sum + (declaredBytes(u.key) || MAX_LARGE_FILE_BYTES), 0);
+  return done + pending;
+}
+const safeExt = (ext: unknown) => (typeof ext === "string" && /^[a-z0-9]{1,8}$/i.test(ext) ? ext.toLowerCase() : "bin");
+const safeContentType = (t: unknown) =>
+  typeof t === "string" && /^[\w.+-]{1,60}\/[\w.+-]{1,60}$/.test(t) ? t : "application/octet-stream";
+
+/** Checks a field's file list from the browser: allowed field, count, sizes. Returns a message when it's refused. */
+function checkSpecs(field: string, specs: unknown, kind: "one" | "many", maxBytes: number): LargeFileSpec[] | string {
+  if (!Array.isArray(specs)) return [];
+  const list = (specs as LargeFileSpec[]).slice(0, kind === "one" ? 1 : MAX_FILES_PER_FIELD);
+  for (const spec of list) {
+    const size = Number(spec?.size);
+    if (!Number.isSafeInteger(size) || size <= 0) return "One of the files is empty.";
+    if (size > maxBytes) {
+      return maxBytes >= MAX_LARGE_FILE_BYTES
+        ? "Files can be up to 10 GB. Try a smaller export."
+        : `One of your files is too big. Pictures and documents need to be under ${Math.round(CLOUDKIT_MAX_BYTES / 1024 ** 2)} MB.`;
+    }
+  }
+  return list;
+}
+
+/** A multipart upload for one file, with a size-locked URL per part. */
+async function slotFor(key: string, spec: LargeFileSpec): Promise<LargeUploadSlot> {
+  const size = Number(spec.size);
+  const uploadID = await createMultipartUpload(key, safeContentType(spec.contentType));
+  // Every part locked to its exact size; the last one takes what's left.
+  const count = Math.max(1, Math.ceil(size / LARGE_PART_BYTES));
+  const partSizes = Array.from({ length: count }, (_, i) => Math.min(LARGE_PART_BYTES, size - i * LARGE_PART_BYTES));
+  return { key, uploadID, partSize: LARGE_PART_BYTES, partURLs: partUploadURLs(key, uploadID, partSizes, PART_URL_SECONDS) };
+}
+
+/**
+ * Sets up a post's uploads. `smallFiles` (under 45 MB) go to R2 to be moved on to CloudKit
+ * when the post is published; `largeFiles` (45 MB to 10 GB, video and audio fields only) go
+ * to R2 to stay there.
+ */
+export async function startPost(
+  type: ShareTypeID,
+  smallFiles: Record<string, LargeFileSpec[]> = {},
+  largeFiles: Record<string, LargeFileSpec[]> = {},
+  /** Editing: the post being changed (its maker only). New files then replace its old ones. */
+  editPostID?: string,
+): Promise<StartResult> {
   if (!isShareType(type)) return { ok: false, message: "Unknown post type." };
   if (!isCloudKitConfigured()) return { ok: false, message: "Posting isn't set up on this server yet." };
   const who = await poster();
   if (!who) return { ok: false, message: NOT_LINKED };
 
   const allowed = ASSET_FIELDS[type];
-  const recordName = randomUUID().toUpperCase();
-  const tokens: { recordType: string; recordName: string; fieldName: string }[] = [];
-  const slots: [string, number][] = [];
-  for (const [field, raw] of Object.entries(counts ?? {})) {
-    const n = Math.floor(Number(raw));
-    if (!(field in allowed) || !(n > 0)) continue;
-    const count = allowed[field] === "one" ? 1 : Math.min(n, MAX_FILES_PER_FIELD);
-    slots.push([field, count]);
-    const target =
-      field === "scriptFile"
-        ? { recordType: "Script", recordName: `Script_${recordName}` }
-        : { recordType: RECORD_TYPES[type], recordName };
-    for (let i = 0; i < count; i++) tokens.push({ ...target, fieldName: field });
+  let recordName = randomUUID().toUpperCase();
+  if (editPostID !== undefined) {
+    const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
+    if (!owned || owned.type !== type) return { ok: false, message: "You can only edit posts you made." };
+    recordName = owned.record.recordName;
+  }
+
+  const bigWanted: [string, LargeFileSpec[]][] = [];
+  for (const [field, specs] of Object.entries(largeFiles ?? {})) {
+    if (!(field in allowed) || !LARGE_FILE_FIELDS.has(field)) continue;
+    const list = checkSpecs(field, specs, allowed[field], MAX_LARGE_FILE_BYTES);
+    if (typeof list === "string") return { ok: false, message: list };
+    if (list.length) bigWanted.push([field, list]);
+  }
+  const smallWanted: [string, LargeFileSpec[]][] = [];
+  for (const [field, specs] of Object.entries(smallFiles ?? {})) {
+    if (!(field in allowed) || bigWanted.some(([f]) => f === field)) continue;
+    const list = checkSpecs(field, specs, allowed[field], CLOUDKIT_MAX_BYTES);
+    if (typeof list === "string") return { ok: false, message: list };
+    if (list.length) smallWanted.push([field, list]);
+  }
+  if ((bigWanted.length || smallWanted.length) && !isR2Configured()) {
+    return { ok: false, message: "File uploads aren't set up on this server yet." };
+  }
+
+  const bigSpecs = bigWanted.flatMap(([, specs]) => specs);
+  const bigTotal = bigSpecs.reduce((sum, spec) => sum + Number(spec.size), 0);
+  const allTotal = bigTotal + smallWanted.flatMap(([, specs]) => specs).reduce((sum, spec) => sum + Number(spec.size), 0);
+  if (bigSpecs.length > MAX_LARGE_FILES_PER_POST) {
+    return { ok: false, message: `A post can have up to ${MAX_LARGE_FILES_PER_POST} files over 45 MB.` };
+  }
+  if (bigTotal > MAX_LARGE_BYTES_PER_POST) {
+    return { ok: false, message: `Files over 45 MB can add up to ${gb(MAX_LARGE_BYTES_PER_POST)} per post. This one has ${gb(bigTotal)}.` };
+  }
+  if (allTotal > 0) {
+    try {
+      const used = await largeBytesToday(who.userRecordName);
+      if (used + allTotal > DAILY_LARGE_BYTES_PER_ACCOUNT) {
+        const left = Math.max(0, DAILY_LARGE_BYTES_PER_ACCOUNT - used);
+        return {
+          ok: false,
+          message: `You can upload ${gb(DAILY_LARGE_BYTES_PER_ACCOUNT)} of files a day, and have ${gb(left)} left. Try again in a few hours.`,
+        };
+      }
+    } catch (error) {
+      console.error("[share] daily upload check:", error);
+      return { ok: false, message: "Couldn't start the upload. Try again in a moment." };
+    }
   }
 
   try {
-    const flat = await assetUploadURLs(tokens);
-    const urls: Record<string, string[]> = {};
-    let i = 0;
-    for (const [field, count] of slots) urls[field] = flat.slice(i, (i += count));
-    return { ok: true, recordName, token: tokenFor(recordName, who.userRecordName), urls };
+    const prefix = `${accountPrefix(who.userRecordName)}${recordName}/`;
+    const slots = async (wanted: [string, LargeFileSpec[]][], folder: string) => {
+      const out: Record<string, LargeUploadSlot[]> = {};
+      for (const [field, specs] of wanted) {
+        out[field] = await Promise.all(
+          specs.map((spec, n) => slotFor(`${prefix}${folder}${field}-${n}-${randomUUID().slice(0, 8)}-${Number(spec.size)}.${safeExt(spec.ext)}`, spec)),
+        );
+      }
+      return out;
+    };
+    const [small, large] = await Promise.all([slots(smallWanted, "staging/"), slots(bigWanted, "")]);
+    return { ok: true, recordName, token: tokenFor(recordName, who.userRecordName), small, large };
   } catch (error) {
     console.error("[share] startPost:", error);
     return { ok: false, message: "Couldn't start the upload. Try again in a moment." };
@@ -90,9 +230,11 @@ const cleanList = (v: unknown, max = 200) =>
   (Array.isArray(v) ? v : []).map((x) => clean(x, max)).filter(Boolean).slice(0, 200);
 const cleanCredits = (v: unknown): CreditInput[] =>
   (Array.isArray(v) ? v : [])
-    .map((c: Partial<CreditInput>) => ({ role: clean(c?.role, 120), name: clean(c?.name, 120) }))
+    .map((c: Partial<CreditInput>) => ({ role: clean(c?.role, 120), name: clean(c?.name, 120), profileID: profileIDOf(c?.profileID) }))
     .filter((c) => c.name)
     .slice(0, 200);
+/** A profile record name ("UserProfile_..."), or nothing. Checked against real profiles before saving. */
+const profileIDOf = (v: unknown) => (typeof v === "string" && /^UserProfile_[A-Za-z0-9_.-]{1,120}$/.test(v) ? v : undefined);
 const finite = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined);
 
 /** "https://" added when a link has no scheme, as the app's normalizedLink does. */
@@ -124,19 +266,49 @@ const many = (input: PostInput, field: string): CKField | undefined => {
   return rs.length ? { value: rs, type: "ASSETID_LIST" } : undefined;
 };
 
-/** "role: name" entries plus the parallel profile-ID list, as the app stores credits. */
+/**
+ * "role: name" entries plus the parallel profile-ID list, as the app stores credits:
+ * the ID of the member picked from the suggestions, or "" for a name that was typed.
+ */
 function creditFields(into: Record<string, CKField>, key: string, idsKey: string, credits: CreditInput[]) {
   if (!credits.length) return;
   into[key] = list(credits.map((c) => `${c.role}: ${c.name}`));
-  into[idsKey] = list(credits.map(() => ""));
+  into[idsKey] = list(credits.map((c) => c.profileID ?? ""));
+}
+
+/** Cast with no role typed is saved as "Actor", the role the app gives cast by default. */
+const asCast = (credits: CreditInput[]) => credits.map((c) => ({ ...c, role: c.role || "Actor" }));
+
+/** Name by profile ID for every member a credit links to, or an empty map when none do. */
+async function linkedMembers(input: PostInput): Promise<Map<string, string>> {
+  const linked = Object.values(input.credits ?? {}).some((group) => cleanCredits(group).some((c) => c.profileID));
+  if (!linked) return new Map();
+  const everyone = await profileDirectory().catch(() => []);
+  return new Map(everyone.map((p) => [p.id, p.name]));
 }
 
 type Built = { fields: Record<string, CKField>; required: string[]; missing?: string };
 
-function build(input: PostInput, submittedBy: string): Built {
+function build(
+  input: PostInput,
+  submittedBy: string,
+  members: Map<string, string>,
+  playlistIDs: string[] = [],
+  large: Record<string, string[]> = {},
+  /** Editing an existing post: `kept` names its asset fields that already have files. */
+  edit?: { kept: Set<string> },
+): Built {
+  // A file is there if it went to CloudKit or, for big files, to R2 (or, editing, the post has one).
+  const fresh = (field: string) => !!one(input, field) || !!many(input, field) || !!large[field]?.length;
+  const has = (field: string) => fresh(field) || !!edit?.kept.has(field);
   const t = (k: string, max?: number) => clean(input.text?.[k], max);
   const l = (k: string) => cleanList(input.lists?.[k]);
-  const c = (k: string) => cleanCredits(input.credits?.[k]);
+  // A linked credit carries the member's own name; an ID that isn't a real profile is dropped.
+  const c = (k: string) =>
+    cleanCredits(input.credits?.[k]).map((credit) => {
+      const name = credit.profileID ? members.get(credit.profileID) : undefined;
+      return name ? { ...credit, name } : { ...credit, profileID: undefined };
+    });
   const n = (k: string) => finite(input.numbers?.[k]);
   const f = (k: string) => input.flags?.[k] === true;
   const title = t("title", 200);
@@ -144,15 +316,33 @@ function build(input: PostInput, submittedBy: string): Built {
   const put = (key: string, value: CKField | undefined) => {
     if (value !== undefined) fields[key] = value;
   };
-  const text = (key: string, value: string) => value && put(key, s(value));
-  const strings = (key: string, value: string[]) => value.length && put(key, list(value));
+  // Editing, an emptied field is written empty, so what was removed goes away.
+  const text = (key: string, value: string) => (value ? put(key, s(value)) : edit && put(key, s("")));
+  const strings = (key: string, value: string[]) => (value.length ? put(key, list(value)) : edit && put(key, list([])));
+  const credit = (key: string, idsKey: string, credits: CreditInput[]) => {
+    if (credits.length || !edit) return creditFields(fields, key, idsKey, credits);
+    fields[key] = list([]);
+    fields[idsKey] = list([]);
+  };
+  // The video's playback crop, re-checked and re-written in the app's "x,y,w,h" form.
+  const crop = () => encodeCrop(parseCrop(t("videoCrop", 80)));
 
   fields.isApproved = int(1);
   fields.submittedBy = s(submittedBy);
 
+  // The feed picture's pixel size, measured in the browser: with it the feed needs no
+  // measuring of its own. Left off (by createRecord) if Production doesn't have the fields.
+  const thumbField = THUMBNAIL_FIELD[input.type];
+  const thumbWidth = n("thumbWidth");
+  const thumbHeight = n("thumbHeight");
+  if (thumbField && one(input, thumbField) && thumbWidth && thumbHeight && thumbWidth > 0 && thumbHeight > 0 && thumbWidth < 100_000 && thumbHeight < 100_000) {
+    fields.thumbWidth = int(thumbWidth);
+    fields.thumbHeight = int(thumbHeight);
+  }
+
   switch (input.type) {
     case "film": {
-      if (!one(input, "filmVideo")) return { fields, required: [], missing: "a video" };
+      if (!has("filmVideo")) return { fields, required: [], missing: "a video" };
       fields.filmTitle = s(title);
       fields.createdDate = time(Date.now());
       text("filmLogline", t("logline", 500));
@@ -162,11 +352,12 @@ function build(input: PostInput, submittedBy: string): Built {
       fields.filmExplicit = int(0);
       fields.filmFestivalBound = int(f("festivalBound") ? 1 : 0);
       strings("filmGenres", l("genres"));
-      creditFields(fields, "filmCast", "filmCastIDs", l("cast").map((name) => ({ role: "Actor", name })));
-      creditFields(fields, "filmCrew", "filmCrewIDs", c("crew"));
+      credit("filmCast", "filmCastIDs", asCast(c("cast")));
+      credit("filmCrew", "filmCrewIDs", c("crew"));
       put("filmVideo", one(input, "filmVideo"));
       const duration = n("videoDuration");
       if (duration) fields.filmVideoDuration = double(duration);
+      text("filmVideoCrop", crop());
       put("filmThumbnail", one(input, "filmThumbnail"));
       put("filmTrailer", one(input, "filmTrailer"));
       put("filmBTS", many(input, "filmBTS"));
@@ -174,7 +365,7 @@ function build(input: PostInput, submittedBy: string): Built {
       return { fields, required: ["filmTitle", "filmVideo", "isApproved", "submittedBy", "userID"] };
     }
     case "music": {
-      if (!one(input, "musicAudio")) return { fields, required: [], missing: "an audio file" };
+      if (!has("musicAudio")) return { fields, required: [], missing: "an audio file" };
       fields.musicTitle = s(title);
       fields.createdDate = time(Date.now());
       text("musicArtist", t("artist", 200));
@@ -187,37 +378,54 @@ function build(input: PostInput, submittedBy: string): Built {
       text("youtubeMusicLink", link(t("youtubeMusic", 500)));
       text("soundcloudLink", link(t("soundcloud", 500)));
       text("lyrics", t("lyrics", 10000));
-      creditFields(fields, "musicRecording", "musicRecordingIDs", c("recording"));
-      creditFields(fields, "musicProduction", "musicProductionIDs", c("production"));
+      credit("musicRecording", "musicRecordingIDs", c("recording"));
+      credit("musicProduction", "musicProductionIDs", c("production"));
       put("musicAudio", one(input, "musicAudio"));
-      fields.musicAudioExt = s(t("audioExt", 10) || "m4a");
+      // The extension goes with the file: only a new audio file brings one.
+      if (fresh("musicAudio")) fields.musicAudioExt = s(t("audioExt", 10) || "m4a");
       const duration = n("audioDuration");
       if (duration) fields.musicAudioDuration = double(duration);
       const tracks = many(input, "musicTracks");
-      if (tracks) {
-        put("musicTracks", tracks);
+      put("musicTracks", tracks);
+      const trackCount = tracks ? (tracks.value as unknown[]).length : (large.musicTracks?.length ?? 0);
+      if (trackCount) {
         const exts = l("trackExts");
-        fields.musicTrackExts = list((tracks.value as unknown[]).map((_, i) => exts[i] || "m4a"));
+        fields.musicTrackExts = list(Array.from({ length: trackCount }, (_, i) => exts[i] || "m4a"));
       }
       put("musicCover", one(input, "musicCover"));
       put("musicVideo", one(input, "musicVideo"));
       return { fields, required: ["musicTitle", "musicAudio", "isApproved", "submittedBy", "userID"] };
     }
     case "performance": {
-      if (!one(input, "reelVideo")) return { fields, required: [], missing: "a video" };
+      // A playlist of existing posts (admins) needs no upload of its own, but then it needs a thumbnail.
+      if (!has("reelVideo") && !playlistIDs.length) return { fields, required: [], missing: "a video" };
+      if (!has("reelVideo") && !one(input, "reelThumbnail")) return { fields, required: [], missing: "a thumbnail" };
       fields.reelTitle = s(title);
       fields.createdDate = time(Date.now());
       text("reelDescription", t("description"));
       text("reelType", t("category", 40));
       text("reelReleaseYear", t("releaseYear", 4));
-      creditFields(fields, "orderedCast", "orderedCastIDs", c("cast"));
+      credit("orderedCast", "orderedCastIDs", c("cast"));
       strings("featuredWorkManual", l("featured"));
       put("reelVideo", one(input, "reelVideo"));
+      // A showcase's other videos, and a title for every video (the first included), in order.
+      const moreVideos = many(input, "reelVideos");
+      put("reelVideos", moreVideos);
+      const moreCount = moreVideos ? (moreVideos.value as unknown[]).length : (large.reelVideos?.length ?? 0);
+      if (moreCount) {
+        const count = moreCount + 1;
+        const titles: unknown[] = Array.isArray(input.lists?.videoTitles) ? input.lists.videoTitles : [];
+        fields.reelVideoTitles = list(Array.from({ length: count }, (_, i) => clean(titles[i], 200) || `Video ${i + 1}`));
+      }
       const duration = n("videoDuration");
       if (duration) fields.reelVideoDuration = double(duration);
+      if (one(input, "reelVideo")) text("reelVideoCrop", crop());
       put("reelThumbnail", one(input, "reelThumbnail"));
       put("reelStills", many(input, "reelStills"));
-      return { fields, required: ["reelTitle", "reelVideo", "isApproved", "submittedBy", "userID"] };
+      if (playlistIDs.length) fields.reelPlaylistPostIDs = list(playlistIDs);
+      // The playlist fields are never dropped to rescue a save: a showcase missing its videos isn't the post.
+      const playlistFields = ["reelVideo", "reelVideos", "reelVideoTitles", "reelPlaylistPostIDs"].filter((k) => k in fields);
+      return { fields, required: ["reelTitle", ...playlistFields, "isApproved", "submittedBy", "userID"] };
     }
     case "photography": {
       if (!many(input, "photographyImages")) return { fields, required: [], missing: "photos" };
@@ -227,7 +435,7 @@ function build(input: PostInput, submittedBy: string): Built {
       text("photographyReleaseYear", t("releaseYear", 4));
       strings("photographyGear", l("gear"));
       const credits = c("credits");
-      creditFields(fields, "orderedCrew", "orderedCrewIDs", credits);
+      credit("orderedCrew", "orderedCrewIDs", credits);
       const photographer = credits.find((x) => /photograph/i.test(x.role));
       if (photographer) fields.photographyArtist = s(photographer.name);
       put("photographyImages", many(input, "photographyImages"));
@@ -235,18 +443,19 @@ function build(input: PostInput, submittedBy: string): Built {
       return { fields, required: ["photographyTitle", "photographyImages", "isApproved", "submittedBy", "userID"] };
     }
     case "design": {
-      if (!many(input, "designImages") && !one(input, "designVideo")) return { fields, required: [], missing: "images or a video" };
+      if (!has("designImages") && !has("designVideo")) return { fields, required: [], missing: "images or a video" };
       fields.designTitle = s(title);
       // Design records name their dates designCreatedDate (DesignSubmission schema).
       fields.designCreatedDate = time(Date.now());
       text("designDescription", t("description"));
       text("designCategory", t("category", 40));
       text("designReleaseYear", t("releaseYear", 4));
-      creditFields(fields, "orderedCrew", "orderedCrewIDs", c("credits"));
+      credit("orderedCrew", "orderedCrewIDs", c("credits"));
       put("designImages", many(input, "designImages"));
       put("designVideo", one(input, "designVideo"));
       const duration = n("videoDuration");
       if (duration) fields.designVideoDuration = double(duration);
+      if (one(input, "designVideo")) text("designVideoCrop", crop());
       put("designThumbnail", one(input, "designThumbnail"));
       return { fields, required: ["designTitle", "isApproved", "submittedBy", "userID"] };
     }
@@ -270,8 +479,8 @@ function build(input: PostInput, submittedBy: string): Built {
       if (releaseAt) fields.projectExpectedReleaseDate = time(releaseAt);
       strings("projectCastNeeded", l("castNeeded"));
       strings("projectCrewNeeded", l("crewNeeded"));
-      creditFields(fields, "projectCastAssembled", "projectCastAssembledIDs", l("castAssembled").map((name) => ({ role: "Actor", name })));
-      creditFields(fields, "projectCrewAssembled", "projectCrewAssembledIDs", c("crewAssembled"));
+      credit("projectCastAssembled", "projectCastAssembledIDs", asCast(c("castAssembled")));
+      credit("projectCrewAssembled", "projectCrewAssembledIDs", c("crewAssembled"));
       strings("projectGenres", l("genres"));
       put("projectPoster", one(input, "projectPoster"));
       put("projectSlides", many(input, "projectSlides"));
@@ -306,7 +515,12 @@ function build(input: PostInput, submittedBy: string): Built {
   }
 }
 
-export async function publishPost(input: PostInput): Promise<PublishResult> {
+/**
+ * Publishes a post, or with `editPostID` saves changes to one (its maker only): fields
+ * are updated in place, files not replaced stay, and the post keeps its date, approval
+ * and owner.
+ */
+export async function publishPost(input: PostInput, editPostID?: string): Promise<PublishResult> {
   if (!input || !isShareType(input.type)) return { ok: false, message: "Unknown post type." };
   const who = await poster();
   if (!who) return { ok: false, message: NOT_LINKED };
@@ -318,11 +532,127 @@ export async function publishPost(input: PostInput): Promise<PublishResult> {
   if (!/^[0-9A-F-]{36}$/.test(recordName) || expected.length !== presented.length || !timingSafeEqual(expected, presented)) {
     return { ok: false, message: "This upload expired. Press Post again." };
   }
+  let editing: CKRecord | null = null;
+  if (editPostID !== undefined) {
+    const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
+    if (!owned || owned.type !== input.type || owned.record.recordName !== recordName) {
+      return { ok: false, message: "You can only edit posts you made." };
+    }
+    editing = owned.record;
+  }
 
   if (!clean(input.text?.title)) return { ok: false, message: "Add a title." };
   const submittedBy = who.account.name || "Anonymous";
-  const { fields, required, missing } = build(input, submittedBy);
+  // Existing posts added to a Performance post (a playlist): admins only, and only real posts with a video.
+  let playlistIDs: string[] = [];
+  // (Editing keeps a playlist's posts as they are.)
+  const wanted = input.type === "performance" && !editing ? cleanList(input.lists?.playlistPostIDs, 40).slice(0, MAX_FILES_PER_FIELD) : [];
+  if (wanted.length) {
+    if (!isAdmin(who.session)) return { ok: false, message: "Only admins can add existing posts to a playlist." };
+    const byID = new Map((await getAllPosts()).posts.map((p) => [p.id.toUpperCase(), p]));
+    playlistIDs = [...new Set(wanted.map((id) => id.toUpperCase()))].flatMap((id) => {
+      const p = byID.get(id);
+      return p?.videoUrl && !p.playlistPostIDs?.length ? [p.id] : [];
+    });
+    if (!playlistIDs.length) return { ok: false, message: "None of the posts you added could be found. Search for them again." };
+  }
+  const allowed = ASSET_FIELDS[input.type];
+  /** Finishes one R2 upload this post's startPost set up; answers its key, or a message when it can't be used. */
+  async function finish(field: string, up: LargeUploadDone, staging: boolean): Promise<{ key: string } | { message: string }> {
+    const key = typeof up?.key === "string" ? up.key : "";
+    const uploadID = typeof up?.uploadID === "string" ? up.uploadID : "";
+    const etags = Array.isArray(up?.etags) ? up.etags : [];
+    const declared = declaredBytes(key);
+    // Only files set up for this record, by this account.
+    if (!key.startsWith(keyPrefix(who!.userRecordName, recordName, field, staging)) || !(declared > 0) || !/^[\w./-]{1,240}$/.test(key) || !uploadID || uploadID.length > 1000) {
+      return { message: "This upload expired. Press Post again." };
+    }
+    if (etags.length !== Math.max(1, Math.ceil(declared / LARGE_PART_BYTES)) || !etags.every((e) => typeof e === "string" && /^"?[\w-]{1,100}"?$/.test(e))) {
+      await abortMultipartUpload(key, uploadID);
+      return { message: "A file didn't finish uploading. Press Post again." };
+    }
+    await completeMultipartUpload(key, uploadID, etags.map((etag: string, i: number) => ({ partNumber: i + 1, etag })));
+    const size = await objectSize(key);
+    // The finished file must be exactly the size declared when the upload started.
+    if (size === null || size !== declared || size > (staging ? CLOUDKIT_MAX_BYTES : MAX_LARGE_FILE_BYTES)) {
+      await deleteObject(key);
+      return { message: "A file didn't upload correctly. Press Post again." };
+    }
+    return { key };
+  }
+
+  // Small files: from R2 on to CloudKit (browsers can't upload to CloudKit themselves).
+  const assets: Record<string, AssetReceipt[]> = {};
+  const staged: string[] = [];
+  try {
+    for (const [field, uploads] of Object.entries(input.small ?? {})) {
+      if (!(field in allowed) || !Array.isArray(uploads) || !uploads.length) continue;
+      const target =
+        field === "scriptFile" ? { recordType: "Script", recordName: `Script_${recordName}` } : { recordType: RECORD_TYPES[input.type], recordName };
+      const list = uploads.slice(0, allowed[field] === "one" ? 1 : MAX_FILES_PER_FIELD);
+      const receiptsFor: AssetReceipt[] = new Array(list.length);
+      // A few at a time, in order.
+      let next = 0;
+      let refused: string | null = null;
+      const worker = async () => {
+        while (next < list.length && !refused) {
+          const i = next++;
+          const done = await finish(field, list[i], true);
+          if ("message" in done) {
+            refused = done.message;
+            return;
+          }
+          staged.push(done.key);
+          const { bytes, contentType } = await getObject(done.key);
+          receiptsFor[i] = (await uploadAsset(target.recordType, target.recordName, field, bytes, contentType)).value as AssetReceipt;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+      if (refused) return { ok: false, message: refused };
+      assets[field] = receiptsFor;
+    }
+  } catch (error) {
+    console.error("[share] moving files to CloudKit:", error);
+    return { ok: false, message: "Couldn't finish uploading your files. Press Post again." };
+  } finally {
+    // The staged copies are done with either way.
+    await Promise.all(staged.map((key) => deleteObject(key)));
+  }
+
+  // Big files: finish each R2 upload, and link it from the record.
+  const large: Record<string, string[]> = {};
+  try {
+    for (const [field, uploads] of Object.entries(input.large ?? {})) {
+      if (!(field in allowed) || !LARGE_FILE_FIELDS.has(field) || !Array.isArray(uploads) || !uploads.length) continue;
+      const urls: string[] = [];
+      for (const up of uploads.slice(0, allowed[field] === "one" ? 1 : MAX_FILES_PER_FIELD)) {
+        const done = await finish(field, up, false);
+        if ("message" in done) return { ok: false, message: done.message };
+        urls.push(publicURLFor(done.key));
+      }
+      if (urls.length) large[field] = urls;
+    }
+  } catch (error) {
+    console.error("[share] finishing large upload:", error);
+    return { ok: false, message: "Couldn't finish uploading the video. Press Post again." };
+  }
+
+  // The receipts go on the record the way the browser used to send them.
+  input = { ...input, assets };
+  const kept = editing ? new Set(Object.keys(allowed).filter((f) => recordHasFile(editing!, f))) : undefined;
+  const built = build(input, submittedBy, await linkedMembers(input), playlistIDs, large, kept && { kept });
+  const { fields, missing } = built;
   if (missing) return { ok: false, message: `Add ${missing}.` };
+  // R2 links are never dropped to rescue a save: a post without its video isn't the post.
+  const required = [...built.required];
+  for (const [field, urls] of Object.entries(large)) {
+    const kind = allowed[field];
+    const key = urlFieldFor(field, kind);
+    fields[key] = kind === "one" ? s(urls[0]) : list(urls);
+    required.push(key);
+  }
+
+  if (editing) return saveEdit(input, editing, fields, required, { assets, large, allowed, userRecordName: who.userRecordName });
 
   fields.userID = s(who.userRecordName);
   // The school the post belongs to (SchoolScope.stamp in the app). The sweep removes
@@ -369,14 +699,110 @@ export async function publishPost(input: PostInput): Promise<PublishResult> {
     // CloudKit Dashboard (as for the app's schema-gap banner) to keep them next time.
     if (dropped.length) console.warn(`[share] ${RECORD_TYPES[input.type]} posted without: ${dropped.join(", ")}`);
 
+    // Refresh the feeds only once CloudKit's queries list the new post, or the refresh
+    // would miss it and the feeds would go without it for minutes.
+    await waitUntilListed(RECORD_TYPES[input.type], recordName);
     updateTag(POSTS_TAG);
     updateTag(accountTag(who.userRecordName));
     const href = input.type === "project" || input.type === "event" ? `/discover/${recordName}` : `/post/${recordName}`;
     return { ok: true, href, note };
   } catch (error) {
     console.error("[share] publishPost:", error);
+    // The post wasn't saved: its big files in R2 would never be used.
+    await dropLarge(large);
     const message = error instanceof Error ? error.message : String(error);
     if (/already exists|CONFLICT/i.test(message)) return { ok: false, message: "This post was already published." };
+    const linkField = Object.keys(large).map((f) => urlFieldFor(f, allowed[f])).find((k) => message.includes(k));
+    if (linkField) {
+      const kind = linkField.endsWith("URLs") ? "String List" : "String";
+      return { ok: false, message: `Big videos can't be saved yet: add ${linkField} (${kind}) to ${RECORD_TYPES[input.type]} in CloudKit first.` };
+    }
+    if (/reelVideos|reelVideoTitles|reelPlaylistPostIDs/.test(message)) {
+      return { ok: false, message: "Playlists can't be saved yet: add reelVideos (Asset List), reelVideoTitles (String List) and reelPlaylistPostIDs (String List) to ReelSubmission in CloudKit first." };
+    }
     return { ok: false, message: "CloudKit didn't accept the post. Try again in a moment." };
+  }
+}
+
+/** The second half of publishPost when editing: updates the record in place. */
+async function saveEdit(
+  input: PostInput,
+  record: CKRecord,
+  fields: Record<string, CKField>,
+  required: string[],
+  ctx: { assets: Record<string, AssetReceipt[]>; large: Record<string, string[]>; allowed: Record<string, "one" | "many">; userRecordName: string },
+): Promise<PublishResult> {
+  const recordName = record.recordName;
+  const recordType = RECORD_TYPES[input.type];
+  // The post keeps its approval, author name and date; it gets an edited date.
+  for (const key of ["isApproved", "submittedBy", "createdDate", "designCreatedDate"]) delete fields[key];
+  fields[input.type === "design" ? "designLastEditedDate" : "lastEditedDate"] = time(Date.now());
+
+  // A replaced file's old R2 copy is deleted once the save succeeds; a field that now has
+  // a CloudKit file drops its old R2 link, which would otherwise still win.
+  const stale: string[] = [];
+  for (const [field, kind] of Object.entries(ctx.allowed)) {
+    if (!ctx.assets[field]?.length && !ctx.large[field]?.length) continue;
+    const urlKey = urlFieldFor(field, kind);
+    const old = kind === "one" ? [readStr(record, urlKey)].filter(Boolean) : readList(record, urlKey);
+    if (!old.length) continue;
+    stale.push(...old.flatMap((u) => keyFromPublicURL(u) ?? []));
+    if (!ctx.large[field]?.length) fields[urlKey] = kind === "one" ? s("") : list([]);
+  }
+
+  try {
+    const dropped = await updateRecord(recordType, recordName, fields, required);
+    let note: string | undefined;
+    const script = one(input, "scriptFile");
+    if (input.type === "project" && script) {
+      try {
+        await updateRecord(
+          "Script",
+          `Script_${recordName}`,
+          { scriptFile: script, scriptFileExt: s(clean(input.text.scriptExt, 10) || "pdf"), title: s(clean(input.text.title, 200)) },
+          ["scriptFile"],
+        );
+      } catch (error) {
+        console.error("[share] edit script record:", error);
+        note = "Saved, but the script file couldn't be replaced.";
+      }
+    }
+    await Promise.all(stale.map((key) => deleteObject(key)));
+    if (dropped.length) console.warn(`[share] ${recordType} edit saved without: ${dropped.join(", ")}`);
+    // CloudKit's queries catch up with a change after a moment; refresh the feeds after that.
+    await new Promise((r) => setTimeout(r, 2500));
+    updateTag(POSTS_TAG);
+    updateTag(accountTag(ctx.userRecordName));
+    const href = input.type === "project" || input.type === "event" ? `/discover/${recordName}` : `/post/${recordName}`;
+    return { ok: true, href, note };
+  } catch (error) {
+    console.error("[share] saveEdit:", error);
+    await dropLarge(ctx.large);
+    const message = error instanceof Error ? error.message : String(error);
+    const linkField = Object.keys(ctx.large).map((f) => urlFieldFor(f, ctx.allowed[f])).find((k) => message.includes(k));
+    if (linkField) {
+      const kind = linkField.endsWith("URLs") ? "String List" : "String";
+      return { ok: false, message: `Big videos can't be saved yet: add ${linkField} (${kind}) to ${recordType} in CloudKit first.` };
+    }
+    return { ok: false, message: "CloudKit didn't accept the changes. Try again in a moment." };
+  }
+}
+
+/** Deletes big files uploaded for a save that failed. */
+async function dropLarge(large: Record<string, string[]>): Promise<void> {
+  const keys = Object.values(large).flat().flatMap((url) => keyFromPublicURL(url) ?? []);
+  await Promise.all(keys.map((key) => deleteObject(key)));
+}
+
+/** Waits (up to about 8 seconds) until CloudKit's queries of a record type include a new record. */
+async function waitUntilListed(recordType: string, recordName: string): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const records = await queryAll(recordType, 2000, ["isApproved"]);
+      if (records.some((r) => r.recordName === recordName)) return;
+    } catch {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
   }
 }

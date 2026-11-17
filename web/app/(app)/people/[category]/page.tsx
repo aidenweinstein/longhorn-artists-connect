@@ -7,7 +7,7 @@ import WorkStatusPill from "@/components/WorkStatusPill";
 import { PEOPLE_PAGES, featuresFor, isAdmin, peoplePage, type Feature, type PeopleSlug } from "@/lib/featured";
 import { sampleCreative, samplesFor, type SampleProfile } from "@/lib/sampleProfiles";
 import { SAMPLE_CASTING_CALL, fitsRole } from "@/lib/castingCalls";
-import { allCreativeProfiles, allListings, getCreativeProfile } from "@/lib/cloudkit/creative";
+import { allDirectoryGroups, getCreativeProfile } from "@/lib/cloudkit/creative";
 import { styleForSlug } from "@/lib/profileStyle";
 
 // Who's featured can change at any moment from the admin page, so this renders per request.
@@ -22,18 +22,15 @@ export default async function PeoplePage(props: PageProps<"/people/[category]">)
   const page = peoplePage(category);
   if (!page) notFound();
 
-  const [features, session, listings, creatives] = await Promise.all([
-    featuresFor(page.slug),
-    currentSession(),
-    allListings(),
-    allCreativeProfiles(),
-  ]);
-  // People a moderator approved from the app (DirectoryListing) who aren't featured here yet.
+  const [features, session, directoryGroups] = await Promise.all([featuresFor(page.slug), currentSession(), allDirectoryGroups()]);
+  // People the app's moderators put on this page (UserProfile.directoryGroups) who
+  // aren't featured here yet. The app lists this page the same way: its moderators'
+  // picks plus everyone featured here (via the service's /v1/people/listed).
   const style = styleForSlug(page.slug);
   const featuredIDs = new Set(features.map((f) => f.profileID.replace(/^UserProfile_/, "")));
-  const listed = [...listings.values()]
-    .filter((l) => l.status === "approved" && l.style === style && creatives.get(l.userID)?.style === style && !featuredIDs.has(l.userID))
-    .map((l) => ({ id: l.userID, profileID: `UserProfile_${l.userID}`, name: "", blurb: "", category: page.slug, postIDs: [] }));
+  const listed = [...directoryGroups]
+    .filter(([userID, groups]) => !!style && groups.has(style) && !featuredIDs.has(userID))
+    .map(([userID]) => ({ id: userID, profileID: `UserProfile_${userID}`, name: "", blurb: "", category: page.slug, postIDs: [] }));
   const viewerSchool = session?.schoolName ?? "";
   const allSamples = samplesFor(page.slug);
 

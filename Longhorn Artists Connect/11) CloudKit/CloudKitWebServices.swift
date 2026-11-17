@@ -103,6 +103,7 @@ enum CloudKitWebServices {
     /// cached.
     static func assetDownloadURL(recordName: String, field: String) async -> URL? {
         let (lookup, _) = await assetFieldLookup(recordName: recordName, field: field)
+        if case .external(let url) = lookup { return url }
         guard
             case .value(let value, let storedExtension) = lookup,
             let urlString = value["downloadURL"] as? String
@@ -233,9 +234,31 @@ enum CloudKitWebServices {
     /// `size`). Returns nil when unavailable / not configured. Lets the moderator
     /// dashboard show an uploaded file's size without paying to fetch the whole asset.
     static func assetSize(recordName: String, field: String) async -> Int64? {
-        guard let size = await assetValue(recordName: recordName, field: field)?["size"] as? NSNumber
+        switch await assetFieldLookup(recordName: recordName, field: field).0 {
+        case .value(let value, _):
+            return (value["size"] as? NSNumber)?.int64Value
+        case .external(let url):
+            // A big website upload in Cloudflare R2: the file itself reports its size.
+            return await remoteFileSize(at: url)
+        case .notConfigured, .lookupError, .recordNotFound, .assetMissing:
+            return nil
+        }
+    }
+
+    /// The byte size of a file served over HTTPS (a Cloudflare R2 upload), from the
+    /// `Content-Length` of a HEAD request. Nil when the server doesn't say.
+    static func remoteFileSize(at url: URL) async -> Int64? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+        guard
+            let (_, response) = try? await URLSession.shared.data(for: request),
+            let http = response as? HTTPURLResponse,
+            (200..<300).contains(http.statusCode),
+            let length = http.value(forHTTPHeaderField: "Content-Length"),
+            let size = Int64(length.trimmingCharacters(in: .whitespaces)), size > 0
         else { return nil }
-        return size.int64Value
+        return size
     }
 
     /// Resolves a range-streamable download URL for one asset field, returning a detailed
@@ -258,6 +281,7 @@ enum CloudKitWebServices {
         case .lookupError(let code): return (.lookupError(code), debug)
         case .recordNotFound:        return (.recordNotFound, debug)
         case .assetMissing:          return (.assetMissing, debug)
+        case .external(let url):     return (.streaming(url), debug)
         case .value(let value, let storedExtension):
             guard let urlString = value["downloadURL"] as? String else {
                 return (.noDownloadURL, debug + " valueKeys=\(Array(value.keys).sorted())")
@@ -286,7 +310,7 @@ enum CloudKitWebServices {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
             "records": [["recordName": recordName]],
-            "desiredKeys": [listField] + (extensionListField.map { [$0] } ?? [])
+            "desiredKeys": [listField, externalListField(for: listField)] + (extensionListField.map { [$0] } ?? [])
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
@@ -295,7 +319,15 @@ enum CloudKitWebServices {
             (response as? HTTPURLResponse)?.statusCode == 200,
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let record = (json["records"] as? [[String: Any]])?.first,
-            let fields = record["fields"] as? [String: Any],
+            let fields = record["fields"] as? [String: Any]
+        else { return [] }
+
+        // Big website uploads live in Cloudflare R2; the record lists their links instead.
+        let links = ((fields[externalListField(for: listField)] as? [String: Any])?["value"] as? [String] ?? [])
+            .compactMap(externalLink)
+        if !links.isEmpty { return links }
+
+        guard
             // An ASSET_LIST arrives as `{"value": [assetValue, …], "type": "ASSET_LIST"}`.
             let assets = (fields[listField] as? [String: Any])?["value"] as? [[String: Any]]
         else { return [] }
@@ -323,23 +355,29 @@ enum CloudKitWebServices {
         /// extension recorded alongside the asset — nil when the schema has no companion
         /// extension field for it, or the record predates one.
         case value([String: Any], fileExtension: String?)
+        /// A big website upload stored in Cloudflare R2 (CloudKit Web Services takes files
+        /// up to 50 MB only); the record keeps its public link in `<field>URL`.
+        case external(URL)
         case notConfigured
         case lookupError(Int)
         case recordNotFound
         case assetMissing
     }
 
-    /// Shared record/asset lookup: returns the CloudKit Web Services `value` dictionary
-    /// for one asset field (which contains `downloadURL`, `size`, checksums, …), or nil
-    /// if unavailable / not configured.
-    private static func assetValue(recordName: String, field: String) async -> [String: Any]? {
-        if case .value(let value, _) = await assetFieldLookup(recordName: recordName, field: field).0 {
-            return value
-        }
-        return nil
+    /// The string field holding a big website upload's Cloudflare R2 link, for an asset
+    /// field (`filmVideo` → `filmVideoURL`). Written by the website's Share page.
+    private static func externalField(for field: String) -> String { "\(field)URL" }
+
+    /// The string-list field holding R2 links for an asset-list field (`musicTracksURLs`).
+    private static func externalListField(for listField: String) -> String { "\(listField)URLs" }
+
+    /// A stored R2 link as a URL — https only, so a stray value can't point anywhere odd.
+    private static func externalLink(_ string: String) -> URL? {
+        guard let url = URL(string: string), url.scheme == "https", url.host != nil else { return nil }
+        return url
     }
 
-    /// The detailed record/asset lookup underlying both `assetValue` (size path) and
+    /// The detailed record/asset lookup underlying both `assetSize` (size path) and
     /// `streamResolution` (streaming path). Distinguishes a missing record, a missing
     /// asset field, and a network failure so the caller can report exactly what happened.
     /// The returned string is a compact diagnostic of the actual server response.
@@ -355,7 +393,7 @@ enum CloudKitWebServices {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Fetch the companion extension field in the same lookup — the streamed URL's
         // filename has to carry the real container, or the CDN reports the wrong MIME.
-        var desiredKeys = [field]
+        var desiredKeys = [field, externalField(for: field)]
         if let extField = extensionField(for: field) { desiredKeys.append(extField) }
         let body: [String: Any] = [
             "records": [["recordName": recordName]],
@@ -389,6 +427,10 @@ enum CloudKitWebServices {
             }
             let fields = record["fields"] as? [String: Any]
             let fieldKeys = fields.map { Array($0.keys).sorted() } ?? []
+            if let link = ((fields?[externalField(for: field)] as? [String: Any])?["value"] as? String)
+                .flatMap(externalLink) {
+                return (.external(link), "\(prefix) http=200 external")
+            }
             guard
                 let fields,
                 let asset = fields[field] as? [String: Any],

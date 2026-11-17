@@ -16,7 +16,8 @@ export type ConfirmResult =
   | { ok: true; email: string; schoolID: string; schoolName: string; domainKind: string; userRecordName?: string; accountToken?: string }
   | { ok: false; message: string };
 
-export type AccountDetails = { firstName: string; lastName: string; major: string; graduationYear: string };
+/** `role: "educator"` makes a Professor account, which has no graduation year. */
+export type AccountDetails = { firstName: string; lastName: string; major: string; graduationYear: string; userTypes?: string; role?: "educator" };
 
 export type CreateAccountResult =
   | { ok: true; userRecordName: string }
@@ -44,9 +45,10 @@ async function callWorker(path: string, body: unknown, clientIP: string) {
   return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
 }
 
-export async function requestCode(email: string, clientIP: string): Promise<RequestResult> {
-  if (isDevStandIn()) return devRequest(email);
-  const { status, json } = await callWorker("/v1/web/session/request", { email }, clientIP);
+/** `purpose: "guest"` confirms any email address, not a school one, and can never lead to an account. */
+export async function requestCode(email: string, clientIP: string, purpose?: "guest"): Promise<RequestResult> {
+  if (isDevStandIn()) return devRequest(email, purpose);
+  const { status, json } = await callWorker("/v1/web/session/request", { email, ...(purpose ? { purpose } : {}) }, clientIP);
   if (status !== 200) return { ok: false, message: String(json.message ?? "Couldn't send a code. Try again.") };
   const school = json.school as { name?: string } | undefined;
   return { ok: true, pendingID: String(json.pendingID), schoolName: school?.name ?? "" };
@@ -86,18 +88,22 @@ export async function createAccount(accountToken: string, details: AccountDetail
 
 // MARK: - Development stand-in
 
-type DevPending = { email: string; code: string; expiresAt: number; attempts: number };
+type DevPending = { email: string; code: string; expiresAt: number; attempts: number; guest: boolean };
 const devStore = ((globalThis as { __nexusDevCodes?: Map<string, DevPending> }).__nexusDevCodes ??= new Map());
 
-function devRequest(email: string): RequestResult {
+function devRequest(email: string, purpose?: "guest"): RequestResult {
   const normalized = email.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.edu$/.test(normalized)) {
+  const guest = purpose === "guest";
+  if (guest && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    return { ok: false, message: "That doesn't look like an email address." };
+  }
+  if (!guest && !/^[^\s@]+@[^\s@]+\.edu$/.test(normalized)) {
     return { ok: false, message: "Use your school (.edu) email address." };
   }
   const pendingID = randomUUID();
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  devStore.set(pendingID, { email: normalized, code, expiresAt: Date.now() + 600_000, attempts: 0 });
-  console.log(`\n[nexus dev] Sign-in code for ${normalized}: ${code}\n`);
+  devStore.set(pendingID, { email: normalized, code, expiresAt: Date.now() + 600_000, attempts: 0, guest });
+  console.log(`\n[nexus dev] ${guest ? "Guest" : "Sign-in"} code for ${normalized}: ${code}\n`);
   return { ok: true, pendingID, schoolName: "your school" };
 }
 
@@ -107,5 +113,6 @@ function devConfirm(pendingID: string, code: string): ConfirmResult {
   if (++pending.attempts > 5) return { ok: false, message: "Too many wrong codes. Request a new one." };
   if (pending.code !== code) return { ok: false, message: "That code isn't valid." };
   devStore.delete(pendingID);
+  if (pending.guest) return { ok: true, email: pending.email, schoolID: "", schoolName: "", domainKind: "guest" };
   return { ok: true, email: pending.email, schoolID: "dev", schoolName: "Development", domainKind: "student", accountToken: "dev" };
 }

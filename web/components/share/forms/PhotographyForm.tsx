@@ -1,23 +1,25 @@
 "use client";
 
-import { useState } from "react";
 import { PHOTO_EQUIPMENT } from "@/lib/shareOptions";
 import { image } from "@/lib/shareUpload";
 import { useReleaseYears, CreditsRow, DisclosureRow, FilesRow, Section, SelectRow, SubField, TextArea, TextInput, subInput, type Credit } from "../FormKit";
+import { useDraftField, useKeptFiles } from "../DraftContext";
 import SubmissionShell from "../SubmissionShell";
 
 type Equipment = Record<(typeof PHOTO_EQUIPMENT)[number]["key"], string>;
 
 export default function PhotographyForm() {
   const years = useReleaseYears();
-  const [photos, setPhotos] = useState<File[]>([]);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [year, setYear] = useState("");
-  const [credits, setCredits] = useState<Credit[]>([{ role: "Photographer", name: "" }, { role: "Model", name: "" }]);
-  const [equipment, setEquipment] = useState<Equipment>({ camera: "", lens: "", lighting: "", filters: "", support: "", accessories: "" });
+  const [photos, setPhotos] = useDraftField<File[]>("photos", []);
+  const [title, setTitle] = useDraftField("title", "");
+  const [description, setDescription] = useDraftField("description", "");
+  const [year, setYear] = useDraftField("year", "");
+  const [credits, setCredits] = useDraftField<Credit[]>("credits", [{ role: "Photographer", name: "" }, { role: "Model", name: "" }]);
+  const [equipment, setEquipment] = useDraftField<Equipment>("equipment", { camera: "", lens: "", lighting: "", filters: "", support: "", accessories: "" });
 
-  const missing = [!photos.length && "photos", !title.trim() && "title"].filter(Boolean) as string[];
+  // Editing: files the post already has count as there.
+  const kept = useKeptFiles();
+  const missing = [!photos.length && !kept.has("photos") && "photos", !title.trim() && "title"].filter(Boolean) as string[];
 
   return (
     <SubmissionShell

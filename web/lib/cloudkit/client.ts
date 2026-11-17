@@ -46,6 +46,7 @@ export type CKRecord = {
   recordType: string;
   fields: Record<string, CKField>;
   created?: { timestamp: number };
+  modified?: { timestamp: number };
 };
 
 async function request<T>(subpathSuffix: string, body: unknown): Promise<T> {
@@ -75,13 +76,13 @@ async function request<T>(subpathSuffix: string, body: unknown): Promise<T> {
 }
 
 /** Every record of a type, following continuation markers. Unfiltered, like the app's NSPredicate(value: true). */
-export async function queryAll(recordType: string, maxRecords = 2000): Promise<CKRecord[]> {
+export async function queryAll(recordType: string, maxRecords = 2000, desiredKeys?: string[]): Promise<CKRecord[]> {
   const out: CKRecord[] = [];
   let continuationMarker: string | undefined;
   do {
     const page = await request<{ records?: (CKRecord & { serverErrorCode?: string })[]; continuationMarker?: string }>(
       "records/query",
-      { query: { recordType }, resultsLimit: 200, ...(continuationMarker ? { continuationMarker } : {}) },
+      { query: { recordType }, resultsLimit: 200, ...(desiredKeys ? { desiredKeys } : {}), ...(continuationMarker ? { continuationMarker } : {}) },
     );
     for (const r of page.records ?? []) if (!r.serverErrorCode) out.push(r);
     continuationMarker = page.continuationMarker;
@@ -89,15 +90,25 @@ export async function queryAll(recordType: string, maxRecords = 2000): Promise<C
   return out;
 }
 
-/** Records of a type whose `field` equals `value` (the field must be Queryable). */
-export async function queryWhere(recordType: string, field: string, value: string, desiredKeys: string[] = [], maxRecords = 5000) {
+/**
+ * Records of a type whose `field` equals `value` (the field must be Queryable). Pass
+ * `LIST_CONTAINS` as the comparator to match a list field that holds `value`.
+ */
+export async function queryWhere(
+  recordType: string,
+  field: string,
+  value: string,
+  desiredKeys: string[] = [],
+  maxRecords = 5000,
+  comparator: "EQUALS" | "LIST_CONTAINS" = "EQUALS",
+) {
   const out: CKRecord[] = [];
   let continuationMarker: string | undefined;
   do {
     const page = await request<{ records?: (CKRecord & { serverErrorCode?: string })[]; continuationMarker?: string }>(
       "records/query",
       {
-        query: { recordType, filterBy: [{ fieldName: field, comparator: "EQUALS", fieldValue: { value } }] },
+        query: { recordType, filterBy: [{ fieldName: field, comparator, fieldValue: { value } }] },
         desiredKeys,
         resultsLimit: 200,
         ...(continuationMarker ? { continuationMarker } : {}),
@@ -122,8 +133,10 @@ export async function modify(writes: CKWrite[]): Promise<void> {
         : { operationType: "forceDelete", record: { recordName: w.recordName } },
     ),
   });
-  // Deleting something already gone is fine, the same as the app treats it.
-  const failed = res.records?.find((r) => r.serverErrorCode && r.serverErrorCode !== "NOT_FOUND");
+  // Deleting something already gone is fine, the same as the app treats it. On a save,
+  // NOT_FOUND means the record type isn't in the schema, so it has to be reported.
+  const deleted = new Set(writes.filter((w) => w.kind === "delete").map((w) => w.recordName));
+  const failed = res.records?.find((r) => r.serverErrorCode && !(r.serverErrorCode === "NOT_FOUND" && deleted.has(r.recordName)));
   if (failed) throw new Error(`CloudKit ${failed.serverErrorCode}: ${failed.reason ?? ""}`);
 }
 
@@ -231,6 +244,37 @@ export async function createRecord(
   throw new Error("CloudKit kept rejecting this post.");
 }
 
+/**
+ * Updates the given fields of an existing record, leaving the others as they are. Like
+ * createRecord, a field Production doesn't have yet is dropped and the save retried,
+ * except fields in `required`. Returns the fields that had to be left off.
+ */
+export async function updateRecord(
+  recordType: string,
+  recordName: string,
+  fields: Record<string, CKField>,
+  required: readonly string[],
+): Promise<string[]> {
+  const current = { ...fields };
+  const dropped: string[] = [];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const res = await request<{ records?: { serverErrorCode?: string; reason?: string }[] }>("records/modify", {
+      operations: [{ operationType: "forceUpdate", record: { recordType, recordName, fields: current } }],
+    });
+    const r = res.records?.[0];
+    if (!r?.serverErrorCode) return dropped;
+    const reason = r.reason ?? "";
+    const culprit = Object.keys(current)
+      .sort((a, b) => b.length - a.length)
+      .find((key) => new RegExp(`(^|[^A-Za-z0-9_])${key}([^A-Za-z0-9_]|$)`).test(reason));
+    if (!culprit || required.includes(culprit)) throw new Error(`CloudKit ${r.serverErrorCode}: ${reason}`);
+    console.warn(`[cloudkit] ${recordType} update left off ${culprit}: ${reason}`);
+    delete current[culprit];
+    dropped.push(culprit);
+  }
+  throw new Error("CloudKit kept rejecting this update.");
+}
+
 // MARK: - Field readers
 
 export function str(r: CKRecord, key: string): string {
@@ -248,7 +292,7 @@ export function list(r: CKRecord, key: string): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-type CKAsset = { downloadURL?: string };
+type CKAsset = { downloadURL?: string; fileChecksum?: string };
 
 /**
  * A playable URL for an asset. The CDN derives Content-Type from the filename put in
@@ -257,6 +301,40 @@ type CKAsset = { downloadURL?: string };
 export function asset(r: CKRecord, key: string, filename: string): string | undefined {
   const v = r.fields[key]?.value as CKAsset | undefined;
   return v?.downloadURL ? v.downloadURL.replace("${f}", filename) : undefined;
+}
+
+/** A stored https link, or nothing. */
+const link = (v: string) => (/^https:\/\//.test(v) ? v : undefined);
+
+/**
+ * A playable URL for a file field: the Cloudflare R2 link a big website upload keeps in
+ * `<key>URL` (see lib/r2.ts), or else the CloudKit asset.
+ */
+export function fileURL(r: CKRecord, key: string, filename: string): string | undefined {
+  return link(str(r, `${key}URL`)) ?? asset(r, key, filename);
+}
+
+/** Like fileURL for a list field: the R2 links in `<key>URLs`, or else the CloudKit assets. */
+export function fileURLs(r: CKRecord, key: string, filename: string): string[] {
+  const links = list(r, `${key}URLs`).flatMap((v) => link(v) ?? []);
+  return links.length ? links : assets(r, key, filename);
+}
+
+/**
+ * A stable ID for the file behind an asset field (or the first of a list). Unlike the
+ * download URL, which CloudKit re-signs on every fetch, it only changes with the file.
+ */
+export function assetChecksum(r: CKRecord, key: string): string | undefined {
+  const v = r.fields[key]?.value as CKAsset | CKAsset[] | undefined;
+  const first = Array.isArray(v) ? v[0] : v;
+  return first?.fileChecksum || undefined;
+}
+
+/** Checksums for a list of assets, in step with assets(): one entry per file that has a download link. */
+export function assetChecksums(r: CKRecord, key: string): (string | undefined)[] {
+  const v = r.fields[key]?.value;
+  if (!Array.isArray(v)) return [];
+  return (v as CKAsset[]).flatMap((a) => (a?.downloadURL ? [a.fileChecksum || undefined] : []));
 }
 
 export function assets(r: CKRecord, key: string, filename: string): string[] {

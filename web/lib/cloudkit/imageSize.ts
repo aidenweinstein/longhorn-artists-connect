@@ -1,14 +1,26 @@
 /**
- * Reads an image's pixel dimensions from its first 512 KB (JPEG or PNG) with a range
- * request, so layouts can use each post's true aspect ratio instead of cropping.
+ * Reads an image's pixel dimensions with a range request, so layouts can use each
+ * post's true aspect ratio instead of cropping. The size sits in the first few KB of
+ * almost every JPEG or PNG, so this reads 64 KB and only goes up to 512 KB for the
+ * rare file with a very large EXIF block before it.
  */
 export async function imageAspect(url: string): Promise<number | undefined> {
+  for (const bytes of [65_536, 524_288]) {
+    const result = await readAspect(url, bytes);
+    if (result !== "more") return result;
+  }
+  return undefined;
+}
+
+async function readAspect(url: string, length: number): Promise<number | undefined | "more"> {
   try {
-    const res = await fetch(url, { headers: { Range: "bytes=0-524287" }, cache: "no-store" });
+    const res = await fetch(url, { headers: { Range: `bytes=0-${length - 1}` }, cache: "no-store" });
     if (!res.ok && res.status !== 206) return undefined;
     const bytes = new Uint8Array(await res.arrayBuffer());
     const size = pngSize(bytes) ?? jpegSize(bytes);
-    return size && size.w > 0 && size.h > 0 ? size.w / size.h : undefined;
+    if (size && size.w > 0 && size.h > 0) return size.w / size.h;
+    // A JPEG whose size marker lies past what was read: try again with more.
+    return bytes.length >= length && bytes[0] === 0xff && bytes[1] === 0xd8 ? "more" : undefined;
   } catch {
     return undefined;
   }

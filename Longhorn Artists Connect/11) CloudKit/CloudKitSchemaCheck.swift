@@ -319,7 +319,9 @@ nonisolated enum CloudKitSchemaCheck {
                 "filmFestivalBound": .int64, "filmGenres": .stringList, "filmLogline": .string,
                 "filmReleaseYear": .string, "filmStills": .assetList, "filmStudio": .string,
                 "filmThumbnail": .asset, "filmTrailer": .asset, "filmVideo": .asset,
-                "filmVideoCrop": .string, "filmVideoDuration": .double
+                "filmVideoCrop": .string, "filmVideoDuration": .double,
+                // Links to big website uploads in Cloudflare R2 (see CloudKitWebServices).
+                "filmVideoURL": .string, "filmTrailerURL": .string
             ],
             "MusicSubmission": [
                 "musicTitle": .string, "musicDescription": .string, "musicArtist": .string,
@@ -330,7 +332,8 @@ nonisolated enum CloudKitSchemaCheck {
                 "musicRecordingIDs": .stringList, "musicReleaseYear": .string,
                 "musicTracks": .assetList, "musicTrackExts": .stringList, "musicVideo": .asset,
                 "lyrics": .string, "musicSpotifyLink": .string, "musicAppleMusicLink": .string,
-                "amazonMusicLink": .string, "soundcloudLink": .string, "youtubeMusicLink": .string
+                "amazonMusicLink": .string, "soundcloudLink": .string, "youtubeMusicLink": .string,
+                "musicAudioURL": .string, "musicTracksURLs": .stringList, "musicVideoURL": .string
             ],
             "ReelSubmission": [
                 "reelTitle": .string, "reelDescription": .string, "reelType": .string,
@@ -339,7 +342,8 @@ nonisolated enum CloudKitSchemaCheck {
                 "reelVideoDuration": .double, "orderedCrew": .stringList,
                 "orderedCrewIDs": .stringList, "orderedCast": .stringList,
                 "orderedCastIDs": .stringList, "featuredWork": .stringList,
-                "featuredWorkManual": .stringList
+                "featuredWorkManual": .stringList,
+                "reelVideoURL": .string, "reelVideosURLs": .stringList
             ],
             "PhotographySubmission": [
                 "photographyTitle": .string, "photographyDescription": .string,
@@ -356,7 +360,8 @@ nonisolated enum CloudKitSchemaCheck {
                 "orderedCrewIDs": .stringList,
                 // Design's own date fields; the shared createdDate/lastEditedDate are
                 // removed below (see `Design.toCloudKitRecord`).
-                "designCreatedDate": .timestamp, "designLastEditedDate": .timestamp
+                "designCreatedDate": .timestamp, "designLastEditedDate": .timestamp,
+                "designVideoURL": .string
             ],
             "ProjectSubmission": [
                 "projectTitle": .string, "projectDescription": .string,

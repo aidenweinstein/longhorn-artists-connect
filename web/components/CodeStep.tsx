@@ -1,11 +1,15 @@
 "use client";
 
 import { useState, useTransition, type FormEvent } from "react";
-import { confirmCodeAction, requestCodeAction } from "@/app/auth/actions";
+import { confirmCodeAction, confirmGuestCodeAction, requestCodeAction, requestGuestCodeAction } from "@/app/auth/actions";
 import { field, primaryBtn } from "./AuthShell";
 
 /** Six-digit email code entry. Confirms with verification-service and starts a session. */
-export default function CodeStep({ email, pendingID: initialID, onBack, onVerified }: {
+export default function CodeStep({ email, pendingID: initialID, onBack, onVerified, mock = false, guest = false }: {
+  /** "Continue as guest": the code confirms any email and grants a guest pass, not a sign-in. */
+  guest?: boolean;
+  /** Mock launch: no email was sent and any 6 digits pass. */
+  mock?: boolean;
   email: string;
   pendingID: string;
   onBack: () => void;
@@ -23,7 +27,14 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
     e.preventDefault();
     if (!ready) return;
     setError(null);
+    if (mock) return onVerified(false);
     startTransition(async () => {
+      if (guest) {
+        const result = await confirmGuestCodeAction(pendingID, code);
+        if (result.ok) onVerified(false);
+        else setError(result.message);
+        return;
+      }
       const result = await confirmCodeAction(pendingID, code);
       if (result.ok) onVerified(result.hasAccount);
       else setError(result.message);
@@ -32,8 +43,12 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
 
   function resend() {
     setError(null);
+    if (mock) {
+      setCode("");
+      return setNotice("A new code is on its way.");
+    }
     startTransition(async () => {
-      const result = await requestCodeAction(email);
+      const result = guest ? await requestGuestCodeAction(email) : await requestCodeAction(email);
       if (result.ok) {
         setPendingID(result.pendingID);
         setCode("");
@@ -59,6 +74,7 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
         autoFocus
       />
       {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {mock && <p className="text-xs text-white/70">Mock launch: no email was sent. Type any 6 digits.</p>}
       {notice && !error && <p className="text-sm text-white/60">{notice}</p>}
       <button type="submit" disabled={!ready} className={primaryBtn}>
         {busy ? "Checking…" : "Verify"}

@@ -1,5 +1,6 @@
-import ComingSoon from "@/components/ComingSoon";
+import SavedGrid from "@/components/SavedGrid";
 
+/** Saved posts. They're kept in this browser, so this works signed in or not. */
 export default function Playlists() {
-  return <ComingSoon title="Playlists" body="Your saved collections will show up here once you're signed in." />;
+  return <SavedGrid />;
 }

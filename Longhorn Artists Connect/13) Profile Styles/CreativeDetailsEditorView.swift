@@ -9,9 +9,9 @@
 //  (`CreativeDetailsEditorView`).
 //
 //  • Actor / Dancer tags — headshot, reel, Actors Access stats, skills, extra resume credits.
-//  • Musician / Singer / Composer tags — artist name, instruments, genres, availability,
-//    and links to streaming pages (Spotify first).
-//  • Film tags — specialties, gear, open to crews.
+//  • Musician / Singer / Composer tags — streaming pages, solo act and band names,
+//    instruments and genres (the lists each open on their own page).
+//  • Film tags — studios, certifications, gear.
 //
 //  Everything shown here appears on the person's profile for anyone who looks
 //  (see StyledProfileSection).
@@ -150,6 +150,10 @@ struct CreativeDetailsFormSections: View {
         }
 
         Section {
+            Picker("Gender", selection: $details.actor.gender) {
+                Text("Not set").tag("")
+                ForEach(ActorDetails.genders, id: \.self) { Text($0).tag($0) }
+            }
             HStack {
                 Text("Playable age")
                 Spacer()
@@ -163,19 +167,11 @@ struct CreativeDetailsFormSections: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 50)
             }
-            Picker("Gender", selection: $details.actor.gender) {
-                Text("Not set").tag("")
-                ForEach(ActorDetails.genders, id: \.self) { Text($0).tag($0) }
-            }
             TextField("Height (e.g. 5'9\")", text: $details.actor.height)
             TextField("Ethnic appearance", text: $details.actor.ethnicAppearance)
             DetailOptionPicker("Hair", selection: $details.actor.hair, options: ActorDetails.hairColors)
             DetailOptionPicker("Eyes", selection: $details.actor.eyes, options: ActorDetails.eyeColors)
-            Picker("Union", selection: $details.actor.union) {
-                Text("Not set").tag("")
-                ForEach(ActorDetails.unions, id: \.self) { Text($0).tag($0) }
-            }
-            TextField("Based in", text: $details.actor.basedIn)
+            DetailOptionPicker("Union", selection: $details.actor.union, options: ActorDetails.unions)
         } header: {
             Text("Actor · Details")
         } footer: {
@@ -223,9 +219,9 @@ struct CreativeDetailsFormSections: View {
     @ViewBuilder
     private var filmmakerSections: some View {
         Section {
-            TextField("Specialties (e.g. handheld docs, color grading)", text: $details.filmmaker.specialties, axis: .vertical)
+            TextField("Studio(s)", text: $details.filmmaker.studios, axis: .vertical)
+            TextField("Certifications (e.g. Adobe, Avid)", text: $details.filmmaker.certifications, axis: .vertical)
             TextField("Gear", text: $details.filmmaker.gear, axis: .vertical)
-            Toggle("Open to joining crews", isOn: $details.filmmaker.openToCrew)
         } header: {
             Label("Filmmaker", systemImage: CreativeGroup.filmmaker.symbol)
         } footer: {
@@ -238,59 +234,89 @@ struct CreativeDetailsFormSections: View {
     @ViewBuilder
     private var musicianSections: some View {
         Section {
-            ForEach(StreamingService.allCases) { service in
-                HStack(spacing: 10) {
-                    Image(systemName: service.symbol)
-                        .frame(width: 22)
-                        .foregroundStyle(Color.brandOrange)
-                    TextField(service.rawValue, text: streamingBinding(service), prompt: Text(service.placeholder))
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
+            NavigationLink {
+                StreamingPagesEditor(details: $details.musician)
+            } label: {
+                LabeledContent("Streaming pages", value: details.musician.links.map(\.service.rawValue).joined(separator: ", "))
+            }
+            TextField("Solo act name", text: $details.musician.soloName)
+            TextField("Band name", text: $details.musician.bandName)
+            NavigationLink {
+                DetailChipPage(title: "Instruments", options: MusicianDetails.instrumentOptions,
+                               selection: $details.musician.instruments,
+                               footer: "Everything you can play. Shown under your card on the Musicians page, where people can filter by instrument.")
+            } label: {
+                LabeledContent("Instruments", value: details.musician.instrumentList.joined(separator: ", "))
+            }
+            NavigationLink {
+                DetailChipPage(title: "Genres", options: MusicianDetails.genreOptions,
+                               selection: $details.musician.genres,
+                               footer: "People can filter the Musicians page by genre too.")
+            } label: {
+                LabeledContent("Genres", value: details.musician.genreList.joined(separator: ", "))
             }
         } header: {
-            Label("Musician · Streaming pages", systemImage: CreativeGroup.musician.symbol)
+            Label("Musician", systemImage: CreativeGroup.musician.symbol)
         } footer: {
-            Text("Unlocked by your \(CreativeGroup.musician.tagList) tag. Paste the link to your Spotify page (and any others); they appear as buttons on your profile.")
-        }
-
-        Section {
-            TextField("Artist or band name", text: $details.musician.artistName)
-        } header: {
-            Text("Musician · About")
-        } footer: {
-            Text("Releases posted under this artist name, or crediting you, make up your discography.")
-        }
-
-        Section {
-            DetailChipPicker(options: MusicianDetails.instrumentOptions, selection: $details.musician.instruments)
-        } header: {
-            Text("Musician · Instruments")
-        } footer: {
-            Text("Everything you can play. Shown under your card on the Musicians page, where people can filter by instrument.")
-        }
-
-        Section {
-            DetailChipPicker(options: MusicianDetails.genreOptions, selection: $details.musician.genres)
-        } header: {
-            Text("Musician · Genres")
-        } footer: {
-            Text("People can filter the Musicians page by genre too.")
-        }
-
-        Section("Musician · Available for") {
-            Toggle("Live gigs", isOn: $details.musician.availableForGigs)
-            Toggle("Session work", isOn: $details.musician.availableForSessions)
-            Toggle("Scoring films", isOn: $details.musician.availableForScoring)
+            Text("Unlocked by your \(CreativeGroup.musician.tagList) tag. Releases posted under your solo act or band name, or crediting you, make up your discography.")
         }
     }
 
-    private func streamingBinding(_ service: StreamingService) -> Binding<String> {
+}
+
+// MARK: - Musician Pages
+
+/// The streaming page links, on their own page pushed from the Musician section.
+private struct StreamingPagesEditor: View {
+    @Binding var details: MusicianDetails
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(StreamingService.allCases) { service in
+                    HStack(spacing: 10) {
+                        Image(systemName: service.symbol)
+                            .frame(width: 22)
+                            .foregroundStyle(Color.brandOrange)
+                        TextField(service.rawValue, text: binding(service), prompt: Text(service.placeholder))
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                }
+            } footer: {
+                Text("Paste the link to your Spotify page (and any others); they appear as buttons on your profile.")
+            }
+        }
+        .navigationTitle("Streaming pages")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func binding(_ service: StreamingService) -> Binding<String> {
         Binding(
-            get: { details.musician.link(for: service) },
-            set: { details.musician.setLink($0, for: service) }
+            get: { details.link(for: service) },
+            set: { details.setLink($0, for: service) }
         )
+    }
+}
+
+/// A chip list (instruments, genres) on its own page pushed from the Musician section.
+private struct DetailChipPage: View {
+    let title: String
+    let options: [String]
+    @Binding var selection: String
+    let footer: String
+
+    var body: some View {
+        Form {
+            Section {
+                DetailChipPicker(options: options, selection: $selection)
+            } footer: {
+                Text(footer)
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

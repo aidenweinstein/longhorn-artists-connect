@@ -77,8 +77,9 @@ export default function Timecode({
   return (
     <span
       ref={ref}
-      className={`absolute rounded-md bg-black/75 font-mono font-semibold text-white ${
-        small ? "bottom-1 right-1 px-1 py-px text-[10px]" : "bottom-2 right-2 px-1.5 py-0.5 text-xs"
+      // z-[1] keeps the badge above the thumbnail, which is drawn after it on feed cards.
+      className={`absolute z-[1] rounded-md bg-black/75 font-mono font-semibold text-white ${
+        small ? "bottom-1 right-1 px-1 py-px text-[10px]" : "bottom-2 right-2 px-1 py-px text-[8.4px]"
       } ${length ? "" : "invisible"}`}
     >
       {length ? timecode(length) : "0:00"}

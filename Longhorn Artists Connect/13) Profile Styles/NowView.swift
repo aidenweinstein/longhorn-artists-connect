@@ -368,11 +368,11 @@ struct NowView: View {
 
     private var myShows: [Submission] {
         let me = Collaborator.nameKey(for: myName)
-        let artist = Collaborator.nameKey(for: creative.myDetails.musician.artistName)
+        let acts = creative.myDetails.musician.actNames.map { Collaborator.nameKey(for: $0) }.filter { !$0.isEmpty }
         return upcomingEvents.filter { event in
             if isMine(event) || !event.credits(where: isMe).isEmpty { return true }
             let lineup = (event.eventLineup ?? "").lowercased()
-            return (!me.isEmpty && lineup.contains(me)) || (!artist.isEmpty && lineup.contains(artist))
+            return (!me.isEmpty && lineup.contains(me)) || acts.contains { lineup.contains($0) }
         }
     }
 

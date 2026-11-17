@@ -334,9 +334,7 @@ final class FeedVideoPreloader {
         if let local = localCopy, FileManager.default.fileExists(atPath: local.path) {
             return local
         }
-        let (resolution, _) = await CloudKitManager.shared.streamResolutionDetailed(
-            submissionID: post.id, type: post.type
-        )
+        let (resolution, _) = await CloudKitManager.shared.streamResolutionDetailed(for: post)
         if case .streaming(let url) = resolution { return url }
         return nil
     }

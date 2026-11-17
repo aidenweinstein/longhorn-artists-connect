@@ -67,12 +67,25 @@ final class NotificationService: UNNotificationServiceExtension {
         let senderName = (query.recordFields?["senderName"] as? String)
             .flatMap { $0.isEmpty ? nil : $0 } ?? mutable.title
 
+        // Group messages also carry the group's name and thread ID. The system shows
+        // the sender (with photo) and the group name itself, so the body is trimmed back
+        // to just the message instead of CloudKit's "Sender: message" form.
+        let groupName = (query.recordFields?["groupName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let groupID = (query.recordFields?["conversationID"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        if groupName != nil,
+           let preview = query.recordFields?["messagePreview"] as? String, !preview.isEmpty {
+            mutable.body = preview
+        }
+
         work = Task {
             let imageData = await SenderPhotoStore.imageData(for: senderID)
             let styled = await CommunicationStyle.apply(to: mutable,
                                                         senderID: senderID,
                                                         senderName: senderName,
-                                                        senderImageData: imageData)
+                                                        senderImageData: imageData,
+                                                        groupName: groupName,
+                                                        groupID: groupID,
+                                                        fallback: request.content)
             delivery.deliver(styled)
         }
     }
@@ -102,21 +115,24 @@ enum CommunicationStyle {
     static func apply(to content: UNMutableNotificationContent,
                       senderID: String,
                       senderName: String,
-                      senderImageData: Data?) async -> UNNotificationContent {
+                      senderImageData: Data?,
+                      groupName: String? = nil,
+                      groupID: String? = nil,
+                      fallback: UNNotificationContent? = nil) async -> UNNotificationContent {
         let sender = INPerson(personHandle: INPersonHandle(value: senderID, type: .unknown),
                               nameComponents: nil,
                               displayName: senderName,
                               image: senderImageData.map { INImage(imageData: $0) },
                               contactIdentifier: nil,
                               customIdentifier: senderID)
-        // Incoming, so the current user is implicitly the recipient; no recipients and
-        // no group name gives the one-to-one look with the sender's avatar. Chats are
-        // strictly one-to-one in Nexus, so the sender identifies the thread.
+        // Incoming, so the current user is implicitly the recipient. With no group name
+        // this is the one-to-one look (sender's avatar, sender identifies the thread);
+        // with one, the system shows the group's name over the sender, like Messages.
         let intent = INSendMessageIntent(recipients: nil,
                                          outgoingMessageType: .outgoingMessageText,
                                          content: content.body,
-                                         speakableGroupName: nil,
-                                         conversationIdentifier: "dm-\(senderID)",
+                                         speakableGroupName: groupName.map { INSpeakableString(spokenPhrase: $0) },
+                                         conversationIdentifier: groupName != nil ? "group-\(groupID ?? senderID)" : "dm-\(senderID)",
                                          serviceName: nil,
                                          sender: sender,
                                          attachments: nil)
@@ -128,7 +144,8 @@ enum CommunicationStyle {
         do {
             return try content.updating(from: intent)
         } catch {
-            return content
+            // Unstyled: show CloudKit's own banner (which still names the sender).
+            return fallback ?? content
         }
     }
 }

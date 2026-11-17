@@ -32,6 +32,8 @@ struct NetworkDirectoryView: View {
     @ObservedObject private var connections = ConnectionsManager.shared
     /// Headshots and details for the people cards (see DirectoryPeopleGrid).
     @ObservedObject private var creative = CreativeProfileStore.shared
+    /// Who the website features on its People pages; the group tabs list them too.
+    @ObservedObject private var websitePeople = WebsitePeopleList.shared
     /// Everyone | Actors | Filmmakers | Musicians. Now's Browse buttons open the sheet
     /// straight onto a group tab.
     @State private var tab: DirectoryTab
@@ -608,10 +610,15 @@ struct NetworkDirectoryView: View {
                 .refreshable {
                     await userProfileManager.fetchAllUsers(forceRefresh: true)
                     await creative.refresh(force: true)
+                    await websitePeople.refresh(maxAge: 0)
                 }
                 // Load styles and listings so the Pages counts are right (throttled
                 // internally when already fresh).
-                .task { await creative.refresh() }
+                .task {
+                    async let details: Void = creative.refresh()
+                    async let website: Void = websitePeople.refresh()
+                    _ = await (details, website)
+                }
             }
             .navigationTitle("Directory")
             .navigationBarTitleDisplayMode(.inline)

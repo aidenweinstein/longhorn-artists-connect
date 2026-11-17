@@ -1,78 +1,89 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition, type FormEvent } from "react";
+import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { requestCodeAction } from "@/app/auth/actions";
-import { field, labelCls, primaryBtn } from "@/components/AuthShell";
+import { primaryBtn } from "@/components/AuthShell";
+import { useAuthSchool } from "@/components/AuthTheme";
 import CodeStep from "@/components/CodeStep";
+import SignedIn from "@/components/SignedIn";
+import SchoolEmailBox from "@/components/SchoolEmailBox";
+import SchoolPicker from "@/components/SchoolPicker";
+import { emailDomains, isSchoolEmail, type SignupSchool } from "@/lib/signupSchools";
 
-export default function SignInForm() {
+/**
+ * Sign-in: pick your school (black and white screen, each school in its own colors),
+ * then your email at that school and the 6-digit code, in the school's colors.
+ * `mock` is the Mock launch walkthrough: no email is sent, any 6-digit code passes, and
+ * nobody is signed in.
+ */
+export default function SignInForm({ mock = false }: { mock?: boolean }) {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [school, setSchool] = useState<SignupSchool | null>(null);
+  // Only the part before "@" is typed: the school decides the rest.
+  const [emailID, setEmailID] = useState("");
+  const [pickedDomain, setPickedDomain] = useState("");
   const [pendingID, setPendingID] = useState<string | null>(null);
+  const [mockDone, setMockDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
-  const valid = /\S+@\S+\.\S+/.test(email.trim()) && !busy;
+  const themeSchool = useAuthSchool();
+  useEffect(() => themeSchool(school), [themeSchool, school]);
+
+  // Students and educators both sign in here, so every domain of the school is offered.
+  const domains = school ? emailDomains(school) : [];
+  const domain = domains.includes(pickedDomain) ? pickedDomain : domains[0] ?? "";
+  const email = emailID && domain ? `${emailID}@${domain}` : "";
+  const valid = !!school && isSchoolEmail(email, school) && !busy;
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (!valid) return;
+    if (!valid || !school) return;
     setError(null);
+    if (mock) return setPendingID("mock");
     startTransition(async () => {
-      const result = await requestCodeAction(email.trim());
+      const result = await requestCodeAction(email, school.id);
       if (result.ok) setPendingID(result.pendingID);
       else setError(result.message);
     });
   }
 
+  if (!school) return <SchoolPicker onPick={setSchool} />;
+
+  if (mockDone) {
+    return <SignedIn heading="Welcome back!" note="That was the mock launch: nobody was signed in." />;
+  }
+
   if (pendingID) {
     return (
       <CodeStep
-        email={email.trim()}
+        mock={mock}
+        email={email}
         pendingID={pendingID}
         onBack={() => setPendingID(null)}
         // No account owns this email yet: finish sign-up to create one.
-        onVerified={(hasAccount) => router.replace(hasAccount ? "/" : "/signup/finish")}
+        onVerified={(hasAccount) => (mock ? setMockDone(true) : router.replace(hasAccount ? "/" : "/signup/finish"))}
       />
     );
   }
 
   return (
-    <div className="space-y-5">
+    <form onSubmit={submit} className="space-y-4">
+      <SchoolEmailBox school={school} domains={domains} id={emailID} onID={setEmailID} domain={domain} onDomain={setPickedDomain} />
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      <button type="submit" disabled={!valid} className={primaryBtn}>
+        {busy ? "Sending…" : "Send code"}
+      </button>
       <button
         type="button"
-        disabled
-        title="Coming soon"
-        className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white text-[15px] font-semibold text-black disabled:opacity-50"
+        onClick={() => {
+          setSchool(null);
+          setError(null);
+        }}
+        className="w-full text-sm text-white/60 hover:text-white"
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-          <path d="M16.4 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.4-.9-1.7 0-3.3 1-4.2 2.6-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8s2 .8 3.4.8c1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9 0 0-2.7-1-2.7-4.1zM13.8 4.9c.7-.9 1.2-2 1.1-3.2-1 0-2.3.7-3 1.6-.7.8-1.2 2-1.1 3.1 1.1.1 2.3-.6 3-1.5z" />
-        </svg>
-        Sign in with Apple
+        Back
       </button>
-
-      <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-white/40">
-        <span className="h-px flex-1 bg-white/15" /> or <span className="h-px flex-1 bg-white/15" />
-      </div>
-
-      <form onSubmit={submit} className="space-y-4">
-        <div>
-          <label htmlFor="email" className={labelCls}>School email</label>
-          <input
-            id="email"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@school.edu"
-            className={field}
-          />
-        </div>
-        {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-        <button type="submit" disabled={!valid} className={primaryBtn}>
-          {busy ? "Sending…" : "Send code"}
-        </button>
-      </form>
-    </div>
+    </form>
   );
 }

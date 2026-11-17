@@ -1,26 +1,7 @@
 "use server";
 
 import { creditedPosts, currentSession, personAccount } from "@/lib/account";
-import { updateTag } from "next/cache";
-import { PEOPLE_PAGES, PeopleServiceError, callPeople, featuresFor, isAdmin, peoplePage } from "@/lib/featured";
-import { CREATIVE_ALL_TAG, writeListing } from "@/lib/cloudkit/creative";
-import { styleForSlug } from "@/lib/profileStyle";
-
-/**
- * Mirrors a People-page decision into CloudKit (DirectoryListing), so the app's
- * public Actors / Filmmakers / Musicians pages match the website's. Best effort:
- * the website's own list (verification-service) stays the source for the site.
- */
-async function mirrorListing(category: string, profileID: string, status: "approved" | "declined") {
-  const style = styleForSlug(category);
-  if (!style || !profileID.startsWith("UserProfile_")) return;
-  try {
-    await writeListing(profileID, style, status);
-    updateTag(CREATIVE_ALL_TAG);
-  } catch (error) {
-    console.error("[people] listing mirror:", error instanceof Error ? error.message : error);
-  }
-}
+import { PeopleServiceError, callPeople, featuresFor, isAdmin, peoplePage } from "@/lib/featured";
 
 // Every action re-checks that the signed-in person is an admin: the page hiding
 // the buttons isn't enough, since server actions can be called directly.
@@ -59,7 +40,6 @@ export async function saveFeature(input: {
   if (!input.profileID) return { ok: false, message: "Pick someone's Nexus profile." };
   return asAdmin(async () => {
     await callPeople("admin/save", { ...input, postIDs: input.postIDs.slice(0, 6) });
-    await mirrorListing(input.category, input.profileID, "approved");
   });
 }
 
@@ -82,7 +62,6 @@ export async function saveFeatures(input: {
     for (const p of people) {
       if (already.has(p.profileID)) continue;
       await callPeople("admin/save", { category: input.category, profileID: p.profileID, name: p.name, blurb: "", postIDs: [] });
-      await mirrorListing(input.category, p.profileID, "approved");
       added++;
     }
   });
@@ -91,12 +70,7 @@ export async function saveFeatures(input: {
 }
 
 export async function removeFeature(id: string): Promise<Result> {
-  return asAdmin(async () => {
-    const lists = await Promise.all(PEOPLE_PAGES.map((p) => featuresFor(p.slug)));
-    const feature = lists.flat().find((f) => f.id === id);
-    await callPeople("admin/remove", { id });
-    if (feature) await mirrorListing(feature.category, feature.profileID, "declined");
-  });
+  return asAdmin(() => callPeople("admin/remove", { id }));
 }
 
 export async function moveFeature(id: string, direction: "up" | "down"): Promise<Result> {

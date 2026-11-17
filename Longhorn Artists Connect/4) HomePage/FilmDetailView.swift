@@ -187,7 +187,7 @@ struct FilmDetailView: View {
         // Stream only: play from a range-supporting CDN URL so playback starts without
         // ever writing the file to the device. Map each resolution outcome to a precise
         // status so the placeholder reports what's actually happening in production.
-        let (resolution, debug) = await CloudKitManager.shared.streamResolutionDetailed(submissionID: film.id, type: .film)
+        let (resolution, debug) = await CloudKitManager.shared.streamResolutionDetailed(for: film)
         streamDebug = debug
         switch resolution {
         case .streaming(let streamURL):
@@ -213,7 +213,7 @@ struct FilmDetailView: View {
     /// since the feed skips these heavy assets. Runs once when the detail view appears.
     private func loadExtras() async {
         // Trailer streams (video, never downloaded); photo galleries fetch in parallel.
-        async let trailer = CloudKitManager.shared.trailerStreamingURL(submissionID: film.id)
+        async let trailer = CloudKitManager.shared.trailerStreamingURL(for: film)
         async let extras = CloudKitManager.shared.downloadFilmExtras(submissionID: film.id)
         let (resolvedTrailer, resolvedExtras) = await (trailer, extras)
         await MainActor.run {

@@ -8,7 +8,16 @@ import MediaViewer from "./MediaViewer";
  * first picture's shape the whole time, so the title and credits below never jump as you swipe;
  * pictures with a different shape fit inside it with dark bars.
  */
-export default function ImageCarousel({ images, aspect }: { images: string[]; aspect: number }) {
+export default function ImageCarousel({
+  images,
+  originals,
+  aspect,
+}: {
+  images: string[];
+  /** The full-size upload behind each picture, when `images` are smaller copies. */
+  originals?: string[];
+  aspect: number;
+}) {
   const track = useRef<HTMLDivElement>(null);
   const [index, setIndex] = useState(0);
   const [ratios, setRatios] = useState<Record<number, number>>({});
@@ -57,6 +66,8 @@ export default function ImageCarousel({ images, aspect }: { images: string[]; as
   }
 
 
+  const original = originals?.[index];
+
   return (
     <MediaViewer aspect={ratios[0] ?? aspect}>
       <div tabIndex={many ? 0 : -1} onKeyDown={onKey} className="absolute inset-0 outline-none" aria-roledescription="carousel">
@@ -81,6 +92,17 @@ export default function ImageCarousel({ images, aspect }: { images: string[]; as
             </div>
           ))}
         </div>
+
+        {original && original !== images[index] && (
+          <a
+            href={original}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute left-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-xs font-semibold text-white opacity-80 backdrop-blur transition hover:bg-black/75 hover:opacity-100"
+          >
+            Full size
+          </a>
+        )}
 
         {many && (
           <>

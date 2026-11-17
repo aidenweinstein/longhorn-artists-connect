@@ -9,13 +9,15 @@ import { Env } from "./util";
 
 export async function sendVerificationCode(
     env: Env,
-    params: { to: string; code: string; schoolName: string; context?: "app" | "web" },
+    params: { to: string; code: string; schoolName: string; context?: "app" | "web" | "guest" },
 ): Promise<void> {
     const subject = `${params.code} is your Nexus by LAC code`;
     const instruction =
-        params.context === "web"
-            ? `Enter it on the Nexus website to sign in with your ${params.schoolName} email address.`
-            : `Enter it in Nexus by LAC to confirm your ${params.schoolName} email address.`;
+        params.context === "guest"
+            ? `Enter it on the Nexus website to confirm your email address and continue as a guest.`
+            : params.context === "web"
+              ? `Enter it on the Nexus website to sign in with your ${params.schoolName} email address.`
+              : `Enter it in Nexus by LAC to confirm your ${params.schoolName} email address.`;
 
     const text = [
         `Your verification code is ${params.code}`,

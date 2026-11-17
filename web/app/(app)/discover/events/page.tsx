@@ -2,6 +2,7 @@ import Link from "next/link";
 import DiscoverGrid from "@/components/DiscoverGrid";
 import { discoverItems } from "@/lib/content";
 import type { NexusEvent } from "@/lib/discoverContent";
+import { discoverMatches } from "@/lib/search";
 
 // Filtered per request by ?q and ?past, so this route blocks until it renders.
 export const instant = false;
@@ -30,11 +31,11 @@ function startsAt(e: NexusEvent) {
  */
 export default async function DiscoverEvents(props: PageProps<"/discover/events">) {
   const params = await props.searchParams;
-  const q = typeof params.q === "string" ? params.q.toLowerCase() : "";
+  const q = typeof params.q === "string" ? params.q : "";
   const past = params.past === "1";
 
   const events = (await discoverItems()).filter(
-    (i): i is NexusEvent => i.kind === "event" && (!q || `${i.title} ${i.logline}`.toLowerCase().includes(q)),
+    (i): i is NexusEvent => i.kind === "event" && discoverMatches(i, q),
   );
   const shown = past
     ? events.filter(hasEnded).sort((a, b) => (endsAt(b) ?? 0) - (endsAt(a) ?? 0))
@@ -47,8 +48,7 @@ export default async function DiscoverEvents(props: PageProps<"/discover/events"
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-3xl font-bold">{past ? "Past Events" : "Events"}</h1>
+      <div className="mb-4 flex justify-end">
         <Link
           href={toggleHref}
           className="rounded-full border border-border px-4 py-1.5 text-sm font-medium text-muted transition hover:bg-surface hover:text-foreground"

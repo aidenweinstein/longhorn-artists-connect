@@ -63,6 +63,11 @@ struct HomePostCard: View {
     @State private var galleryImages: [UIImage] = []
     /// Which carousel page is showing; 0 is the thumbnail.
     @State private var galleryIndex = 0
+    /// Width ÷ height of every gallery image after the first, read from the file headers
+    /// (no decode) when the card is built. Lets `galleryAspect` settle on its final value
+    /// before the first layout pass, so a gallery card never changes height — not when
+    /// its images finish decoding, and not when the reader swipes between them.
+    @State private var galleryHeaderAspects: [CGFloat]
 
     init(post: Submission, showTypeIcon: Bool, estimatedWidth: CGFloat = UIScreen.main.bounds.width) {
         self.post = post
@@ -71,6 +76,23 @@ struct HomePostCard: View {
         // Header-only read (a few microseconds, no pixel decode) so the first layout
         // pass already knows the media's shape. See `headerAspect`.
         _headerAspect = State(initialValue: VideoAspectCache.thumbnailAspect(post.thumbnailData))
+        _galleryHeaderAspects = State(initialValue: Self.headerAspects(of: Self.galleryURLs(of: post)))
+    }
+
+    /// Local files of every image in a post's gallery, in order. Only photography and
+    /// design posts carry a gallery; everything else is a single thumbnail.
+    private static func galleryURLs(of post: Submission) -> [URL] {
+        switch post.type {
+        case .photography: return post.photoImageURLs
+        case .design: return post.designImageURLs
+        default: return []
+        }
+    }
+
+    /// Header-only aspect ratios of the gallery images after the first (page 0 is the
+    /// thumbnail, whose shape `headerAspect` already covers).
+    private static func headerAspects(of urls: [URL]) -> [CGFloat] {
+        urls.dropFirst().compactMap { VideoAspectCache.imageAspect(at: $0) }
     }
 
     /// The thumbnail's natural aspect ratio (width ÷ height): the decoded image's if it
@@ -86,15 +108,8 @@ struct HomePostCard: View {
         return 16.0 / 9.0
     }
 
-    /// Local files of every image in the post's gallery, in order. Only photography and
-    /// design posts carry a gallery; everything else is a single thumbnail.
-    private var galleryURLs: [URL] {
-        switch post.type {
-        case .photography: return post.photoImageURLs
-        case .design: return post.designImageURLs
-        default: return []
-        }
-    }
+    /// Local files of every image in the post's gallery, in order.
+    private var galleryURLs: [URL] { Self.galleryURLs(of: post) }
 
     /// Whether this card shows a swipeable carousel rather than a single thumbnail.
     private var hasGallery: Bool { galleryURLs.count > 1 }
@@ -102,23 +117,25 @@ struct HomePostCard: View {
     /// Total pages in the carousel: the thumbnail plus every decoded gallery image.
     private var galleryPageCount: Int { galleryImages.count + 1 }
 
-    /// The shared aspect ratio for every page after the first. It is the ratio of the
-    /// *tallest* gallery image when fitted to the card width (the one that renders
-    /// largest), so each remaining image fits inside the same frame uncropped and the
-    /// card's height doesn't jump between swipes. Falls back to the thumbnail's ratio
-    /// until the gallery has decoded.
-    private var galleryRestAspect: CGFloat {
-        let ratios = galleryImages.compactMap { img -> CGFloat? in
+    /// The one aspect ratio every page of a gallery shares, thumbnail included: the
+    /// lowest width ÷ height across all of the post's images, i.e. the *tallest* image
+    /// when fitted to the card width. Every image fits inside that frame uncropped
+    /// (shorter ones are letterboxed), so the card is the same height on every page and
+    /// swiping never moves the rest of the feed. Decoded sizes are preferred; until the
+    /// gallery has decoded, the header-read sizes stand in, which are the same numbers.
+    private var galleryAspect: CGFloat {
+        let decoded = galleryImages.compactMap { img -> CGFloat? in
             guard img.size.width > 0, img.size.height > 0 else { return nil }
             return img.size.width / img.size.height
         }
-        return ratios.min() ?? thumbnailAspect
+        let rest = decoded.isEmpty ? galleryHeaderAspects : decoded
+        return ([thumbnailAspect] + rest).min() ?? thumbnailAspect
     }
 
-    /// The aspect ratio the media frame is laid out at right now: the thumbnail's own
-    /// ratio on the first page, the shared gallery ratio on every other page.
+    /// The aspect ratio the media frame is laid out at: the shared gallery ratio for a
+    /// multi-image post, otherwise the thumbnail's own.
     private var currentMediaAspect: CGFloat {
-        galleryIndex == 0 ? thumbnailAspect : galleryRestAspect
+        hasGallery ? galleryAspect : thumbnailAspect
     }
 
     /// Re-decodes the gallery whenever the set of files behind it changes.
@@ -211,11 +228,10 @@ struct HomePostCard: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    // The first page keeps the thumbnail's own ratio; swiping on, the frame
-                    // settles at the shared gallery ratio and stays there (see
-                    // `currentMediaAspect`), animating the one-time height change.
+                    // One fixed height per card (see `currentMediaAspect`): a gallery is
+                    // laid out at its tallest image's ratio on every page, so swiping
+                    // through photos of different shapes never resizes the card.
                     .frame(height: cardWidth / currentMediaAspect)
-                    .animation(.default, value: galleryIndex)
                     // Hover preview: the video fades in over the thumbnail once enough of
                     // it is buffered to play without stuttering. It never takes touches,
                     // so tapping still opens the post. A music post has nothing to show —
@@ -393,9 +409,13 @@ struct HomePostCard: View {
                 let urls = Array(galleryURLs.dropFirst())
                 guard !urls.isEmpty else {
                     galleryImages = []
+                    galleryHeaderAspects = []
                     galleryIndex = 0
                     return
                 }
+                // Files that changed after the card was built (e.g. a sync landing on a
+                // recycled cell): fix the frame from the headers now, before the decode.
+                galleryHeaderAspects = Self.headerAspects(of: galleryURLs)
                 let maxPixel = Int(min(2000, cardWidth * UIScreen.main.scale))
                 let decoded = await Task.detached(priority: .userInitiated) {
                     urls.compactMap { HomePostCard.downsampledImage(at: $0, maxPixel: maxPixel) }
@@ -435,80 +455,78 @@ struct HomePostCard: View {
 
             // Title and actions below the media
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
-                    // Title spans the full card width (the action buttons sit on the row
-                    // below it), wrapping to at most two lines before truncating.
+                // Title + credit on the left, action buttons + year/studio credit on the
+                // right. Both columns are top-aligned so the buttons sit beside the title
+                // and the two credits land on the same second row.
+                HStack(alignment: .top) {
                     Button {
                         showProjectDetail = true
                     } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            if showTypeIcon {
-                                Image(systemName: typeIcon)
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                if showTypeIcon {
+                                    Image(systemName: typeIcon)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Text(post.title)
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(.primary)
                             }
 
-                            Text(post.title)
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                                .truncationMode(.tail)
-                                .multilineTextAlignment(.leading)
+                            // The single credit under the title — one rule per post type
+                            // (see `creditLine`), e.g. "Directed by …" or "Shot by …".
+                            if let credit = creditLine {
+                                creditLineView(credit)
+                            }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
 
-                    // Bottom-aligned so the "Directed by" credit on the left lands on the
-                    // same row as the year/studio credit under the buttons on the right.
-                    HStack(alignment: .bottom) {
-                        // The single credit under the title — one rule per post type
-                        // (see `creditLine`), e.g. "Directed by …" or "Shot by …".
-                        if let credit = creditLine {
-                            creditLineView(credit)
+                    Spacer()
+
+                    // Buttons on top; the studio credit sits directly beneath them.
+                    VStack(alignment: .trailing, spacing: 4) {
+                        HStack(spacing: 8) { // Reduced from 16 to 8
+                            Button {
+                                store.toggleLike(for: post)
+                            } label: {
+                                // Like counts are private: only credited collaborators see them
+                                // on their own portfolio page, never on the home feed.
+                                Image(systemName: store.isLiked(post) ? "heart.fill" : "heart")
+                                    .foregroundStyle(store.isLiked(post) ? .red : .primary)
+                                    .font(.system(size: 21))
+                            }
+                            Button {
+                                showCollectionPicker = true
+                            } label: {
+                                Image(systemName: store.isInAnyCollection(post) ? "bookmark.fill" : "bookmark")
+                                    .font(.system(size: 21))
+                                    .foregroundStyle(iconColor)
+                            }
+                            // Report lives in the post detail view only; the feed keeps
+                            // like + save + send so the title row has more room.
+                            Button {
+                                showSendMessage = true
+                            } label: {
+                                Image(systemName: "paperplane")
+                                    .font(.system(size: 21))
+                                    .foregroundStyle(iconColor)
+                            }
                         }
+                        // Pin the button row to the title's line height so it sits near the
+                        // top edge and the studio credit below lines up with the "Directed
+                        // by" credit on the left.
+                        .frame(height: 22)
 
-                        Spacer()
-
-                        // Buttons on top; the studio credit sits directly beneath them.
-                        VStack(alignment: .trailing, spacing: 4) {
-                            HStack(spacing: 8) { // Reduced from 16 to 8
-                                Button {
-                                    store.toggleLike(for: post)
-                                } label: {
-                                    // Like counts are private: only credited collaborators see them
-                                    // on their own portfolio page, never on the home feed.
-                                    Image(systemName: store.isLiked(post) ? "heart.fill" : "heart")
-                                        .foregroundStyle(store.isLiked(post) ? .red : .primary)
-                                        .font(.system(size: 21))
-                                }
-                                Button {
-                                    showCollectionPicker = true
-                                } label: {
-                                    Image(systemName: store.isInAnyCollection(post) ? "bookmark.fill" : "bookmark")
-                                        .font(.system(size: 21))
-                                        .foregroundStyle(iconColor)
-                                }
-                                // Report lives in the post detail view only; the feed keeps
-                                // like + save + send so the title row has more room.
-                                Button {
-                                    showSendMessage = true
-                                } label: {
-                                    Image(systemName: "paperplane")
-                                        .font(.system(size: 21))
-                                        .foregroundStyle(iconColor)
-                                }
-                            }
-                            .frame(height: 22)
-
-                            // Release year (and studio, if any) — same style as the director
-                            // credit, mirrored right. e.g. "2025 • Collective".
-                            if let credit = trailingCredit {
-                                Text(credit)
-                                    .font(.system(size: 14, weight: .regular))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
+                        // Release year (and studio, if any) — same style as the director
+                        // credit, mirrored right. e.g. "2025 • Collective".
+                        if let credit = trailingCredit {
+                            Text(credit)
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                 }
@@ -658,8 +676,9 @@ struct HomePostCard: View {
     }
 
     /// The swipeable gallery for a photography/design post with several images. Page 0 is
-    /// the thumbnail at its own aspect ratio; the rest share `galleryRestAspect` (the
-    /// tallest image's), so each fits uncropped inside one stable frame. The surrounding
+    /// the thumbnail; every page, including it, is fitted inside the one frame sized by
+    /// `galleryAspect` (the tallest image's ratio), so nothing is cropped and the card's
+    /// height never changes while swiping. The surrounding
     /// Button still opens the post on tap — the pager's pan only claims horizontal swipes,
     /// and the feed's vertical scroll is untouched.
     private var galleryPager: some View {
@@ -778,9 +797,7 @@ struct HomePostCard: View {
     /// `filmConfirmedNoVideo` drives the "Coming Soon" badge. Transient/errored lookups
     /// leave the badge off rather than mislabel the post.
     private func resolveDurationFromStream() async {
-        let (resolution, _) = await CloudKitManager.shared.streamResolutionDetailed(
-            submissionID: post.id, type: post.type
-        )
+        let (resolution, _) = await CloudKitManager.shared.streamResolutionDetailed(for: post)
         switch resolution {
         case .streaming(let url):
             let seconds = await getVideoDuration(from: url)

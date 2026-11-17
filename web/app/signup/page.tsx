@@ -9,11 +9,10 @@ export default function SignUp() {
   return (
     <AuthShell
       title="Create Your Account"
-      subtitle="Join student creatives and industry professionals on Nexus."
       footer={
         <>
           Already have an account?{" "}
-          <Link href="/signin" className="font-semibold text-brand hover:underline">Sign in</Link>
+          <Link href="/signin" className="font-semibold text-[var(--auth-line)] underline underline-offset-4 hover:opacity-80">Sign in</Link>
         </>
       }
     >

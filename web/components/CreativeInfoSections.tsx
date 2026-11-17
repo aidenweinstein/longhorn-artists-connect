@@ -1,7 +1,17 @@
 "use client";
 
-import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { GENDERS, RESUME_CATEGORIES, UNIONS, type CreativeDetails, type ResumeCredit } from "@/lib/profileStyle";
+import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import {
+  GENDERS,
+  GENRE_OPTIONS,
+  INSTRUMENT_OPTIONS,
+  RESUME_CATEGORIES,
+  STREAMING_SERVICES,
+  UNIONS,
+  splitList,
+  type CreativeDetails,
+  type ResumeCredit,
+} from "@/lib/profileStyle";
 
 /*
  * The Actor Info, Filmmaker Info and Musician Info sections of Edit profile.
@@ -23,7 +33,7 @@ export function appendCreative(form: FormData, { details: d, ageMin, ageMax }: C
   const a = d.actor;
   form.set("ageMin", ageMin);
   form.set("ageMax", ageMax);
-  for (const k of ["gender", "height", "ethnicAppearance", "hair", "eyes", "union", "basedIn", "languages", "specialSkills", "training"] as const) {
+  for (const k of ["gender", "height", "ethnicAppearance", "hair", "eyes", "union", "languages", "specialSkills", "training"] as const) {
     form.set(k, a[k]);
   }
   form.set("reelPostID", a.reelPostID ?? "");
@@ -36,15 +46,14 @@ export function appendCreative(form: FormData, { details: d, ageMin, ageMax }: C
     form.append("resumeYear", c.year);
   }
   const m = d.musician;
-  form.set("artistName", m.artistName);
+  form.set("soloName", m.soloName);
+  form.set("bandName", m.bandName);
   form.set("instruments", m.instruments);
   form.set("genres", m.genres);
-  if (m.availableForGigs) form.set("availableForGigs", "on");
-  if (m.availableForSessions) form.set("availableForSessions", "on");
-  if (m.availableForScoring) form.set("availableForScoring", "on");
-  form.set("specialties", d.filmmaker.specialties);
+  for (const { name } of STREAMING_SERVICES) form.set(`stream:${name}`, m.streamingLinks[name] ?? "");
+  form.set("studios", d.filmmaker.studios);
+  form.set("certifications", d.filmmaker.certifications);
   form.set("gear", d.filmmaker.gear);
-  if (d.filmmaker.openToCrew) form.set("openToCrew", "on");
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -80,6 +89,73 @@ function Sub({ title, note, children }: { title: string; note?: string; children
   );
 }
 
+/** A row that opens a panel from the right, showing what's chosen so far. */
+function PanelRow({ label, value, onOpen }: { label: string; value: string; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full items-center gap-3 rounded-xl border border-border bg-background px-3 py-2.5 text-left text-sm hover:bg-surface"
+    >
+      <span className="font-medium">{label}</span>
+      <span className="ml-auto min-w-0 truncate text-muted">{value || "None"}</span>
+      <span aria-hidden className="text-muted">›</span>
+    </button>
+  );
+}
+
+/** A page that slides in from the right over the form. Escape or Done closes it. */
+function SidePanel({ title, note, onClose, children }: { title: string; note?: string; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0 bg-black/40" />
+      <div role="dialog" aria-modal="true" aria-label={title} className="relative flex h-full w-full max-w-md flex-col bg-background shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <h3 className="text-lg font-bold">{title}</h3>
+          <button type="button" onClick={onClose} className="rounded-full bg-brand px-4 py-1.5 text-sm font-semibold text-white">
+            Done
+          </button>
+        </div>
+        <div className="flex-1 space-y-4 overflow-y-auto p-5">
+          {note && <p className="text-sm text-muted">{note}</p>}
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Tappable chips for a comma-separated list. Values not in `options` (typed in older builds) stay as selected chips. */
+function ChipPicker({ options, value, onChange }: { options: string[]; value: string; onChange: (v: string) => void }) {
+  const selected = splitList(value);
+  const has = (chip: string) => selected.some((x) => x.toLowerCase() === chip.toLowerCase());
+  const chips = [...options, ...selected.filter((x) => !options.some((o) => o.toLowerCase() === x.toLowerCase()))];
+  const toggle = (chip: string) =>
+    onChange((has(chip) ? selected.filter((x) => x.toLowerCase() !== chip.toLowerCase()) : [...selected, chip]).join(", "));
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {chips.map((chip) => (
+        <button
+          key={chip}
+          type="button"
+          aria-pressed={has(chip)}
+          onClick={() => toggle(chip)}
+          className={`rounded-full px-3 py-1.5 text-xs font-medium ${has(chip) ? "bg-brand text-white" : "bg-surface hover:bg-border"}`}
+        >
+          {chip}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+type Panel = "streaming" | "instruments" | "genres";
+
 export default function CreativeInfoSections({
   draft,
   setDraft,
@@ -106,6 +182,10 @@ export default function CreativeInfoSections({
   const setCredit = (i: number, patch: Partial<ResumeCredit>) =>
     setActor("resume", d.actor.resume.map((c, j) => (j === i ? { ...c, ...patch } : c)));
   const digits = (v: string, max: number) => v.replace(/\D/g, "").slice(0, max);
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const close = () => setPanel(null);
+  // A union saved before the list changed (e.g. "SAG-AFTRA") stays selectable until they pick another.
+  const unions = d.actor.union && !UNIONS.includes(d.actor.union) ? [...UNIONS, d.actor.union] : UNIONS;
 
   return (
     <>
@@ -137,14 +217,6 @@ export default function CreativeInfoSections({
         </Sub>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <span className="mb-1.5 block text-sm font-medium">Playable age</span>
-            <div className="flex items-center gap-2">
-              <input aria-label="Youngest playable age" className={field} inputMode="numeric" placeholder="18" value={draft.ageMin} onChange={(e) => setDraft((c) => ({ ...c, ageMin: digits(e.target.value, 2) }))} />
-              <span className="text-muted">–</span>
-              <input aria-label="Oldest playable age" className={field} inputMode="numeric" placeholder="25" value={draft.ageMax} onChange={(e) => setDraft((c) => ({ ...c, ageMax: digits(e.target.value, 2) }))} />
-            </div>
-          </div>
           <Field label="Gender">
             <select className={field} value={d.actor.gender} onChange={(e) => setActor("gender", e.target.value)}>
               <option value="">Not set</option>
@@ -153,6 +225,14 @@ export default function CreativeInfoSections({
               ))}
             </select>
           </Field>
+          <div>
+            <span className="mb-1.5 block text-sm font-medium">Playable age</span>
+            <div className="flex items-center gap-2">
+              <input aria-label="Youngest playable age" className={field} inputMode="numeric" placeholder="18" value={draft.ageMin} onChange={(e) => setDraft((c) => ({ ...c, ageMin: digits(e.target.value, 2) }))} />
+              <span className="text-muted">–</span>
+              <input aria-label="Oldest playable age" className={field} inputMode="numeric" placeholder="25" value={draft.ageMax} onChange={(e) => setDraft((c) => ({ ...c, ageMax: digits(e.target.value, 2) }))} />
+            </div>
+          </div>
           <Field label="Height">
             <input className={field} maxLength={40} placeholder={`5'9"`} value={d.actor.height} onChange={(e) => setActor("height", e.target.value)} />
           </Field>
@@ -168,13 +248,10 @@ export default function CreativeInfoSections({
           <Field label="Union">
             <select className={field} value={d.actor.union} onChange={(e) => setActor("union", e.target.value)}>
               <option value="">Not set</option>
-              {UNIONS.map((u) => (
+              {unions.map((u) => (
                 <option key={u}>{u}</option>
               ))}
             </select>
-          </Field>
-          <Field label="Based in">
-            <input className={field} maxLength={80} placeholder="Austin, TX" value={d.actor.basedIn} onChange={(e) => setActor("basedIn", e.target.value)} />
           </Field>
         </div>
 
@@ -224,47 +301,62 @@ export default function CreativeInfoSections({
         </Sub>
       </Section>
 
-      <Section id="filmmaker-info" title="Filmmaker Info" note="Your filmography and stills come from what you're credited on. Add what you specialize in and shoot with.">
-        <Field label="Specialties">
-          <textarea className={field} rows={2} maxLength={400} placeholder="Handheld docs, color grading" value={d.filmmaker.specialties} onChange={(e) => setFilmmaker("specialties", e.target.value)} />
+      <Section id="filmmaker-info" title="Filmmaker Info" note="Your filmography and stills come from what you're credited on.">
+        <Field label="Studio(s)">
+          <textarea className={field} rows={2} maxLength={400} value={d.filmmaker.studios} onChange={(e) => setFilmmaker("studios", e.target.value)} />
+        </Field>
+        <Field label="Software">
+          <textarea className={field} rows={2} maxLength={400} placeholder="Adobe Premiere Pro, Avid Media Composer" value={d.filmmaker.certifications} onChange={(e) => setFilmmaker("certifications", e.target.value)} />
         </Field>
         <Field label="Gear">
           <textarea className={field} rows={2} maxLength={400} value={d.filmmaker.gear} onChange={(e) => setFilmmaker("gear", e.target.value)} />
         </Field>
-        <label className="flex items-center gap-3 text-sm font-medium">
-          <input type="checkbox" checked={d.filmmaker.openToCrew} onChange={(e) => setFilmmaker("openToCrew", e.target.checked)} className="h-4 w-4 accent-[var(--brand)]" />
-          Open to joining crews
-        </label>
       </Section>
 
-      <Section id="musician-info" title="Musician Info" note="Releases under this artist name, or crediting you, make up your discography.">
+      <Section id="musician-info" title="Musician Info" note="Releases under your solo act or band name, or crediting you, make up your discography.">
+        <PanelRow
+          label="Streaming pages"
+          value={STREAMING_SERVICES.filter(({ name }) => d.musician.streamingLinks[name]).map(({ name }) => name).join(", ")}
+          onOpen={() => setPanel("streaming")}
+        />
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Artist or band name">
-            <input className={field} maxLength={80} value={d.musician.artistName} onChange={(e) => setMusician("artistName", e.target.value)} />
+          <Field label="Solo act name">
+            <input className={field} maxLength={80} value={d.musician.soloName} onChange={(e) => setMusician("soloName", e.target.value)} />
           </Field>
-          <Field label="Genres">
-            <input className={field} maxLength={200} value={d.musician.genres} onChange={(e) => setMusician("genres", e.target.value)} />
-          </Field>
-          <Field label="Instruments">
-            <input className={field} maxLength={200} value={d.musician.instruments} onChange={(e) => setMusician("instruments", e.target.value)} />
+          <Field label="Band name">
+            <input className={field} maxLength={80} value={d.musician.bandName} onChange={(e) => setMusician("bandName", e.target.value)} />
           </Field>
         </div>
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Available for</p>
-          {(
-            [
-              ["availableForGigs", "Live gigs"],
-              ["availableForSessions", "Session work"],
-              ["availableForScoring", "Scoring films"],
-            ] as const
-          ).map(([key, label]) => (
-            <label key={key} className="flex items-center gap-3 text-sm">
-              <input type="checkbox" checked={d.musician[key]} onChange={(e) => setMusician(key, e.target.checked)} className="h-4 w-4 accent-[var(--brand)]" />
-              {label}
-            </label>
-          ))}
-        </div>
+        <PanelRow label="Instruments" value={splitList(d.musician.instruments).join(", ")} onOpen={() => setPanel("instruments")} />
+        <PanelRow label="Genres" value={splitList(d.musician.genres).join(", ")} onOpen={() => setPanel("genres")} />
       </Section>
+
+      {panel === "streaming" && (
+        <SidePanel title="Streaming pages" note="Paste the link to your Spotify page (and any others); they appear as buttons on your profile." onClose={close}>
+          {STREAMING_SERVICES.map(({ name, placeholder }) => (
+            <Field key={name} label={name}>
+              <input
+                className={field}
+                inputMode="url"
+                maxLength={300}
+                placeholder={placeholder}
+                value={d.musician.streamingLinks[name] ?? ""}
+                onChange={(e) => setMusician("streamingLinks", { ...d.musician.streamingLinks, [name]: e.target.value })}
+              />
+            </Field>
+          ))}
+        </SidePanel>
+      )}
+      {panel === "instruments" && (
+        <SidePanel title="Instruments" note="Everything you can play." onClose={close}>
+          <ChipPicker options={INSTRUMENT_OPTIONS} value={d.musician.instruments} onChange={(v) => setMusician("instruments", v)} />
+        </SidePanel>
+      )}
+      {panel === "genres" && (
+        <SidePanel title="Genres" onClose={close}>
+          <ChipPicker options={GENRE_OPTIONS} value={d.musician.genres} onChange={(v) => setMusician("genres", v)} />
+        </SidePanel>
+      )}
     </>
   );
 }

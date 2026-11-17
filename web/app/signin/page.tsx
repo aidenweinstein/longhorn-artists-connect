@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import AuthShell from "@/components/AuthShell";
+import DevSkipSignIn from "@/components/DevSkipSignIn";
 import SignInForm from "./SignInForm";
 
 export const metadata: Metadata = { title: "Sign in · Nexus" };
@@ -13,11 +14,13 @@ export default function SignIn() {
       footer={
         <>
           New to Nexus?{" "}
-          <Link href="/signup" className="font-semibold text-brand hover:underline">Create an account</Link>
+          <Link href="/signup" className="font-semibold text-[var(--auth-line)] underline underline-offset-4 hover:opacity-80">Create an account</Link>
         </>
       }
     >
       <SignInForm />
+      {/* Testing shortcut; renders nothing outside `npm run dev`. */}
+      <DevSkipSignIn />
     </AuthShell>
   );
 }

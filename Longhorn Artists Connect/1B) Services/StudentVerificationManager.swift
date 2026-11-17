@@ -122,8 +122,9 @@ final class StudentVerificationManager {
 
     /// Base URL of the deployed Worker, e.g. "https://lac-verification.<sub>.workers.dev".
     /// Supplied the same way as the CloudKit tokens: Secrets.xcconfig → Info.plist,
-    /// with a bundled Secrets.plist fallback.
-    private static var baseURL: URL? {
+    /// with a bundled Secrets.plist fallback. Shared with `WebsitePeopleList`, which
+    /// reads the same service's public people list.
+    static var baseURL: URL? {
         let key = "VerificationServiceBaseURL"
 
         if let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,

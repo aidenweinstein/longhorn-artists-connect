@@ -51,6 +51,11 @@ The messaging system for Longhorn Artists Connect uses CloudKit to provide secur
   - `attachmentType` (String) - Optional
   - `attachment` (Asset) - Optional
   - `attachmentFileName` (String) - Optional
+  - `senderName`, `messagePreview` (String) - substituted into the push banner
+  - Group chats (added 2026-11-17):
+    - `recipientUserIDs` (String List, Queryable) - every member other than the sender; empty on 1:1 messages
+    - `readByUserIDs` (String List) - members who have opened it (`isRead` can't be per-person)
+    - `groupName` (String) - the banner title; `recipientUserID` is `""` on group messages
 
 #### Conversation Record Type
 - **Record Type Name**: `Conversation`
@@ -60,6 +65,13 @@ The messaging system for Longhorn Artists Connect uses CloudKit to provide secur
   - `lastMessageTimestamp` (Date/Time, Sortable)
   - `lastMessagePreview` (String)
   - `unreadCount` (Int64)
+  - Group chats (added 2026-11-17):
+    - `isGroup` (Int64, Queryable) - 1 for a group
+    - `participantUserIDs` (String List, Queryable) - every member, the creator included
+    - `groupName` (String) - Optional; unnamed groups show their members' first names
+    - `createdByUserID` (String)
+    - On a group, `participant1UserID` is the creator and `participant2UserID` is `""`
+      (older builds require both fields to decode the record)
 
 ### 3. Set Up Indexes
 
@@ -68,12 +80,21 @@ For optimal performance, create the following indexes:
 **Message Indexes:**
 - `conversationID` (Queryable)
 - `recipientUserID` (Queryable)
+- `recipientUserIDs` (Queryable) - group pushes: `recipientUserIDs CONTAINS <me>`
 - `timestamp` (Sortable)
 
 **Conversation Indexes:**
 - `participant1UserID` (Queryable)
 - `participant2UserID` (Queryable)
+- `participantUserIDs` (Queryable) - group threads: `participantUserIDs CONTAINS <me>`
+- `isGroup` (Queryable)
 - `lastMessageTimestamp` (Sortable)
+
+> Group chats are loaded by a second query and pushed by two extra subscriptions
+> (`GroupMessageSubscription`, `GroupConversationSubscription`), kept separate from
+> the 1:1 ones so a schema without the group fields only loses groups. In Development
+> the fields are created on first use; add the Queryable indexes by hand, then deploy
+> to Production before shipping.
 
 ### 4. Configure Security Roles
 

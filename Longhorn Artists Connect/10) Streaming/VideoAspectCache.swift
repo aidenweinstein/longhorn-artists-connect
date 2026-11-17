@@ -95,9 +95,19 @@ final class VideoAspectCache {
     /// The thumbnail's pixel width ÷ height, read from the image header (no decode).
     /// Honors an EXIF orientation that turns the image on its side.
     static func thumbnailAspect(_ data: Data?) -> CGFloat? {
-        guard let data,
-              let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+        guard let data, let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return aspect(of: source)
+    }
+
+    /// The pixel width ÷ height of the image file at `url`, read from its header (no
+    /// decode). Honors an EXIF orientation that turns the image on its side.
+    static func imageAspect(at url: URL) -> CGFloat? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return aspect(of: source)
+    }
+
+    private static func aspect(of source: CGImageSource) -> CGFloat? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
               let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
               width > 0, height > 0 else { return nil }

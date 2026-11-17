@@ -459,6 +459,18 @@ struct Submission: Identifiable, Equatable, Codable {
     /// Optional so the on-disk `[Submission]` cache still decodes without it.
     var videoCrop: String?
 
+    /// Where the post's main media plays from when it lives outside CloudKit: a big
+    /// website upload in Cloudflare R2 (films, reels and designs: the video; music: the
+    /// audio), linked from the record's `<field>URL`. The player streams straight from
+    /// it, so no CloudKit lookup or download is needed. Nil for app uploads. Optional so
+    /// the on-disk cache still decodes without it.
+    var mediaLinkURL: URL?
+    /// Films: the trailer's R2 link (`filmTrailerURL`), when uploaded from the website.
+    var trailerLinkURL: URL?
+    /// Music EP/Album posts: R2 links for the additional tracks (`musicTracksURLs`), in
+    /// running order, when uploaded from the website. Optional for the cache's sake.
+    var musicTrackLinkURLs: [URL]?
+
     // Event-specific fields
     var eventStartDate: Date?
     var eventEndDate: Date?

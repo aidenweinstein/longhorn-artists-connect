@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { thumbSrc } from "@/lib/smallImage";
+import PostLink from "./PostLink";
 import Timecode from "./Timecode";
 import type { Account } from "@/lib/cloudkit/content";
 import type { NexusEvent } from "@/lib/discoverContent";
@@ -10,17 +12,26 @@ import {
   hasFilmmakerInfo,
   hasMusicianInfo,
   matchesPerson,
-  musicianAvailability,
   PROFILE_STYLES,
+  actNames,
+  splitList,
+  streamingLinks,
+  emptyDetails,
+  suggestedStyle,
   type CreativeProfile,
   type ProfileStyle,
 } from "@/lib/profileStyle";
 
 /*
  * The Actor Info, Filmmaker Info and Musician Info a person filled in under Edit
- * profile, shown between the header and their Work grid:
- *   Actor      — like Actors Access: headshot beside the stats sheet, reel, resume, skills.
- *   Filmmaker  — like IMDb: filmography grouped by job, newest first, then a grid of stills.
+ * profile. It renders in two parts (the `part` prop):
+ *   "info"  — a compact card per type, beside the details: Actor stats; Filmmaker studios,
+ *             software and gear; Musician names, instruments, genres and streaming
+ *             pages. Only cards with something filled in show, Actor always first.
+ *   "lists" — reel and resume, filmography and stills, shows and songs, below the Work grid.
+ * By type:
+ *   Actor      — like Actors Access: headshot and skills, reel, typed-in resume.
+ *   Filmmaker  — like IMDb: filmography grouped by job, newest first.
  *   Musician   — like Spotify: upcoming shows, songs, albums & EPs.
  * Their base profile type comes first and always shows in full; the other two show
  * once something is filled in, without their empty lists.
@@ -38,9 +49,9 @@ function H({ children }: { children: React.ReactNode }) {
 }
 
 /** Upcoming events this person is on: posted, in the lineup, or under their artist name. */
-export function upcomingShowsFor(events: NexusEvent[], person: { name: string; profileID: string }, artistName = ""): NexusEvent[] {
+export function upcomingShowsFor(events: NexusEvent[], person: { name: string; profileID: string }, acts: string[] = []): NexusEvent[] {
   const now = Date.now() - 6 * 60 * 60 * 1000;
-  const names = [person.name, artistName].map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const names = [person.name, ...acts].map((x) => x.trim().toLowerCase()).filter(Boolean);
   return events
     .filter((e) => (e.endsAt ?? e.startsAt ?? 0) >= now)
     .filter((e) => matchesPerson(e.postedBy ?? "", e.postedByProfileID, person) || (e.lineup ?? []).some((l) => names.some((n) => l.toLowerCase().includes(n))))
@@ -53,6 +64,7 @@ export default function StyledProfile({
   creative,
   events,
   isOwn = false,
+  part,
 }: {
   account: Account;
   /** Posts this person is credited on. */
@@ -61,52 +73,112 @@ export default function StyledProfile({
   /** Every Discover event, to find their upcoming shows. */
   events: NexusEvent[];
   isOwn?: boolean;
+  /** "info" sits to the right of the details (under them on a narrow window); "lists" goes under the Work grid. */
+  part: "info" | "lists";
 }) {
-  if (!creative) {
-    if (!isOwn) return null;
-    return (
-      <div className="mt-8 rounded-2xl border border-dashed border-border p-6">
-        <p className="font-semibold">Add your actor, filmmaker or musician info</p>
-        <p className="mt-1 text-sm text-muted">Fill in any of the three in Edit profile and it shows here.</p>
-        <Link
-          href="/portfolio/edit#actor-info"
-          className="mt-3 inline-block rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110"
-        >
-          Edit profile
-        </Link>
-      </div>
-    );
-  }
+  if (part === "info") return creative ? <InfoCards creative={creative} isOwn={isOwn} /> : null;
 
+  // The lists show for everyone, including people who never filled in any Info:
+  // filmography and songs come from what they're credited on, so they need no setup.
   const person = { name: account.name, profileID: account.profileID };
-  const d = creative.details;
+  const base = creative?.style ?? suggestedStyle(account.roles);
+  const profile: CreativeProfile = creative ?? { userID: account.profileID, style: base ?? "Filmmaker", details: emptyDetails(), updatedAt: 0 };
+  const d = profile.details;
   const has: Record<ProfileStyle, boolean> = {
-    Actor: hasActorInfo(d.actor, creative.headshotUrl),
-    Filmmaker: hasFilmmakerInfo(d.filmmaker),
-    Musician: hasMusicianInfo(d.musician),
+    Actor: hasActorInfo(d.actor, profile.headshotUrl),
+    Filmmaker: hasFilmmakerInfo(d.filmmaker) || posts.some((p) => p.category !== "music" && creditsFor(p, person).length > 0),
+    Musician: hasMusicianInfo(d.musician) || posts.some((p) => p.category === "music"),
   };
-  // Base type first, then whichever others are filled in.
-  const shown = [creative.style, ...PROFILE_STYLES.filter((s) => s !== creative.style && has[s])];
+  // Base type first (if they have one), then whichever others have something to show.
+  const shown = [...(base ? [base] : []), ...PROFILE_STYLES.filter((s) => s !== base && has[s])];
+
   return (
-    <div className="mt-8 space-y-12">
+    <>
       {shown.map((style) => {
-        const full = style === creative.style;
+        // Empty lists with "add this" hints only for a saved base type.
+        const full = !!creative && style === creative.style;
         return (
-          <div key={style} className="space-y-10">
-            <div className="flex items-center justify-between gap-3 border-b border-border pb-2">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted">{style} Info</p>
-              {isOwn && (
-                <Link href={`/portfolio/edit#${style.toLowerCase()}-info`} className="text-sm font-semibold text-brand hover:underline">
-                  Edit
-                </Link>
-              )}
-            </div>
-            {style === "Actor" && <ActorProfile creative={creative} posts={posts} person={person} isOwn={isOwn} name={account.name} full={full} />}
-            {style === "Filmmaker" && <FilmmakerProfile creative={creative} posts={posts} person={person} isOwn={isOwn} full={full} />}
-            {style === "Musician" && <MusicianProfile creative={creative} posts={posts} person={person} events={events} isOwn={isOwn} full={full} />}
+          <div key={style} className="space-y-10 empty:hidden">
+            {style === "Actor" && <ActorProfile creative={profile} posts={posts} person={person} isOwn={isOwn} name={account.name} full={full} />}
+            {style === "Filmmaker" && <FilmmakerProfile posts={posts} person={person} isOwn={isOwn} full={full} />}
+            {style === "Musician" && <MusicianProfile creative={profile} posts={posts} person={person} events={events} isOwn={isOwn} full={full} />}
           </div>
         );
       })}
+    </>
+  );
+}
+
+// MARK: - Info cards (beside the details)
+
+function InfoCards({ creative, isOwn }: { creative: CreativeProfile; isOwn: boolean }) {
+  const { actor, filmmaker, musician } = creative.details;
+  const filled = (rows: [string, string][]) => rows.filter(([, v]) => v.trim()).map(([label, value]) => ({ label, value }));
+  const links = streamingLinks(musician);
+  const cards = [
+    { style: "Actor", rows: actorStats(actor), links: [] },
+    {
+      style: "Filmmaker",
+      rows: filled([
+        ["Studio(s)", filmmaker.studios],
+        ["Software", filmmaker.certifications],
+        ["Gear", filmmaker.gear],
+      ]),
+      links: [],
+    },
+    {
+      style: "Musician",
+      rows: filled([
+        ["Solo act", musician.soloName],
+        ["Band", musician.bandName],
+        ["Instruments", splitList(musician.instruments).join(", ")],
+        ["Genres", splitList(musician.genres).join(", ")],
+      ]),
+      links,
+    },
+  ].filter((c) => c.rows.length > 0 || c.links.length > 0);
+  if (cards.length === 0) return null;
+
+  return (
+    // Each card is only as wide as its text (w-fit), never the full column.
+    <div className="flex flex-col items-start gap-2">
+      {cards.map((c) => (
+        <div key={c.style} className="w-fit max-w-full rounded-xl border border-border bg-surface/50 px-3.5 py-2.5">
+          <div className="mb-1 flex items-center justify-between gap-6">
+            <p className="text-xs font-semibold uppercase tracking-wider text-brand">{c.style}</p>
+            {isOwn && (
+              <Link href={`/portfolio/edit#${c.style.toLowerCase()}-info`} className="text-xs font-semibold text-muted hover:text-foreground">
+                Edit
+              </Link>
+            )}
+          </div>
+          {c.rows.length > 0 && (
+            <dl className="grid grid-cols-[auto_auto] justify-start gap-x-4 gap-y-0.5 text-sm">
+              {c.rows.map((r) => (
+                <div key={r.label} className="contents">
+                  <dt className="text-muted">{r.label}</dt>
+                  <dd className="whitespace-pre-line font-medium">{r.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {c.links.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {c.links.map((l) => (
+                <a
+                  key={l.service}
+                  href={l.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-full bg-brand px-3 py-1 text-xs font-semibold text-white hover:brightness-110"
+                >
+                  {l.service}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -118,10 +190,7 @@ type Person = { name: string; profileID: string };
 function ActorProfile({
   creative,
   posts,
-  person,
-  isOwn,
   name,
-  full,
 }: {
   creative: CreativeProfile;
   posts: Post[];
@@ -131,29 +200,11 @@ function ActorProfile({
   full: boolean;
 }) {
   const a = creative.details.actor;
-  const stats = actorStats(a);
   const reel = a.reelPostID ? posts.find((p) => p.id === a.reelPostID) : undefined;
 
-  // Resume: Nexus roles (cast credits, or any credit on a Performance) plus typed-in ones.
+  // Resume: only the credits typed in under Edit profile. Nothing is added automatically.
   type Line = { category: string; project: string; role: string; company: string; year: string; href?: string };
   const lines: Line[] = [];
-  for (const post of posts) {
-    const mine = creditsFor(post, person);
-    const acting = mine.filter((m) => m.group === "Cast" || post.category === "performance");
-    if (!acting.length) continue;
-    const director = post.details?.creditGroups.flatMap((g) => g.credits).find((c) => c.role.trim().toLowerCase() === "director")?.name ?? "";
-    lines.push({
-      category: post.category === "performance" ? "Performance" : "Film",
-      project: post.title,
-      role: acting
-        .map((m) => m.credit.role)
-        .filter(Boolean)
-        .join(", "),
-      company: director,
-      year: year(post),
-      href: `/post/${post.id}`,
-    });
-  }
   for (const c of a.resume) lines.push({ category: c.category, project: c.project, role: c.role, company: c.company, year: c.year });
   const order = ["Film", "Television", "Theatre", "Performance", "Commercial", "New Media", "Other"];
   const categories = [
@@ -166,30 +217,17 @@ function ActorProfile({
     ["Training", a.training],
   ].filter(([, v]) => v.trim());
 
+  // The stats are on the Actor card beside the details; headshot and skills lead this section.
   return (
     <>
-      <section className="grid gap-6 sm:grid-cols-[12rem_minmax(0,1fr)] lg:grid-cols-[14rem_minmax(0,1fr)_minmax(0,1.2fr)]">
-        {creative.headshotUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={creative.headshotUrl} alt={`${name} headshot`} className="aspect-[3/4] w-full rounded-lg object-cover" />
-        ) : (
-          <div className="flex aspect-[3/4] w-full items-center justify-center rounded-lg bg-surface text-sm text-muted">No headshot</div>
-        )}
-        <div>
-          {stats.length === 0 ? (
-            <p className="text-sm text-muted">{isOwn ? "Add your age range, height and more with Edit." : "No details yet."}</p>
-          ) : (
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-              {stats.map((s) => (
-                <div key={s.label} className="contents">
-                  <dt className="text-muted">{s.label}</dt>
-                  <dd className="font-medium">{s.value}</dd>
-                </div>
-              ))}
-            </dl>
+      {(creative.headshotUrl || extras.length > 0) && (
+        <section className="flex gap-5">
+          {creative.headshotUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={creative.headshotUrl} alt={`${name} headshot`} className="aspect-[3/4] w-32 shrink-0 self-start rounded-lg object-cover" />
           )}
           {extras.length > 0 && (
-            <div className="mt-5 space-y-3 lg:hidden">
+            <div className="min-w-0 flex-1 space-y-3">
               {extras.map(([label, value]) => (
                 <div key={label}>
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</p>
@@ -198,40 +236,28 @@ function ActorProfile({
               ))}
             </div>
           )}
-        </div>
-        <div className="hidden space-y-4 lg:block">
-          {extras.map(([label, value]) => (
-            <div key={label}>
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted">{label}</p>
-              <p className="whitespace-pre-line text-sm">{value}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
+        </section>
+      )}
       {reel && (
         <section>
           <H>Reel</H>
-          <Link href={`/post/${reel.id}`} className="group relative block aspect-video max-w-3xl overflow-hidden rounded-xl bg-surface">
+          <PostLink postID={reel.id} mediaUrl={reel.videoUrl ?? reel.audioUrl} className="group relative block aspect-video max-w-3xl overflow-hidden rounded-xl bg-surface">
             {reel.thumbnailUrl && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={reel.thumbnailUrl} alt="" className="h-full w-full object-cover transition group-hover:scale-[1.02]" />
+              <img src={thumbSrc(reel, 960)} alt="" className="h-full w-full object-cover transition group-hover:scale-[1.02]" />
             )}
             <span className="absolute inset-0 flex items-center justify-center">
               <span className="flex h-16 w-16 items-center justify-center rounded-full bg-black/60 text-2xl text-white">▶</span>
             </span>
             <span className="absolute bottom-3 left-3 rounded-full bg-black/60 px-3 py-1 text-xs font-semibold text-white">{reel.title}</span>
             {(reel.duration || reel.videoUrl) && <Timecode seconds={reel.duration} src={reel.videoUrl} />}
-          </Link>
+          </PostLink>
         </section>
       )}
 
-      {(full || lines.length > 0) && (
+      {lines.length > 0 && (
         <section>
           <H>Resume</H>
-          {lines.length === 0 && (
-            <p className="text-sm text-muted">{isOwn ? "Roles you're credited for on Nexus appear here. Add others with Edit." : "No credits yet."}</p>
-          )}
           <div className="space-y-6">
             {categories.map((cat) => (
               <div key={cat}>
@@ -269,19 +295,16 @@ function ActorProfile({
 // MARK: - Filmmaker (IMDb)
 
 function FilmmakerProfile({
-  creative,
   posts,
   person,
   isOwn,
   full,
 }: {
-  creative: CreativeProfile;
   posts: Post[];
   person: Person;
   isOwn: boolean;
   full: boolean;
 }) {
-  const f = creative.details.filmmaker;
   const groups = new Map<string, { role: string; items: { post: Post; note: string }[] }>();
   // Screen work only: music credits belong on a musician's discography, not a filmography.
   for (const post of posts.filter((p) => p.category !== "music")) {
@@ -297,21 +320,9 @@ function FilmmakerProfile({
   const sorted = [...groups.values()]
     .map((g) => ({ ...g, items: [...g.items].sort((a, b) => (year(b.post) || "0").localeCompare(year(a.post) || "0")) }))
     .sort((a, b) => b.items.length - a.items.length || a.role.localeCompare(b.role));
-  const stills = posts
-    .filter((p) => p.category === "film" || p.category === "performance" || p.category === "photography" || p.category === "design")
-    .flatMap((p) => (p.images?.length ? p.images.slice(0, 3) : p.thumbnailUrl ? [p.thumbnailUrl] : []).map((src) => ({ src, id: p.id })))
-    .slice(0, 18);
 
   return (
     <>
-      {(f.openToCrew || f.specialties || f.gear) && (
-        <section className="space-y-1.5">
-          {f.openToCrew && <span className="inline-block rounded-full bg-brand/15 px-3 py-1 text-xs font-semibold text-brand">Open to joining crews</span>}
-          {f.specialties && <p className="text-sm">{f.specialties}</p>}
-          {f.gear && <p className="text-sm text-muted">Gear: {f.gear}</p>}
-        </section>
-      )}
-
       {(full || sorted.length > 0) && (
         <section>
           <H>Filmography</H>
@@ -330,9 +341,9 @@ function FilmmakerProfile({
                     <li key={post.id} className="flex items-baseline gap-4 border-b border-border py-2 text-sm">
                       <span className="w-12 shrink-0 tabular-nums text-muted">{year(post) || "—"}</span>
                       <span className="min-w-0">
-                        <Link href={`/post/${post.id}`} className="font-semibold text-brand hover:underline">
+                        <PostLink postID={post.id} mediaUrl={post.videoUrl ?? post.audioUrl} className="font-semibold text-brand hover:underline">
                           {post.title}
-                        </Link>
+                        </PostLink>
                         <span className="block text-xs text-muted">{[kind(post), note].filter(Boolean).join(" · ")}</span>
                       </span>
                     </li>
@@ -344,19 +355,6 @@ function FilmmakerProfile({
         </section>
       )}
 
-      {full && stills.length > 0 && (
-        <section>
-          <H>Stills</H>
-          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 lg:grid-cols-4">
-            {stills.map((s, i) => (
-              <Link key={`${s.id}-${i}`} href={`/post/${s.id}`} className="block aspect-video overflow-hidden rounded bg-surface">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={s.src} alt="" loading="lazy" className="h-full w-full object-cover transition hover:scale-[1.03]" />
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
     </>
   );
 }
@@ -383,28 +381,10 @@ function MusicianProfile({
   const isRecord = (p: Post) => /^(ep|album)$/i.test(p.details?.kindLabel ?? "");
   const songs = releases.filter((p) => !isRecord(p));
   const records = releases.filter(isRecord);
-  const shows = upcomingShowsFor(events, person, m.artistName);
-  const availability = musicianAvailability(m);
-  const facts = [m.genres, m.instruments].filter(Boolean);
+  const shows = upcomingShowsFor(events, person, actNames(m));
 
   return (
     <>
-      {(m.artistName || facts.length > 0 || availability.length > 0) && (
-        <section>
-          {m.artistName && <p className="text-4xl font-black tracking-tight">{m.artistName}</p>}
-          {facts.length > 0 && <p className="mt-1 text-muted">{facts.join(" · ")}</p>}
-          {availability.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {availability.map((x) => (
-                <span key={x} className="rounded-full bg-brand/15 px-3 py-1 text-xs font-semibold text-brand">
-                  Available: {x}
-                </span>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
       {shows.length > 0 && (
         <section>
           <H>Upcoming shows</H>
@@ -436,15 +416,14 @@ function MusicianProfile({
           <ol>
             {songs.slice(0, 10).map((s, i) => (
               <li key={s.id}>
-                <Link
-                  href={`/post/${s.id}`}
+                <PostLink postID={s.id} mediaUrl={s.videoUrl ?? s.audioUrl}
                   className="group grid grid-cols-[1.5rem_3rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-surface"
                 >
                   <span className="text-right text-sm tabular-nums text-muted group-hover:hidden">{i + 1}</span>
                   <span className="hidden text-right text-sm group-hover:block">▶</span>
                   {s.thumbnailUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={s.thumbnailUrl} alt="" className="h-12 w-12 rounded object-cover" />
+                    <img src={thumbSrc(s)} alt="" className="h-12 w-12 rounded object-cover" />
                   ) : (
                     <span className="h-12 w-12 rounded bg-surface" />
                   )}
@@ -458,7 +437,7 @@ function MusicianProfile({
                   <span className="text-xs tabular-nums text-muted">
                     {s.duration ? `${Math.floor(s.duration / 60)}:${String(Math.round(s.duration % 60)).padStart(2, "0")}` : ""}
                   </span>
-                </Link>
+                </PostLink>
               </li>
             ))}
           </ol>
@@ -470,16 +449,16 @@ function MusicianProfile({
           <H>Albums &amp; EPs</H>
           <div className="flex gap-4 overflow-x-auto pb-2">
             {records.map((r) => (
-              <Link key={r.id} href={`/post/${r.id}`} className="w-40 shrink-0 rounded-lg p-2 hover:bg-surface">
+              <PostLink key={r.id} postID={r.id} mediaUrl={r.videoUrl ?? r.audioUrl} className="w-40 shrink-0 rounded-lg p-2 hover:bg-surface">
                 {r.thumbnailUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={r.thumbnailUrl} alt="" className="aspect-square w-full rounded-md object-cover shadow" />
+                  <img src={thumbSrc(r)} alt="" className="aspect-square w-full rounded-md object-cover shadow" />
                 ) : (
                   <span className="block aspect-square w-full rounded-md bg-surface" />
                 )}
                 <span className="mt-2 block truncate text-sm font-semibold">{r.title}</span>
                 <span className="block text-xs text-muted">{[year(r), r.details?.kindLabel].filter(Boolean).join(" · ")}</span>
-              </Link>
+              </PostLink>
             ))}
           </div>
         </section>

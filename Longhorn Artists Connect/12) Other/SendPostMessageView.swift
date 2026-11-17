@@ -22,6 +22,8 @@ struct SendPostMessageView: View {
     /// IDs of every profile the post will be sent to. Each recipient receives the
     /// post as a separate message — this is not a group chat.
     @State private var selectedUserIDs: Set<String> = []
+    /// Group chats the post will be shared into, by conversation ID.
+    @State private var selectedGroupIDs: Set<UUID> = []
     /// The signed-in user's CloudKit record name, used to hide their own profile
     /// (you can't send a post to yourself).
     @State private var currentUserID: String?
@@ -100,6 +102,24 @@ struct SendPostMessageView: View {
         return user.messagingUserID == currentUserID
     }
 
+    /// The user's group chats, most recently active first, filtered by the search text.
+    private var displayedGroups: [Conversation] {
+        messageStore.visibleConversations
+            .filter(\.isGroup)
+            .filter { searchText.isEmpty || groupTitle(for: $0).localizedCaseInsensitiveContains(searchText) }
+            .sorted { ($0.lastMessageTimestamp ?? .distantPast) > ($1.lastMessageTimestamp ?? .distantPast) }
+    }
+
+    private func groupTitle(for group: Conversation) -> String {
+        group.displayTitle(for: currentUserID) { userManager.findUser(byID: $0)?.firstName }
+    }
+
+    private func groupMembers(of group: Conversation) -> [DirectoryUser] {
+        group.allMemberIDs.compactMap { userManager.findUser(byID: $0) }
+    }
+
+    private var recipientCount: Int { selectedUserIDs.count + selectedGroupIDs.count }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -148,18 +168,65 @@ struct SendPostMessageView: View {
 
     @ViewBuilder
     var profilesGridSection: some View {
-        if displayedUsers.isEmpty {
+        if displayedUsers.isEmpty && displayedGroups.isEmpty {
             emptyState
         } else {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 20) {
-                    ForEach(displayedUsers) { user in
-                        profileCell(for: user)
+                VStack(alignment: .leading, spacing: 16) {
+                    if !displayedGroups.isEmpty {
+                        groupsStrip
+                    }
+                    if !displayedUsers.isEmpty {
+                        LazyVGrid(columns: columns, spacing: 20) {
+                            ForEach(displayedUsers) { user in
+                                profileCell(for: user)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                }
+                .padding(.top, 4)
+                .padding(.bottom)
+            }
+        }
+    }
+
+    /// The user's group chats as a horizontal row of selectable tiles above the people.
+    private var groupsStrip: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Group Chats")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 16) {
+                    ForEach(displayedGroups) { group in
+                        let isSelected = selectedGroupIDs.contains(group.id)
+                        Button {
+                            if isSelected { selectedGroupIDs.remove(group.id) } else { selectedGroupIDs.insert(group.id) }
+                        } label: {
+                            VStack(spacing: 6) {
+                                GroupAvatarView(members: groupMembers(of: group), size: 72)
+                                    .overlay(Circle().stroke(Color.brandOrange, lineWidth: isSelected ? 3 : 0))
+                                    .overlay(alignment: .bottomTrailing) {
+                                        if isSelected {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.title3)
+                                                .foregroundStyle(.white, Color.brandOrange)
+                                                .background(Circle().fill(.white))
+                                        }
+                                    }
+                                Text(groupTitle(for: group))
+                                    .font(.caption)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .frame(width: 88)
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal)
-                .padding(.top, 4)
-                .padding(.bottom)
             }
         }
     }
@@ -255,14 +322,14 @@ struct SendPostMessageView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(selectedUserIDs.isEmpty || isSending)
+            .disabled(recipientCount == 0 || isSending)
             .padding(.horizontal)
         }
         .padding(.vertical)
     }
 
     private var sendButtonTitle: String {
-        switch selectedUserIDs.count {
+        switch recipientCount {
         case 0:
             return "Send"
         case 1:
@@ -270,14 +337,18 @@ struct SendPostMessageView: View {
                let user = userManager.allUsers.first(where: { $0.id == id }) {
                 return "Send to \(user.firstName.isEmpty ? user.displayName : user.firstName)"
             }
-            return "Send to 1 person"
+            if let groupID = selectedGroupIDs.first,
+               let group = messageStore.conversations.first(where: { $0.id == groupID }) {
+                return "Send to \(groupTitle(for: group))"
+            }
+            return "Send to 1 chat"
         default:
-            return "Send to \(selectedUserIDs.count) people"
+            return selectedGroupIDs.isEmpty ? "Send to \(recipientCount) people" : "Send to \(recipientCount) chats"
         }
     }
 
     func sendMessage() {
-        guard !selectedUserIDs.isEmpty else { return }
+        guard recipientCount > 0 else { return }
 
         // Send the post as a `.post` message carrying the submission's UUID, plus
         // any optional note the user typed. Each recipient gets a separate
@@ -304,6 +375,20 @@ struct SendPostMessageView: View {
                     )
                 } catch {
                     print("❌ Failed to send shared post to \(recipientID): \(error.localizedDescription)")
+                    if firstError == nil { firstError = error }
+                }
+            }
+            // Group chats get the post as one shared message each.
+            for groupID in selectedGroupIDs {
+                do {
+                    _ = try await MessageStore.shared.sendGroupMessage(
+                        in: groupID,
+                        content: note,
+                        attachmentType: .post,
+                        sharedSubmissionID: post.id.uuidString
+                    )
+                } catch {
+                    print("❌ Failed to send shared post to group \(groupID): \(error.localizedDescription)")
                     if firstError == nil { firstError = error }
                 }
             }

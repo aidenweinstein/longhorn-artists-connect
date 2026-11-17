@@ -23,19 +23,20 @@ const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opacity dura
  * prerendering on dynamic routes. The sidebar renders right away with nothing
  * highlighted, and the highlight streams in a moment later.
  */
-export default function Sidebar({ account }: { account: ReactNode }) {
+export default function Sidebar({ account, school }: { account: ReactNode; school: ReactNode }) {
   return (
-    <Suspense fallback={<SidebarView account={account} pathname={null} />}>
-      <CurrentSidebar account={account} />
+    <Suspense fallback={<SidebarView account={account} school={school} pathname={null} />}>
+      <CurrentSidebar account={account} school={school} />
     </Suspense>
   );
 }
 
-function CurrentSidebar({ account }: { account: ReactNode }) {
-  return <SidebarView account={account} pathname={usePathname()} />;
+function CurrentSidebar({ account, school }: { account: ReactNode; school: ReactNode }) {
+  return <SidebarView account={account} school={school} pathname={usePathname()} />;
 }
 
-function SidebarView({ account, pathname: current }: { account: ReactNode; pathname: string | null }) {
+/** `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the main pages. */
+function SidebarView({ account, school, pathname: current }: { account: ReactNode; school: ReactNode; pathname: string | null }) {
   // `null` while the address is still streaming in: nothing is highlighted yet.
   const known = current !== null;
   const pathname = current ?? "";
@@ -74,6 +75,8 @@ function SidebarView({ account, pathname: current }: { account: ReactNode; pathn
         }}
         className="group/nav absolute inset-y-0 left-0 flex w-[68px] flex-col gap-1 overflow-y-auto overflow-x-hidden border-r border-border bg-background px-2 py-3 transition-[width,box-shadow] duration-200 [scrollbar-width:none] data-[open=true]:w-56 data-[open=true]:shadow-xl [&::-webkit-scrollbar]:hidden"
       >
+        {school}
+
         {PAGES.map((page) => {
           const selected = known && !otherSchool && onPage(page.href);
           return (
@@ -112,17 +115,14 @@ function SidebarView({ account, pathname: current }: { account: ReactNode; pathn
                   href={`/school/${school.slug}`}
                   aria-label={school.name}
                   aria-current={selected ? "page" : undefined}
+                  // The school you're viewing is shown in its own colors: main color behind, secondary (gold) text.
+                  style={selected ? { backgroundColor: school.color, color: school.accent } : undefined}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-                    selected ? "bg-brand/15 text-brand" : "text-muted hover:bg-surface hover:text-foreground"
+                    selected ? "" : "text-muted hover:bg-surface hover:text-foreground"
                   }`}
                 >
-                  <span
-                    aria-hidden
-                    style={{ backgroundColor: school.color, color: school.accent }}
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[8px] font-bold"
-                  >
-                    {school.short}
-                  </span>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={school.logo} alt="" className="h-6 w-6 shrink-0 rounded-full object-cover" />
                   <span className={LABEL}>{school.name}</span>
                 </Link>
               );
@@ -130,18 +130,34 @@ function SidebarView({ account, pathname: current }: { account: ReactNode; pathn
           </div>
         </div>
 
-        <div className="mt-auto flex flex-col gap-1">
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
+            More
+          </p>
+          <a
+            href="https://collegeartistsconnect.org"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="College Artists Connect (opens in a new tab)"
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/schools/cac.png" alt="" className="h-6 w-6 shrink-0 rounded-full object-cover ring-1 ring-border" />
+            <span className={LABEL}>College Artists Connect</span>
+          </a>
           {/* Development shortcut to the launch (welcome) page; not shown on the live site. */}
           {process.env.NODE_ENV === "development" && (
             <Link
               href="/welcome"
-              className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
+              className="flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
             >
               <RocketGlyph className="h-6 w-6 shrink-0" />
               <span className={LABEL}>Launch page</span>
             </Link>
           )}
+        </div>
 
+        <div className="mt-auto flex flex-col gap-1">
           {account}
         </div>
       </nav>

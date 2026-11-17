@@ -1,31 +1,31 @@
 "use client";
 
-import { useState } from "react";
 import { EVENT_CATEGORIES, eventRules, type EventCategory } from "@/lib/shareOptions";
 import { image } from "@/lib/shareUpload";
 import { DateRow, FileRow, Section, SelectRow, TextArea, TextInput } from "../FormKit";
+import { useDraftField } from "../DraftContext";
 import SubmissionShell from "../SubmissionShell";
 
 type Showing = { day: string; start: string; end: string };
 const emptyShowing = (): Showing => ({ day: "", start: "19:00", end: "21:00" });
 
 export default function EventForm() {
-  const [category, setCategory] = useState<EventCategory | "">("");
-  const [flyer, setFlyer] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [host, setHost] = useState("");
-  const [description, setDescription] = useState("");
-  const [day, setDay] = useState("");
-  const [startTime, setStartTime] = useState("18:00");
-  const [endTime, setEndTime] = useState("20:00");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [showings, setShowings] = useState<Showing[]>([emptyShowing()]);
-  const [location, setLocation] = useState("");
-  const [lineup, setLineup] = useState("");
-  const [expectations, setExpectations] = useState("");
-  const [applicationLink, setApplicationLink] = useState("");
-  const [ticketLink, setTicketLink] = useState("");
+  const [category, setCategory] = useDraftField<EventCategory | "">("category", "");
+  const [flyer, setFlyer] = useDraftField<File | null>("flyer", null);
+  const [title, setTitle] = useDraftField("title", "");
+  const [host, setHost] = useDraftField("host", "");
+  const [description, setDescription] = useDraftField("description", "");
+  const [day, setDay] = useDraftField("day", "");
+  const [startTime, setStartTime] = useDraftField("startTime", "18:00");
+  const [endTime, setEndTime] = useDraftField("endTime", "20:00");
+  const [startDate, setStartDate] = useDraftField("startDate", "");
+  const [endDate, setEndDate] = useDraftField("endDate", "");
+  const [showings, setShowings] = useDraftField<Showing[]>("showings", [emptyShowing()]);
+  const [location, setLocation] = useDraftField("location", "");
+  const [lineup, setLineup] = useDraftField("lineup", "");
+  const [expectations, setExpectations] = useDraftField("expectations", "");
+  const [applicationLink, setApplicationLink] = useDraftField("applicationLink", "");
+  const [ticketLink, setTicketLink] = useDraftField("ticketLink", "");
 
   // No category yet: the general fields every event has (a date, time and place).
   const rules = category

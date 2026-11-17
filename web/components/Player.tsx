@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { justGotSound, playWithSound } from "@/lib/autoplay";
 import { takePrimed } from "@/lib/primedPlayback";
+import { applyCropStyle, croppedAspect, parseCrop } from "@/lib/videoCrop";
 
 type MediaEl = HTMLVideoElement & {
   webkitShowPlaybackTargetPicker?: () => void;
@@ -12,10 +13,20 @@ type MediaEl = HTMLVideoElement & {
 
 const HIDE_AFTER_MS = 2500;
 
-/** The video the opening click already started for this post, or a fresh one. */
-function mediaElement(postID: string | undefined): MediaEl {
+/**
+ * The video the opening click already started for this post; else the one this
+ * player already has; else a fresh one. Keeping the same element matters: Safari
+ * only lets an element play with sound if a click started it, and the player's
+ * setup can run more than once (React re-runs it in development, and again when a
+ * page comes back from the background), so a fresh element each time would be muted.
+ */
+function mediaElement(postID: string | undefined, kept: MediaEl | null): MediaEl {
   const adopted = postID ? takePrimed(postID) : null;
-  return (adopted ?? document.createElement("video")) as MediaEl;
+  if (adopted && kept && adopted !== kept) {
+    kept.removeAttribute("src");
+    kept.load();
+  }
+  return (adopted ?? kept ?? document.createElement("video")) as MediaEl;
 }
 
 /** 75 → "1:15", 3725 → "1:02:05". */
@@ -44,6 +55,7 @@ export default function Player({
   autoStart = false,
   postID,
   trackKey,
+  crop,
   onEnded,
   onPrev,
   onNext,
@@ -53,6 +65,8 @@ export default function Player({
   onEnded?: () => void;
   onPrev?: () => void;
   onNext?: () => void;
+  /** The video's playback crop ("x,y,w,h"): the player zooms to that part of the frame. */
+  crop?: string;
   /** Set on a post's main player, so it can adopt the video started by the click that opened it. */
   postID?: string;
   src: string;
@@ -64,6 +78,8 @@ export default function Player({
   const frame = useRef<HTMLDivElement>(null);
   const media = useRef<MediaEl>(null);
   const slot = useRef<HTMLDivElement>(null);
+  // The element this player made or adopted, reused whenever its setup runs again.
+  const kept = useRef<MediaEl | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Only the visitor's own mute keeps a video or song silent; the browser's never does.
   const userMuted = useRef(false);
@@ -80,6 +96,15 @@ export default function Player({
   const [scrubbing, setScrubbing] = useState(false);
   // The thumbnail's shape is a first guess; the video's own dimensions win once known.
   const [ratio, setRatio] = useState(aspect);
+  // The playback crop, read by the element's setup through a ref (declared before it, so it's current first).
+  const cropRef = useRef(audioOnly ? null : parseCrop(crop));
+  useEffect(() => {
+    cropRef.current = audioOnly ? null : parseCrop(crop);
+    const el = media.current;
+    if (!el) return;
+    applyCropStyle(el, cropRef.current);
+    if (!audioOnly && el.videoWidth && el.videoHeight) setRatio(croppedAspect(el.videoWidth / el.videoHeight, cropRef.current));
+  }, [crop, audioOnly]);
 
   // Latest handlers for the element's listeners, which are attached once.
   const handlers = useRef({ toggle: () => {}, toggleFullscreen: () => {}, ended: () => {} });
@@ -113,14 +138,18 @@ export default function Player({
   useEffect(() => {
     const host = slot.current;
     if (!host) return;
-    const el = mediaElement(postID);
+    const el = mediaElement(postID, kept.current);
+    kept.current = el;
     if (el.getAttribute("src") !== srcRef.current) el.src = srcRef.current;
     if (!audioOnly && posterRef.current) el.poster = posterRef.current;
+    else el.removeAttribute("poster");
     pendingSrc.current = null;
     el.playsInline = true;
     el.preload = "metadata";
     el.setAttribute("x-webkit-airplay", "allow");
     el.className = `absolute inset-0 h-full w-full object-contain ${audioOnly ? "opacity-0" : ""}`;
+    // A cropped video is enlarged and shifted inside the frame, which clips the rest.
+    applyCropStyle(el, cropRef.current);
     host.appendChild(el);
     media.current = el;
 
@@ -130,7 +159,7 @@ export default function Player({
       if (Number.isFinite(el.duration)) setDuration(el.duration);
       setVolume(el.volume);
       setMuted(el.muted);
-      if (!audioOnly && el.videoWidth && el.videoHeight) setRatio(el.videoWidth / el.videoHeight);
+      if (!audioOnly && el.videoWidth && el.videoHeight) setRatio(croppedAspect(el.videoWidth / el.videoHeight, cropRef.current));
     };
     const listeners: [string, () => void][] = [
       ["click", () => handlers.current.toggle()],
@@ -163,6 +192,7 @@ export default function Player({
     return () => {
       stopWaiting?.();
       for (const [type, fn] of listeners) el.removeEventListener(type, fn);
+      applyCropStyle(el, null);
       el.pause();
       el.remove();
       media.current = null;
@@ -319,7 +349,7 @@ export default function Player({
       } ${visible ? "" : "cursor-none"}`}
     >
       <div
-        className="relative"
+        className="relative overflow-hidden"
         style={{ aspectRatio: ratio, width: full ? `min(100%, calc(100vh * ${ratio}))` : "100%" }}
       >
         {audioOnly && poster && (

@@ -758,7 +758,7 @@ struct MusicEditView: View {
     /// is there rather than inviting a needless re-upload.
     private func checkExistingAudio() async {
         guard selectedAudioURL == nil else { return }
-        let resolution = await CloudKitManager.shared.streamResolution(submissionID: submission.id, type: .music)
+        let resolution = await CloudKitManager.shared.streamResolution(for: submission)
         if case .assetMissing = resolution {
             existingAudioMissing = true
         }

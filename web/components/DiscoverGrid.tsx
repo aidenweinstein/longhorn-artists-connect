@@ -9,7 +9,7 @@ const dateFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric
 /** The poster (projects) or flyer (events) at full column width, like the home feed's thumbnails. */
 function Poster({ item }: { item: DiscoverItem }) {
   const type = DISCOVER_TYPES.find((t) => t.id === item.kind)!;
-  const src = item.kind === "project" ? item.posterUrl : item.flyerUrl;
+  const src = item.kind === "project" ? (item.posterSmallUrl ?? item.posterUrl) : (item.flyerSmallUrl ?? item.flyerUrl);
   const open = item.kind === "project" && item.castNeeded.length + item.crewNeeded.length > 0;
   return (
     <div className="relative overflow-hidden rounded-xl transition-transform duration-200 group-hover:scale-[1.015]">

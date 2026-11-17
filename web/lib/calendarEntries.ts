@@ -29,7 +29,7 @@ export function calendarEntries(items: DiscoverItem[]): CalendarEntry[] {
         location: item.location || undefined,
         host: item.host || undefined,
         logline: item.logline || undefined,
-        image: item.flyerUrl,
+        image: item.flyerSmallUrl ?? item.flyerUrl,
         label: item.category,
         allDay: false,
       };
@@ -44,7 +44,7 @@ export function calendarEntries(items: DiscoverItem[]): CalendarEntry[] {
         title: item.title,
         logline: item.logline || undefined,
         host: item.postedBy || undefined,
-        image: item.posterUrl,
+        image: item.posterSmallUrl ?? item.posterUrl,
         label: item.projectType,
       };
       // Every shoot day, from the schedule text the app writes; the first day alone

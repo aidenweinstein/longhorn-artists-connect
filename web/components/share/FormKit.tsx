@@ -6,6 +6,9 @@
 
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { releaseYears } from "@/lib/shareOptions";
+import type { PersonMatch } from "@/lib/sharePost";
+import { croppedAspect, cropStyle, type VideoCrop } from "@/lib/videoCrop";
+import VideoCropEditor from "./VideoCropEditor";
 
 const noYears: string[] = [];
 let yearsCache: string[] | null = null;
@@ -393,7 +396,7 @@ function matchesAccept(file: File, accept: string) {
  * A large target you can click or drop files onto. Files that don't match `accept` are
  * ignored on drop, the same as the file picker would filter them.
  */
-function DropZone({
+export function DropZone({
   accept,
   multiple,
   onFiles,
@@ -469,6 +472,8 @@ export function FileRow({
   onChange,
   icon = <FileIcon />,
   optional,
+  crop,
+  onCropChange,
 }: {
   noun: string;
   accept: string;
@@ -476,10 +481,20 @@ export function FileRow({
   onChange: (f: File | null) => void;
   icon?: ReactNode;
   optional?: boolean;
+  /** Videos only: the playback crop. Passing `onCropChange` adds a Crop button once a video is picked. */
+  crop?: VideoCrop | null;
+  onCropChange?: (c: VideoCrop | null) => void;
 }) {
   const files = useMemo(() => (file ? [file] : []), [file]);
   const [url] = usePreviews(files);
+  const [cropping, setCropping] = useState(false);
   const title = `${optional ? "Add" : "Select"} ${noun}`;
+  const canCrop = Boolean(onCropChange && file?.type.startsWith("video/"));
+  // A new or removed file starts uncropped, as in the app.
+  const change = (f: File | null) => {
+    onCropChange?.(null);
+    onChange(f);
+  };
   return (
     <div className="p-3">
       {file ? (
@@ -488,9 +503,12 @@ export function FileRow({
             // eslint-disable-next-line @next/next/no-img-element
             <img src={url} alt="" className="max-h-72 w-full object-contain" />
           )}
-          {url && file.type.startsWith("video/") && (
-            <video src={url} controls playsInline preload="metadata" className="max-h-72 w-full bg-black" />
-          )}
+          {url && file.type.startsWith("video/") &&
+            (crop ? (
+              <CroppedVideoPreview src={url} crop={crop} />
+            ) : (
+              <video src={url} controls playsInline preload="metadata" className="max-h-72 w-full bg-black" />
+            ))}
           {url && file.type.startsWith("audio/") && <audio src={url} controls className="w-full p-3" />}
           <div className="flex items-center gap-3 px-4 py-3">
             {!file.type.match(/^(image|video|audio)\//) && <Thumb icon={icon} />}
@@ -507,19 +525,80 @@ export function FileRow({
                 className="sr-only"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  if (f) onChange(f);
+                  if (f) change(f);
                   e.target.value = "";
                 }}
               />
             </label>
-            <button type="button" onClick={() => onChange(null)} className="text-sm text-muted hover:text-foreground">
+            {canCrop && (
+              <button type="button" onClick={() => setCropping(true)} className="flex items-center gap-1 text-sm font-medium text-brand hover:underline">
+                <CropIcon />
+                {crop ? "Edit crop" : "Crop"}
+              </button>
+            )}
+            <button type="button" onClick={() => change(null)} className="text-sm text-muted hover:text-foreground">
               Remove
             </button>
           </div>
+          {cropping && file && onCropChange && (
+            <VideoCropEditor
+              file={file}
+              initial={crop ?? null}
+              onCancel={() => setCropping(false)}
+              onDone={(c) => {
+                onCropChange(c);
+                setCropping(false);
+              }}
+            />
+          )}
         </div>
       ) : (
-        <DropZone accept={accept} onFiles={(fs) => onChange(fs[0] ?? null)} icon={icon} title={title} hint={optional ? "Optional · drag and drop, or click to browse" : undefined} />
+        <DropZone accept={accept} onFiles={(fs) => change(fs[0] ?? null)} icon={icon} title={title} hint={optional ? "Optional · drag and drop, or click to browse" : undefined} />
       )}
+    </div>
+  );
+}
+
+/**
+ * The picked video as it will play: zoomed to its crop. Click to play or pause (the
+ * browser's own controls would sit partly outside the crop and be cut off).
+ */
+export function CroppedVideoPreview({ src, crop, maxHeight = "18rem" }: { src: string; crop: VideoCrop; maxHeight?: string }) {
+  const [natural, setNatural] = useState(16 / 9);
+  const [playing, setPlaying] = useState(false);
+  const ratio = croppedAspect(natural, crop);
+  return (
+    <div className="flex justify-center bg-black">
+      <div className="relative cursor-pointer overflow-hidden" style={{ aspectRatio: ratio, width: `min(100%, calc(${maxHeight} * ${ratio}))` }}>
+        <video
+          src={`${src}#t=0.5`}
+          playsInline
+          preload="metadata"
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            if (v.videoWidth && v.videoHeight) setNatural(v.videoWidth / v.videoHeight);
+          }}
+          onClick={(e) => {
+            const v = e.currentTarget;
+            if (v.paused) void v.play().catch(() => {});
+            else v.pause();
+          }}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          style={cropStyle(crop)}
+          className="object-fill"
+        />
+        {!playing && (
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/60 text-white">
+              <svg viewBox="0 0 24 24" className="ml-0.5 h-5 w-5" fill="currentColor" aria-hidden>
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </span>
+          </span>
+        )}
+        <span className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/60 px-2 py-0.5 text-xs font-medium text-white">Cropped</span>
+      </div>
     </div>
   );
 }
@@ -609,7 +688,8 @@ function formatSize(bytes: number) {
 
 // MARK: - Credits and lists
 
-export type Credit = { role: string; name: string };
+/** `profileID` links the credit to a Nexus member picked from the suggestions. */
+export type Credit = { role: string; name: string; profileID?: string };
 
 export const seedCredits = (roles: readonly string[]): Credit[] => roles.map((role) => ({ role, name: "" }));
 export const filledCredits = (credits: Credit[]) => credits.filter((c) => c.name.trim());
@@ -642,23 +722,15 @@ export function CreditsRow({
       {open && (
         <div className="space-y-2 px-4 pb-3">
           {credits.map((c, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input
-                aria-label={`${rolePlaceholder} ${i + 1}`}
-                value={c.role}
-                placeholder={rolePlaceholder}
-                onChange={(e) => update(i, { role: e.target.value })}
-                className="w-2/5 rounded-lg bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand"
-              />
-              <input
-                aria-label={`${namePlaceholder} for ${c.role || `role ${i + 1}`}`}
-                value={c.name}
-                placeholder={namePlaceholder}
-                onChange={(e) => update(i, { name: e.target.value })}
-                className="min-w-0 flex-1 rounded-lg bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand"
-              />
-              <RemoveButton label={`Remove ${c.role || "row"}`} onClick={() => onChange(credits.filter((_, j) => j !== i))} />
-            </div>
+            <CreditLine
+              key={i}
+              credit={c}
+              index={i}
+              rolePlaceholder={rolePlaceholder}
+              namePlaceholder={namePlaceholder}
+              onChange={(patch) => update(i, patch)}
+              onRemove={() => onChange(credits.filter((_, j) => j !== i))}
+            />
           ))}
           <button type="button" onClick={() => onChange([...credits, { role: "", name: "" }])} className="text-sm font-medium text-brand">
             + {addLabel}
@@ -669,7 +741,170 @@ export function CreditsRow({
   );
 }
 
-/** A row that opens a simple list editor — cast names, roles still needed. */
+/**
+ * Safari ignores autoComplete="off" and offers Contacts / AutoFill whenever a field's
+ * name, placeholder or label looks like a person's name ("Name", "Actor"...). It does
+ * skip fields whose name says "search", so credit boxes get a search-style name plus the
+ * opt-outs other password managers read. Our own Nexus-member suggestions still show.
+ */
+function noAutofill(name: string) {
+  return {
+    name,
+    autoComplete: "off",
+    autoCorrect: "off",
+    autoCapitalize: "words",
+    spellCheck: false,
+    "data-1p-ignore": true,
+    "data-lpignore": "true",
+    "data-form-type": "other",
+  } as const;
+}
+
+/** A zero-width non-joiner after the first letter keeps Safari's "name" word match from firing; it's invisible and screen readers skip it. */
+function noAutofillText(text: string) {
+  return text.length > 1 ? `${text[0]}\u200C${text.slice(1)}` : text;
+}
+
+/**
+ * One credit: a role box and a name box. Typing a name suggests Nexus members; picking
+ * one fills in their name and links the credit to their profile. Typing over a picked
+ * name unlinks it, so a credit only ever points at the person shown.
+ */
+export function CreditLine({
+  credit,
+  index,
+  onChange,
+  onRemove,
+  rolePlaceholder = "Role",
+  namePlaceholder = "Name",
+  inputClass = "rounded-lg bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand",
+}: {
+  credit: Credit;
+  index: number;
+  onChange: (patch: Partial<Credit>) => void;
+  onRemove: () => void;
+  rolePlaceholder?: string;
+  namePlaceholder?: string;
+  inputClass?: string;
+}) {
+  const listId = useId();
+  const [focused, setFocused] = useState(false);
+  const [people, setPeople] = useState<PersonMatch[]>([]);
+  const [active, setActive] = useState(0);
+  const query = credit.profileID ? "" : credit.name.trim();
+
+  // Look up members a moment after typing stops; an answer for older text is dropped.
+  useEffect(() => {
+    if (!focused || query.length < 2) return;
+    const abort = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/people?q=${encodeURIComponent(query)}`, { signal: abort.signal });
+        if (!res.ok) return;
+        const body = (await res.json()) as { people: PersonMatch[] };
+        setPeople(body.people);
+        setActive(0);
+      } catch {
+        // Suggestions are a convenience: the name can always just be typed.
+      }
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      abort.abort();
+    };
+  }, [query, focused]);
+
+  const shown = focused && query.length >= 2 ? people : [];
+  const pick = (p: PersonMatch) => {
+    onChange({ name: p.name, profileID: p.id });
+    setPeople([]);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <input
+          aria-label={`${rolePlaceholder} ${index + 1}`}
+          {...noAutofill(`credit-role-search-${index}`)}
+          value={credit.role}
+          placeholder={noAutofillText(rolePlaceholder)}
+          onChange={(e) => onChange({ role: e.target.value })}
+          className={`w-2/5 ${inputClass}`}
+        />
+        <div className="relative min-w-0 flex-1">
+          <input
+            role="combobox"
+            aria-label={`${noAutofillText(namePlaceholder)} for ${credit.role || `role ${index + 1}`}`}
+            aria-expanded={shown.length > 0}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            {...noAutofill(`credit-person-search-${index}`)}
+            value={credit.name}
+            placeholder={noAutofillText(namePlaceholder)}
+            onChange={(e) => onChange({ name: e.target.value, profileID: undefined })}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            onKeyDown={(e) => {
+              if (!shown.length) return;
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                setActive((a) => (a + (e.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length);
+              } else if (e.key === "Enter") {
+                e.preventDefault();
+                pick(shown[active] ?? shown[0]);
+              } else if (e.key === "Escape") {
+                setPeople([]);
+              }
+            }}
+            className={`w-full ${credit.profileID ? "pr-8" : ""} ${inputClass}`}
+          />
+          {credit.profileID && (
+            <span title="Linked to their Nexus profile" className="absolute right-2 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full bg-brand text-white">
+              <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden>
+                <path d="M2.5 6.2 5 8.5l4.5-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span className="sr-only">Linked to their Nexus profile</span>
+            </span>
+          )}
+        </div>
+        <RemoveButton label={`Remove ${credit.role || "row"}`} onClick={onRemove} />
+      </div>
+      {/* In the flow under the row, not floating: the form's cards clip anything that hangs outside them. */}
+      {shown.length > 0 && (
+        <ul id={listId} role="listbox" aria-label="Nexus members" className="mt-1 overflow-hidden rounded-lg border border-border bg-background">
+          {shown.map((p, i) => (
+            <li key={p.id} role="option" aria-selected={i === active}>
+              <button
+                type="button"
+                tabIndex={-1}
+                // Before the name box loses focus, so the pick isn't lost to the blur.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(p);
+                }}
+                onMouseEnter={() => setActive(i)}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm ${i === active ? "bg-foreground/10" : ""}`}
+              >
+                {p.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={p.imageUrl} alt="" loading="lazy" className="h-7 w-7 shrink-0 rounded-full bg-surface object-cover" />
+                ) : (
+                  <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand text-[10px] font-semibold text-white">
+                    {p.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase()}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
+                {p.subtitle && <span className="max-w-[45%] truncate text-xs text-muted">{p.subtitle}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** A row that opens a simple list editor — roles still needed, featured work. */
 export function ListRow({
   label,
   items,
@@ -768,6 +1003,15 @@ function ChevronUpDown() {
   );
 }
 
+export function CropIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M6 2v14a2 2 0 0 0 2 2h14" />
+      <path d="M18 22V8a2 2 0 0 0-2-2H2" />
+    </svg>
+  );
+}
+
 export function VideoIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden>
@@ -803,5 +1047,77 @@ export function FileIcon() {
       <path d="M6 3h8l4 4v14H6z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
       <path d="M14 3v4h4" fill="none" stroke="currentColor" strokeWidth="1.6" />
     </svg>
+  );
+}
+
+/**
+ * The org or class behind a post: one choice from grouped chips, "Independent", or
+ * "Other" with a typed-in name. `value` is the text that gets saved.
+ */
+export function AffiliationRow({
+  label,
+  value,
+  groups,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  groups: { title: string; options: readonly string[] }[];
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [other, setOther] = useState(false);
+  const chip = (text: string, on: boolean, pick: () => void) => (
+    <button
+      key={text}
+      type="button"
+      aria-pressed={on}
+      onClick={pick}
+      className={`rounded-full border px-3 py-1 text-sm transition ${on ? "border-brand bg-brand text-white" : "border-border hover:bg-foreground/5"}`}
+    >
+      {text}
+    </button>
+  );
+  /** Picks a listed option; picking the selected one again clears it. */
+  const choose = (o: string) => {
+    setOther(false);
+    onChange(!other && value === o ? "" : o);
+  };
+  return (
+    <div>
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className={`${rowBase} w-full text-left`}>
+        <span className="shrink-0 text-[15px]">{label}</span>
+        <span className="ml-auto truncate text-[15px] text-brand">{value || (other ? "Other" : "Select")}</span>
+        <ChevronUpDown />
+      </button>
+      {open && (
+        <div className="space-y-3 px-4 pb-3">
+          {groups.map((g) => (
+            <div key={g.title}>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">{g.title}</p>
+              <div className="flex flex-wrap gap-2">{g.options.map((o) => chip(o, !other && value === o, () => choose(o)))}</div>
+            </div>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            {chip("Independent", !other && value === "Independent", () => choose("Independent"))}
+            {chip("Other", other, () => {
+              setOther(!other);
+              onChange("");
+            })}
+          </div>
+          {other && (
+            <input
+              autoFocus
+              aria-label={`Other ${label}`}
+              className="w-full rounded-xl bg-background px-4 py-2.5 text-[15px] outline-none ring-1 ring-border placeholder:text-muted focus:ring-brand"
+              value={value}
+              maxLength={200}
+              placeholder="Type the org or class"
+              onChange={(e) => onChange(e.target.value)}
+            />
+          )}
+        </div>
+      )}
+    </div>
   );
 }

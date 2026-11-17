@@ -1,9 +1,11 @@
 import NetworkInbox, { type InboxThread, type OpenThread } from "@/components/NetworkInbox";
 import { currentAccount } from "@/lib/account";
 import { isCloudKitConfigured } from "@/lib/cloudkit/client";
-import { profileDirectory } from "@/lib/cloudkit/content";
-import { messagesIn, threadsFor } from "@/lib/cloudkit/messages";
+import { getAllPosts, profileDirectory } from "@/lib/cloudkit/content";
+import { discoverItems } from "@/lib/content";
+import { groupAutoName, messagesIn, threadsFor } from "@/lib/cloudkit/messages";
 import { CONVERSATIONS } from "@/lib/mockConversations";
+import { posterSource, thumbSrc } from "@/lib/smallImage";
 
 // Private to the signed-in visitor and always current.
 export const instant = false;
@@ -13,6 +15,36 @@ const timeFmt = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-d
 const dayFmt = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: tz });
 const dateFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: tz });
 const dayKey = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: tz });
+
+type SharedPost = NonNullable<OpenThread["messages"][number]["post"]>;
+
+/**
+ * What a shared post's bubble shows, for each shared ID in a thread: its picture, title
+ * and page. The app shares posts, projects and events the same way, so all three are
+ * looked up. An ID that matches nothing (removed, not approved) is left out.
+ */
+async function sharedPosts(ids: string[]): Promise<Map<string, SharedPost>> {
+  const out = new Map<string, SharedPost>();
+  if (ids.length === 0) return out;
+  const wanted = new Set(ids.map((id) => id.toUpperCase()));
+  const [posts, items] = await Promise.all([
+    getAllPosts().then((r) => r.posts).catch(() => []),
+    discoverItems().catch(() => []),
+  ]);
+  for (const post of posts) {
+    const key = post.id.toUpperCase();
+    if (!wanted.has(key)) continue;
+    const thumbnailUrl = post.thumbnailUrl ?? post.images?.[0];
+    out.set(key, { title: post.title, imageUrl: thumbSrc({ id: post.id, thumbnailUrl, thumbnailKey: post.thumbnailKey }), href: `/post/${post.id}` });
+  }
+  for (const item of items) {
+    const key = item.id.toUpperCase();
+    if (!wanted.has(key) || out.has(key)) continue;
+    const imageUrl = item.kind === "project" ? posterSource(item.id, item.posterKey, item.posterUrl) : posterSource(item.id, item.flyerKey, item.flyerUrl);
+    out.set(key, { title: item.title, imageUrl, href: `/discover/${item.id}` });
+  }
+  return out;
+}
 
 /** "2:14 PM" today, "Yesterday", "Mon" this week, else "Oct 28" — like the app's list. */
 function listTime(at: number): string {
@@ -73,12 +105,25 @@ export default async function Network(props: PageProps<"/network">) {
   if (wanted && !summaries.some((t) => t.id === wanted.toUpperCase())) {
     const id = wanted.toUpperCase();
     const fresh = await messagesIn(me, id).catch(() => null);
-    if (fresh) summaries = [{ id, otherUserID: fresh.other, lastMessage: "", lastAt: 0, unread: 0 }, ...summaries];
+    if (fresh) {
+      summaries = [
+        { id, otherUserID: fresh.other, lastMessage: "", lastAt: 0, unread: 0, isGroup: fresh.isGroup, groupName: fresh.groupName, memberIDs: fresh.members },
+        ...summaries,
+      ];
+    }
   }
   const directory = await profileDirectory().catch(() => []);
-  const people = new Map(directory.map((p) => [p.id.replace(/^UserProfile_/, ""), p]));
+  const rawID = (id: string) => id.replace(/^UserProfile_/, "");
+  const people = new Map(directory.map((p) => [rawID(p.id), p]));
+  const meRaw = rawID(me);
 
   const threads: InboxThread[] = summaries.map((t) => {
+    if (t.isGroup) {
+      // Groups: their name, or the other members' first names, like the app.
+      const others = t.memberIDs.filter((id) => id !== meRaw);
+      const name = t.groupName || groupAutoName(others.map((id) => (people.get(id)?.name ?? "").split(" ")[0]));
+      return { id: t.id, name, lastMessage: t.lastMessage, time: listTime(t.lastAt), unread: t.unread, isGroup: true, memberCount: t.memberIDs.length };
+    }
     const person = people.get(t.otherUserID);
     return {
       id: t.id,
@@ -97,12 +142,21 @@ export default async function Network(props: PageProps<"/network">) {
     const thread = await messagesIn(me, openID).catch(() => null);
     const summary = threads.find((t) => t.id === openID)!;
     if (thread) {
+      const shared = await sharedPosts(thread.messages.flatMap((m) => (m.postID ? [m.postID] : [])));
       open = {
         id: openID,
         name: summary.name,
         imageUrl: summary.imageUrl,
         profileID: summary.profileID,
-        messages: thread.messages.map((m) => ({ ...m, time: m.at ? `${dateFmt.format(m.at)}, ${timeFmt.format(m.at)}` : "" })),
+        isGroup: summary.isGroup,
+        memberCount: summary.memberCount,
+        messages: thread.messages.map((m) => ({
+          ...m,
+          // In a group, received bubbles are labelled with who sent them.
+          senderName: thread.isGroup && !m.fromMe ? people.get(m.senderID)?.name || "Nexus member" : undefined,
+          post: m.postID ? shared.get(m.postID.toUpperCase()) : undefined,
+          time: m.at ? `${dateFmt.format(m.at)}, ${timeFmt.format(m.at)}` : "",
+        })),
       };
     }
   }

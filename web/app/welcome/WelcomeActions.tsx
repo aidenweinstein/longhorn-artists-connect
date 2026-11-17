@@ -1,38 +1,28 @@
-"use client";
-
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
-const GUEST_COOKIE = "nexus_guest";
-
-export default function WelcomeActions() {
-  const router = useRouter();
-
-  function continueAsGuest() {
-    document.cookie = `${GUEST_COOKIE}=1; path=/; max-age=31536000; samesite=lax`;
-    router.replace("/");
-  }
-
+export default function WelcomeActions({ mock = false }: { mock?: boolean }) {
   return (
     <div className="flex w-full max-w-xs flex-col items-stretch gap-3">
       <Link
-        href="/signup"
-        className="rounded-full bg-brand px-6 py-3 text-center text-[15px] font-semibold text-white transition hover:brightness-110"
+        href={mock ? "/signup/mock" : "/signup"}
+        className="rounded-full bg-white px-6 py-3 text-center text-[15px] font-semibold text-black transition hover:bg-white/85"
       >
         Create account
       </Link>
       <Link
-        href="/signin"
+        href={mock ? "/signin/mock" : "/signin"}
         className="rounded-full border border-white/25 px-6 py-3 text-center text-[15px] font-semibold text-white transition hover:bg-white/10"
       >
         Sign in
       </Link>
-      <button
-        onClick={continueAsGuest}
-        className="mt-1 text-sm font-medium text-white/70 underline-offset-4 hover:text-white hover:underline"
+      {/* Guests confirm an email first (app/guest). Mock launch only shows the page: no guest pass is set. */}
+      <Link
+        href={mock ? "/" : "/guest"}
+        replace={mock}
+        className="mt-1 text-center text-sm font-medium text-white/70 underline-offset-4 hover:text-white hover:underline"
       >
         Continue as guest
-      </button>
+      </Link>
     </div>
   );
 }

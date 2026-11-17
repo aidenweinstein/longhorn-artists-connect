@@ -1,10 +1,13 @@
 import Avatar from "./Avatar";
 import WorkStatusPill from "./WorkStatusPill";
-import ContentGrid from "./ContentGrid";
+import WorkStatusPicker from "./WorkStatusPicker";
+import PortfolioGrid from "./PortfolioGrid";
 import CollaboratorsStat from "./CollaboratorsStat";
 import { collaboratorList, type Collaborators } from "@/lib/account";
 import type { Account } from "@/lib/cloudkit/content";
+import { toCard } from "@/lib/feedCard";
 import type { Post } from "@/lib/mockContent";
+import { sortByOrder } from "@/lib/portfolioLayout";
 
 /** A person's portfolio: header, stats, links and credited work. Used for your own page and everyone else's. */
 export default function ProfileView({
@@ -13,11 +16,14 @@ export default function ProfileView({
   displayName,
   schoolFallback,
   actions,
+  editableStatus = false,
   note,
   emptyText,
   styled,
+  info,
   collaborators,
   profileActions,
+  canEditGrid,
 }: {
   account: Account;
   posts: Post[];
@@ -25,15 +31,21 @@ export default function ProfileView({
   schoolFallback?: string;
   /** Buttons beside the name, e.g. Sign out on your own page. */
   actions?: React.ReactNode;
+  /** Your own page: the status pill opens a menu to change it. */
+  editableStatus?: boolean;
   /** A short line under the name, e.g. for someone not on Nexus yet. */
   note?: string;
   emptyText: string;
-  /** The profile-style section (actor resume, filmography, discography): see StyledProfile. */
+  /** Reel and resume, filmography, songs and shows, under the Work grid: StyledProfile part="lists". */
   styled?: React.ReactNode;
+  /** Actor, Filmmaker and Musician cards, beside the details: StyledProfile part="info". */
+  info?: React.ReactNode;
   /** Who they've worked with, checked against Nexus accounts (see collaboratorsFor). */
   collaborators?: Collaborators;
   /** Connect and Message, shown under the person's info on someone else's page. */
   profileActions?: React.ReactNode;
+  /** Your own portfolio: shows Edit grid, to reorder the Work grid and resize its posts. */
+  canEditGrid?: boolean;
 }) {
   const stats: [string, number][] = [
     ["Credits", posts.length],
@@ -46,7 +58,9 @@ export default function ProfileView({
 
   return (
     <div className="mx-auto max-w-[1500px]">
-      <section className="flex flex-col gap-6 sm:flex-row sm:items-start">
+      <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
+      {/* Only as wide as its content (up to max-w-3xl), so the cards beside it start right after it instead of at the far right. */}
+      <section className="flex min-w-0 flex-col gap-6 sm:flex-row sm:items-start lg:max-w-3xl">
         <Avatar name={account.name} src={account.imageUrl} size="xl" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -70,7 +84,11 @@ export default function ProfileView({
             </div>
             {actions}
           </div>
-          <WorkStatusPill status={account.workStatus} className="mt-2" />
+          {editableStatus ? (
+            <WorkStatusPicker status={account.workStatus} className="mt-2" />
+          ) : (
+            <WorkStatusPill status={account.workStatus} className="mt-2" />
+          )}
           {account.academicLine && <p className="mt-1 text-muted">{account.academicLine}</p>}
           {school && <p className="text-sm text-muted">{school}</p>}
           {note && <p className="mt-1 text-sm text-muted">{note}</p>}
@@ -116,13 +134,19 @@ export default function ProfileView({
           {profileActions}
         </div>
       </section>
-
-      {styled}
+      {/* Actor, Filmmaker and Musician cards: right after the details on a wide window, under them on a narrow one. Only as wide as their text. */}
+      {info && <aside className="w-fit max-w-full shrink-0 empty:hidden lg:max-w-md">{info}</aside>}
+      </div>
 
       <hr className="my-8 border-border" />
 
-      <h2 className="mb-5 text-lg font-semibold">Work</h2>
-      {posts.length > 0 ? <ContentGrid posts={posts} /> : <p className="py-12 text-center text-muted">{emptyText}</p>}
+      {posts.length > 0 ? (
+        // In the person's own order and tile sizes (UserProfile.portfolioOrder / portfolioLayout).
+        <PortfolioGrid posts={sortByOrder(posts, account.portfolioOrder).map(toCard)} sizes={account.portfolioLayout} editable={canEditGrid} />
+      ) : <p className="py-12 text-center text-muted">{emptyText}</p>}
+
+      {/* Resume, filmography, songs: under the grid. */}
+      {styled && <div className="mt-12 space-y-12 border-t border-border pt-8 empty:hidden">{styled}</div>}
     </div>
   );
 }

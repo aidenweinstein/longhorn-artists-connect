@@ -3,7 +3,7 @@
 //  Longhorn Artists Connect
 //
 //  The sheet for editing the signed-in user's own profile: photo, name, year,
-//  bio, major/minor/certificate and role tags.
+//  bio, status, major/minor/certificate and role tags.
 //  Extracted from PortfolioView.swift.
 //
 
@@ -20,6 +20,7 @@ struct EditProfileView: View {
     @Binding var tempYear: String
     @Binding var tempUserTypes: Set<String>
     @Binding var tempBio: String
+    @Binding var tempWorkStatus: WorkStatus
     @Binding var tempMajor: String
     @Binding var tempMinor: String
     @Binding var tempCertificate: String
@@ -56,7 +57,7 @@ struct EditProfileView: View {
     @State private var isConfirmingCode = false
 
     // Tag-unlocked details (see CreativeGroup.swift): an actor's Actors Access sheet
-    // and headshot, a musician's streaming links, a filmmaker's specialties. Their
+    // and headshot, a musician's streaming links, a filmmaker's studios and gear. Their
     // Form sections appear below Tags the moment a matching tag is picked, and are
     // saved together with the rest of the profile. Loaded from the store on appear.
     @State private var creativeDetails = CreativeDetails()
@@ -393,6 +394,14 @@ struct EditProfileView: View {
 
             TextField("Bio", text: $tempBio, axis: .vertical)
                 .lineLimit(3...6)
+
+            // Availability shown as a pill under the name on the profile.
+            Picker("Status", selection: $tempWorkStatus) {
+                ForEach(WorkStatus.allCases) { status in
+                    Text(status.title).tag(status)
+                }
+            }
+            .pickerStyle(.menu)
 
             // School email verification. Accounts created before
             // verification existed are never forced through it, so this

@@ -1,42 +1,44 @@
 "use client";
 
-import { useState } from "react";
 import { CREW_ROLES, PROJECT_CATEGORIES, SCRIPT_GENRES, type ProjectCategory } from "@/lib/shareOptions";
 import { extension, image, pdfPageCount, raw } from "@/lib/shareUpload";
-import { CreditsRow, DateRow, FileIcon, FileRow, FilesRow, ListRow, Section, SelectRow, TextArea, TextInput, filledCredits, seedCredits } from "../FormKit";
+import { CreditsRow, DateRow, FileIcon, FileRow, FilesRow, ListRow, Section, SelectRow, TextArea, TextInput, filledCredits, seedCredits, type Credit } from "../FormKit";
+import { useDraftField, useKeptFiles } from "../DraftContext";
 import SubmissionShell from "../SubmissionShell";
 
 export default function ProjectForm() {
-  const [category, setCategory] = useState<ProjectCategory | "">("");
-  const [poster, setPoster] = useState<File | null>(null);
-  const [slides, setSlides] = useState<File[]>([]);
-  const [script, setScript] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [logline, setLogline] = useState("");
-  const [writers, setWriters] = useState("");
-  const [genre, setGenre] = useState("");
-  const [shootStart, setShootStart] = useState("");
-  const [shootEnd, setShootEnd] = useState("");
-  const [release, setRelease] = useState("");
-  const [castNeeded, setCastNeeded] = useState<string[]>([""]);
-  const [crewNeeded, setCrewNeeded] = useState<string[]>([""]);
-  const [castAssembled, setCastAssembled] = useState<string[]>([""]);
-  const [crewAssembled, setCrewAssembled] = useState(() => seedCredits(CREW_ROLES));
+  const [category, setCategory] = useDraftField<ProjectCategory | "">("category", "");
+  const [poster, setPoster] = useDraftField<File | null>("poster", null);
+  const [slides, setSlides] = useDraftField<File[]>("slides", []);
+  const [script, setScript] = useDraftField<File | null>("script", null);
+  const [title, setTitle] = useDraftField("title", "");
+  const [logline, setLogline] = useDraftField("logline", "");
+  const [writers, setWriters] = useDraftField("writers", "");
+  const [genre, setGenre] = useDraftField("genre", "");
+  const [shootStart, setShootStart] = useDraftField("shootStart", "");
+  const [shootEnd, setShootEnd] = useDraftField("shootEnd", "");
+  const [release, setRelease] = useDraftField("release", "");
+  const [castNeeded, setCastNeeded] = useDraftField<string[]>("castNeeded", [""]);
+  const [crewNeeded, setCrewNeeded] = useDraftField<string[]>("crewNeeded", [""]);
+  const [castAssembled, setCastAssembled] = useDraftField<Credit[]>("castAssembled", [{ role: "", name: "" }]);
+  const [crewAssembled, setCrewAssembled] = useDraftField("crewAssembled", () => seedCredits(CREW_ROLES));
 
   // No category yet shows the Cast & Crew Call fields, the most general layout.
   const layout: ProjectCategory = category || "Cast & Crew Call";
   const isScript = layout === "Script";
   const isCall = layout === "Cast & Crew Call";
 
+  // Editing: files the post already has count as there.
+  const kept = useKeptFiles();
   const missing = [
     !title.trim() && "title",
-    category === "Script" && !script && "script",
+    category === "Script" && !script && !kept.has("script") && "script",
     category === "Cast & Crew Call" && !shootStart && "shoot start",
   ].filter(Boolean) as string[];
 
   const assembledTeam = (
     <Section title="Assembled Team">
-      <ListRow label="Cast Assembled" items={castAssembled} onChange={setCastAssembled} placeholder="Actor name" addLabel="Add cast member" />
+      <CreditsRow label="Cast Assembled" credits={castAssembled} onChange={setCastAssembled} rolePlaceholder="Role" namePlaceholder="Actor" addLabel="Add cast member" />
       <CreditsRow label="Crew Assembled" credits={crewAssembled} onChange={setCrewAssembled} />
     </Section>
   );
@@ -65,9 +67,11 @@ export default function ProjectForm() {
             genres: isScript && genre ? [genre] : [],
             castNeeded: isCall ? castNeeded : [],
             crewNeeded: isCall ? crewNeeded : [],
-            castAssembled: isScript ? [] : castAssembled,
           },
-          credits: { crewAssembled: isScript ? [] : filledCredits(crewAssembled) },
+          credits: {
+            castAssembled: isScript ? [] : filledCredits(castAssembled),
+            crewAssembled: isScript ? [] : filledCredits(crewAssembled),
+          },
           numbers: {
             shootStartAt: isCall ? at(shootStart) : 0,
             releaseAt: isCall ? at(release) : 0,

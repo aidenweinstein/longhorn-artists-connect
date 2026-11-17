@@ -71,19 +71,41 @@ export type ActorDetails = {
   reelPostID?: string;
   resume: ResumeCredit[];
 };
-export const GENDERS = ["Female", "Male", "Non-binary"];
-export const UNIONS = ["Non-union", "SAG-AFTRA Eligible", "SAG-AFTRA", "AEA"];
+export const GENDERS = ["Female", "Male"];
+export const UNIONS = ["Non-union", "SAG-AFTRA Eligible", "AEA"];
+
+/** Streaming services a musician can link to, in display order (same names as the app). */
+export const STREAMING_SERVICES = [
+  { name: "Spotify", placeholder: "open.spotify.com/artist/…" },
+  { name: "Apple Music", placeholder: "music.apple.com/…" },
+  { name: "SoundCloud", placeholder: "soundcloud.com/…" },
+  { name: "Bandcamp", placeholder: "yourname.bandcamp.com" },
+  { name: "YouTube", placeholder: "youtube.com/@…" },
+] as const;
+
+/** Chip choices for instruments and genres, stored comma-separated (same lists as the app). */
+export const INSTRUMENT_OPTIONS = [
+  "Vocals", "Guitar", "Bass", "Drums", "Piano", "Keys / Synth", "Violin", "Viola", "Cello",
+  "Upright bass", "Saxophone", "Trumpet", "Trombone", "Flute", "Clarinet", "Ukulele", "Banjo",
+  "Harp", "Percussion", "DJ / Turntables", "Producer / Beats",
+];
+export const GENRE_OPTIONS = [
+  "Pop", "Rock", "Indie", "Alternative", "Hip-Hop", "R&B", "Soul", "Jazz", "Blues", "Classical",
+  "Country", "Folk", "Electronic", "House", "Metal", "Punk", "Latin", "Gospel", "Film score",
+  "Musical theatre", "Experimental",
+];
 
 export type MusicianDetails = {
-  artistName: string;
+  soloName: string;
+  bandName: string;
   instruments: string;
   genres: string;
-  availableForSessions: boolean;
-  availableForGigs: boolean;
-  availableForScoring: boolean;
+  /** Streaming page links keyed by service name, as typed (the scheme may be left off). */
+  streamingLinks: Record<string, string>;
 };
 
-export type FilmmakerDetails = { specialties: string; gear: string; openToCrew: boolean };
+/** `certifications` is shown as "Software"; the saved key keeps its old name so existing profiles still load. */
+export type FilmmakerDetails = { studios: string; certifications: string; gear: string };
 
 export type AuditionStatus = "Submitted" | "Callback" | "Booked" | "Not selected";
 export const AUDITION_STATUSES: AuditionStatus[] = ["Submitted", "Callback", "Booked", "Not selected"];
@@ -108,7 +130,6 @@ export type CreativeProfile = {
 
 const s = (v: unknown) => (typeof v === "string" ? v : "");
 const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-const b = (v: unknown, fallback: boolean) => (typeof v === "boolean" ? v : fallback);
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
 export function emptyDetails(): CreativeDetails {
@@ -154,14 +175,14 @@ export function parseDetails(raw: string): CreativeDetails {
       }),
     },
     musician: {
-      artistName: s(m.artistName),
+      // Older saves had one "artist or band name"; it reads as the solo act name.
+      soloName: typeof m.soloName === "string" ? m.soloName : s(m.artistName),
+      bandName: s(m.bandName),
       instruments: s(m.instruments),
       genres: s(m.genres),
-      availableForSessions: b(m.availableForSessions, false),
-      availableForGigs: b(m.availableForGigs, true),
-      availableForScoring: b(m.availableForScoring, false),
+      streamingLinks: Object.fromEntries(Object.entries(obj(m.streamingLinks)).filter(([, v]) => typeof v === "string" && v.trim()) as [string, string][]),
     },
-    filmmaker: { specialties: s(f.specialties), gear: s(f.gear), openToCrew: b(f.openToCrew, true) },
+    filmmaker: { studios: s(f.studios), certifications: s(f.certifications), gear: s(f.gear) },
     auditions: (Array.isArray(j.auditions) ? j.auditions : []).flatMap((x) => {
       const c = obj(x);
       const status = AUDITION_STATUSES.includes(c.status as AuditionStatus) ? (c.status as AuditionStatus) : "Submitted";
@@ -182,21 +203,34 @@ export function ageRangeText(a: ActorDetails): string {
 /** The rows beside an actor's headshot, skipping blanks. */
 export function actorStats(a: ActorDetails): { label: string; value: string }[] {
   return [
-    { label: "Age range", value: ageRangeText(a) },
     { label: "Gender", value: a.gender },
+    { label: "Playable age", value: ageRangeText(a) },
     { label: "Height", value: a.height },
     { label: "Ethnic appearance", value: a.ethnicAppearance },
     { label: "Hair", value: a.hair },
     { label: "Eyes", value: a.eyes },
     { label: "Union", value: a.union },
-    { label: "Based in", value: a.basedIn },
   ].filter((r) => r.value.trim());
 }
 
-export function musicianAvailability(m: MusicianDetails): string[] {
-  return [m.availableForGigs && "Live gigs", m.availableForSessions && "Session work", m.availableForScoring && "Scoring"].filter(
-    (x): x is string => !!x,
-  );
+/** The solo act and band names that are filled in. */
+export const actNames = (m: MusicianDetails) => [m.soloName, m.bandName].map((x) => x.trim()).filter(Boolean);
+
+/** Comma-separated instruments or genres, one per entry. */
+export const splitList = (text: string) => text.split(",").map((x) => x.trim()).filter(Boolean);
+
+/** Every streaming service with a usable link, in display order, with https:// added when left off. */
+export function streamingLinks(m: MusicianDetails): { service: string; url: string }[] {
+  return STREAMING_SERVICES.flatMap(({ name }) => {
+    const raw = m.streamingLinks[name]?.trim();
+    if (!raw) return [];
+    try {
+      const url = new URL(raw.includes("://") ? raw : `https://${raw}`);
+      return /^https?:$/.test(url.protocol) ? [{ service: name, url: url.toString() }] : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 // MARK: - What's filled in
@@ -209,9 +243,9 @@ export const hasActorInfo = (a: ActorDetails, headshotUrl?: string) =>
   a.ageMin !== undefined ||
   a.ageMax !== undefined ||
   a.resume.length > 0 ||
-  filled(a.gender, a.height, a.ethnicAppearance, a.hair, a.eyes, a.union, a.basedIn, a.languages, a.specialSkills, a.training, a.reelPostID);
-export const hasFilmmakerInfo = (f: FilmmakerDetails) => filled(f.specialties, f.gear);
-export const hasMusicianInfo = (m: MusicianDetails) => filled(m.artistName, m.instruments, m.genres);
+  filled(a.gender, a.height, a.ethnicAppearance, a.hair, a.eyes, a.union, a.languages, a.specialSkills, a.training, a.reelPostID);
+export const hasFilmmakerInfo = (f: FilmmakerDetails) => filled(f.studios, f.certifications, f.gear);
+export const hasMusicianInfo = (m: MusicianDetails) => filled(m.soloName, m.bandName, m.instruments, m.genres, ...Object.values(m.streamingLinks));
 export const hasAnyCreativeInfo = (d: CreativeDetails) => hasActorInfo(d.actor) || hasFilmmakerInfo(d.filmmaker) || hasMusicianInfo(d.musician);
 
 // MARK: - Recommendations

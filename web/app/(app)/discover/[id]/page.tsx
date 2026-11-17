@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { notFound } from "next/navigation";
 import ImageCarousel from "@/components/ImageCarousel";
 import MaskImage from "@/components/MaskImage";
+import EditPostLink from "@/components/EditPostLink";
 import PersonLink from "@/components/PersonLink";
 import { allDiscoverIDs, findDiscoverItem } from "@/lib/content";
 import type { NexusEvent, Project } from "@/lib/discoverContent";
@@ -134,7 +135,10 @@ function ProjectDetail({ p }: { p: Project }) {
     <Shell media={pictures.length ? <ImageCarousel images={pictures} aspect={2 / 3} /> : <Placeholder kind="project" />}>
       <div>
         <p className="text-sm font-semibold uppercase tracking-wide text-brand">{p.projectType}</p>
-        <h1 className="mt-1 text-3xl font-bold leading-tight">{p.title}</h1>
+        <div className="mt-1 flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-3xl font-bold leading-tight">{p.title}</h1>
+          <EditPostLink postID={p.id} />
+        </div>
         {p.castNeeded.length + p.crewNeeded.length + (p.castAssembled?.length ?? 0) + (p.crewAssembled?.length ?? 0) > 0 && (
           <span
             className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-semibold ${open ? "bg-brand text-white" : "bg-foreground/10 text-muted"}`}
@@ -246,7 +250,10 @@ function EventDetail({ e }: { e: NexusEvent }) {
     <Shell media={e.flyerUrl ? <ImageCarousel images={[e.flyerUrl]} aspect={2 / 3} /> : <Placeholder kind="event" />}>
       <div>
         {e.category && <p className="text-sm font-semibold uppercase tracking-wide text-brand">{e.category}</p>}
-        <h1 className="mt-1 text-3xl font-bold leading-tight">{e.title}</h1>
+        <div className="mt-1 flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-3xl font-bold leading-tight">{e.title}</h1>
+          <EditPostLink postID={e.id} />
+        </div>
         {dateLine && <p className="mt-2 text-lg font-semibold">{dateLine}</p>}
 
         {shows.length > 1 && (

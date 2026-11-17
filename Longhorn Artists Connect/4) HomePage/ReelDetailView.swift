@@ -141,7 +141,7 @@ struct ReelDetailView: View {
         // Stream only: play from a range-supporting CDN URL so playback starts without
         // ever writing the file to the device. Map each resolution outcome to a precise
         // status so the placeholder reports what's actually happening in production.
-        let (resolution, debug) = await CloudKitManager.shared.streamResolutionDetailed(submissionID: reel.id, type: .reel)
+        let (resolution, debug) = await CloudKitManager.shared.streamResolutionDetailed(for: reel)
         streamDebug = debug
         switch resolution {
         case .streaming(let streamURL):

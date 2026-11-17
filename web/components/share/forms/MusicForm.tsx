@@ -1,26 +1,26 @@
 "use client";
 
-import { useState } from "react";
 import { MUSIC_CATEGORIES, MUSIC_GENRES, PRODUCTION_ROLES, RECORDING_ROLES, STREAMING_SERVICES } from "@/lib/shareOptions";
 import { extension, image, mediaDuration, raw } from "@/lib/shareUpload";
-import { useReleaseYears, AudioIcon, DisclosureRow, FileRow, FilesRow, MultiSelectRow, Section, SelectRow, SubField, TextInput, ToggleRow, VideoIcon, filledCredits, seedCredits, subInput } from "../FormKit";
+import { useReleaseYears, AudioIcon, CreditLine, DisclosureRow, FileRow, FilesRow, MultiSelectRow, Section, SelectRow, SubField, TextInput, ToggleRow, VideoIcon, filledCredits, seedCredits, subInput, type Credit } from "../FormKit";
+import { useDraftField, useKeptFiles } from "../DraftContext";
 import SubmissionShell from "../SubmissionShell";
 
 export default function MusicForm() {
   const years = useReleaseYears();
-  const [category, setCategory] = useState("");
-  const [tracks, setTracks] = useState<File[]>([]);
-  const [cover, setCover] = useState<File | null>(null);
-  const [musicVideo, setMusicVideo] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [artist, setArtist] = useState("");
-  const [genres, setGenres] = useState<string[]>([]);
-  const [year, setYear] = useState("");
-  const [recording, setRecording] = useState(() => seedCredits(RECORDING_ROLES));
-  const [production, setProduction] = useState(() => seedCredits(PRODUCTION_ROLES));
-  const [explicit, setExplicit] = useState(false);
-  const [links, setLinks] = useState<Record<string, string>>({});
-  const [lyrics, setLyrics] = useState("");
+  const [category, setCategory] = useDraftField("category", "");
+  const [tracks, setTracks] = useDraftField<File[]>("tracks", []);
+  const [cover, setCover] = useDraftField<File | null>("cover", null);
+  const [musicVideo, setMusicVideo] = useDraftField<File | null>("musicVideo", null);
+  const [title, setTitle] = useDraftField("title", "");
+  const [artist, setArtist] = useDraftField("artist", "");
+  const [genres, setGenres] = useDraftField<string[]>("genres", []);
+  const [year, setYear] = useDraftField("year", "");
+  const [recording, setRecording] = useDraftField("recording", () => seedCredits(RECORDING_ROLES));
+  const [production, setProduction] = useDraftField("production", () => seedCredits(PRODUCTION_ROLES));
+  const [explicit, setExplicit] = useDraftField("explicit", false);
+  const [links, setLinks] = useDraftField<Record<string, string>>("links", {});
+  const [lyrics, setLyrics] = useDraftField("lyrics", "");
 
   const multiTrack = category === "EP" || category === "Album";
   const showsStreamingLinks = category !== "Performance";
@@ -28,8 +28,10 @@ export default function MusicForm() {
   const showsLyrics = category === "Song" || category === "";
   const hasCredits = filledCredits(recording).length + filledCredits(production).length > 0;
 
+  // Editing: files the post already has count as there.
+  const kept = useKeptFiles();
   const missing = [
-    !tracks.length && (multiTrack ? "tracks" : "audio file"),
+    !tracks.length && !kept.has("tracks") && (multiTrack ? "tracks" : "audio file"),
     !title.trim() && "title",
     !artist.trim() && "artist",
   ].filter(Boolean) as string[];
@@ -167,16 +169,12 @@ function TrackList({ tracks, onChange }: { tracks: File[]; onChange: (t: File[])
   );
 }
 
-function InlineCredits({ credits, onChange, placeholder }: { credits: { role: string; name: string }[]; onChange: (c: { role: string; name: string }[]) => void; placeholder: string }) {
-  const update = (i: number, patch: Partial<{ role: string; name: string }>) => onChange(credits.map((c, j) => (j === i ? { ...c, ...patch } : c)));
+function InlineCredits({ credits, onChange, placeholder }: { credits: Credit[]; onChange: (c: Credit[]) => void; placeholder: string }) {
+  const update = (i: number, patch: Partial<Credit>) => onChange(credits.map((c, j) => (j === i ? { ...c, ...patch } : c)));
   return (
     <div className="space-y-2">
       {credits.map((c, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <input aria-label={`Role ${i + 1}`} className={`${subInput} w-2/5`} placeholder={placeholder} value={c.role} onChange={(e) => update(i, { role: e.target.value })} />
-          <input aria-label={`Name for ${c.role || `role ${i + 1}`}`} className={`${subInput} min-w-0 flex-1`} placeholder="Name" value={c.name} onChange={(e) => update(i, { name: e.target.value })} />
-          <button type="button" aria-label={`Remove ${c.role || "row"}`} onClick={() => onChange(credits.filter((_, j) => j !== i))} className="h-7 w-7 shrink-0 text-lg leading-none text-muted hover:text-foreground">×</button>
-        </div>
+        <CreditLine key={i} credit={c} index={i} rolePlaceholder={placeholder} onChange={(patch) => update(i, patch)} onRemove={() => onChange(credits.filter((_, j) => j !== i))} />
       ))}
       <button type="button" onClick={() => onChange([...credits, { role: "", name: "" }])} className="text-sm font-medium text-brand">
         + Add credit

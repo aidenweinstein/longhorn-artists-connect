@@ -52,6 +52,10 @@ export function justGotSound(el: HTMLMediaElement) {
 export function playWithSound(el: HTMLMediaElement): () => void {
   install();
   let waiting = false;
+  // Set by the cleanup. A play() that was started here can fail later, after the
+  // player has been torn down and set up again on the same element; without this,
+  // that late failure would mute the element the new setup just started with sound.
+  let cancelled = false;
   const unmute = () => {
     if (waiting) {
       waiting = false;
@@ -61,10 +65,18 @@ export function playWithSound(el: HTMLMediaElement): () => void {
     remove();
   };
   const events = ["pointerdown", "keydown", "touchstart"] as const;
-  const remove = () => events.forEach((e) => window.removeEventListener(e, unmute, true));
+  const remove = () => {
+    cancelled = true;
+    events.forEach((e) => window.removeEventListener(e, unmute, true));
+  };
 
   el.muted = false;
-  el.play().catch(() => {
+  el.play().catch((error: unknown) => {
+    // Only the browser refusing sound (NotAllowedError) means "start muted". Being
+    // interrupted by a pause or a new link (AbortError) is not a refusal.
+    const name = error instanceof Error ? error.name : "";
+    if (cancelled || name !== "NotAllowedError") return;
+    console.info("[sound] the browser held back sound; starting muted until the first click or key");
     el.muted = true;
     el.play().catch(() => {});
     waiting = true;

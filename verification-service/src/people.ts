@@ -1,5 +1,10 @@
 /// People pages on the Nexus website: Filmmakers, Actors, Musicians.
 ///
+/// Public (no token; this is what the website's People pages show anyone):
+///   GET  /v1/people/listed             -> { filmmakers: [userID], actors: [userID], musicians: [userID] }
+///   The app reads this so its Actors / Filmmakers / Musicians pages list the same
+///   people as the website's (see WebsitePeopleList.swift).
+///
 /// Routes (server-to-server from the website only, behind WEB_CLIENT_TOKEN):
 ///   POST /v1/web/people/list           { category }                     -> { features }
 ///   POST /v1/web/people/apply          { category, email, profileID?, name, message, links } -> { id }
@@ -62,6 +67,25 @@ function feature(row: any) {
         postIDs,
         position: row.position,
     };
+}
+
+/**
+ * GET /v1/people/listed — who is on each People page, as raw CloudKit user record
+ * names (the "UserProfile_" prefix the website stores is dropped), in page order.
+ * Public: it holds nothing the website doesn't already show to anyone.
+ */
+export async function handlePeopleListed(env: Env): Promise<Response> {
+    const { results } = await env.DB.prepare(`SELECT category, profile_id FROM people_features ORDER BY position, created_at`).all<{
+        category: string;
+        profile_id: string;
+    }>();
+    const listed: Record<Category, string[]> = { filmmakers: [], actors: [], musicians: [] };
+    for (const row of results ?? []) {
+        if (!isCategory(row.category)) continue;
+        const userID = row.profile_id.replace(/^UserProfile_/, "");
+        if (userID && !listed[row.category].includes(userID)) listed[row.category].push(userID);
+    }
+    return json(listed, 200);
 }
 
 export async function handlePeople(request: Request, env: Env, path: string): Promise<Response> {

@@ -5,9 +5,11 @@
 //  The Network directory's four tabs — Everyone, Actors, Filmmakers, Musicians.
 //  Everyone is the plain directory list. The three group tabs are the website-style
 //  people pages: a large-photo grid, two cards across on iPhone, three on wider
-//  screens. Who appears on a group page is chosen by moderators
-//  (`DirectoryUser.directoryGroups`, set from Moderate › Users or by long-pressing a
-//  person in the directory in Moderator Mode) — not by the person's own tags.
+//  screens. Who appears on a group page is the same as on the website's People
+//  pages: the people the website's admins feature there (`WebsitePeopleList`) plus
+//  the people moderators put there in the app (`DirectoryUser.directoryGroups`, set
+//  from Moderate › Users or by long-pressing a person in the directory in Moderator
+//  Mode) — not the person's own tags.
 //
 
 import SwiftUI
@@ -42,10 +44,14 @@ enum DirectoryTab: String, CaseIterable, Identifiable {
     }
 
     /// Whether a directory user belongs on this tab: everyone is on Everyone; the
-    /// group pages list only the people a moderator has put there.
+    /// group pages list the people the website features there plus the people a
+    /// moderator has put there in the app — the same two sources the website's
+    /// People pages use, so both list the same people.
+    @MainActor
     func includes(_ user: DirectoryUser) -> Bool {
         guard let group else { return true }
         return user.directoryGroups.contains(group.rawValue)
+            || WebsitePeopleList.shared.contains(userID: user.id, group: group)
     }
 }
 
@@ -146,7 +152,7 @@ struct DirectoryPeopleGrid: View {
             }
         case .musicians:
             if let musician = details?.musician {
-                let line = [musician.artistName, musician.genres, musician.instruments]
+                let line = (musician.actNames + [musician.genres, musician.instruments])
                     .filter { !$0.isEmpty }.joined(separator: " · ")
                 if !line.isEmpty { return line }
             }

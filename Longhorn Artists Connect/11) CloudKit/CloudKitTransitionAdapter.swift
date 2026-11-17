@@ -255,7 +255,9 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.videoDuration = film.videoDuration
         submission.videoCrop = film.videoCrop
         submission.festivalBound = film.festivalBound
+        submission.mediaLinkURL = film.videoLinkURL
         submission.trailerFileName = film.trailerFileName
+        submission.trailerLinkURL = film.trailerLinkURL
         submission.btsImageFileNames = film.btsImageFileNames
         submission.stillImageFileNames = film.stillImageFileNames
 
@@ -296,6 +298,8 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.releaseYear = music.releaseYear
         submission.audioFileName = music.audioFileName
         submission.musicTrackFileNames = music.trackFileNames.isEmpty ? nil : music.trackFileNames
+        submission.mediaLinkURL = music.audioLinkURL
+        submission.musicTrackLinkURLs = music.trackLinkURLs.isEmpty ? nil : music.trackLinkURLs
         // Carry the audio length in the shared `videoDuration` cache so the feed's
         // duration badge shows for music the same way it does for film.
         submission.videoDuration = music.audioDuration
@@ -327,6 +331,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.orderedCast = reel.orderedCast
         submission.orderedCrew = reel.orderedCrew
         submission.videoFileName = reel.videoFileName
+        submission.mediaLinkURL = reel.videoLinkURL
         submission.videoDuration = reel.videoDuration
         submission.videoCrop = reel.videoCrop
         submission.featuredWorkIDs = reel.featuredWorkIDs
@@ -389,6 +394,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.releaseYear = design.releaseYear
         submission.designImageFileNames = design.imageFileNames
         submission.videoFileName = design.videoFileName
+        submission.mediaLinkURL = design.videoLinkURL
         submission.videoDuration = design.videoDuration
         submission.videoCrop = design.videoCrop
         submission.orderedCrew = design.orderedCrew

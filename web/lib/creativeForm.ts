@@ -3,6 +3,7 @@ import {
   GENDERS,
   RESUME_CATEGORIES,
   STYLE_INFO,
+  STREAMING_SERVICES,
   UNIONS,
   type CreativeDetails,
   type ProfileStyle,
@@ -54,8 +55,10 @@ export function detailsFromForm(form: FormData, base: CreativeDetails): Creative
       ethnicAppearance: text(form, "ethnicAppearance", 120),
       hair: text(form, "hair", 40),
       eyes: text(form, "eyes", 40),
-      union: pick(text(form, "union"), UNIONS),
-      basedIn: text(form, "basedIn", 80),
+      // A union saved before the list changed (e.g. "SAG-AFTRA") is kept until they pick another.
+      union: text(form, "union") === base.actor.union ? base.actor.union : pick(text(form, "union"), UNIONS),
+      // No longer edited; kept as saved.
+      basedIn: base.actor.basedIn,
       languages: text(form, "languages", 300),
       specialSkills: text(form, "specialSkills", 600),
       training: text(form, "training", 600),
@@ -63,17 +66,18 @@ export function detailsFromForm(form: FormData, base: CreativeDetails): Creative
       resume,
     },
     musician: {
-      artistName: text(form, "artistName", 80),
-      instruments: text(form, "instruments", 200),
-      genres: text(form, "genres", 200),
-      availableForGigs: form.get("availableForGigs") === "on",
-      availableForSessions: form.get("availableForSessions") === "on",
-      availableForScoring: form.get("availableForScoring") === "on",
+      soloName: text(form, "soloName", 80),
+      bandName: text(form, "bandName", 80),
+      instruments: text(form, "instruments", 400),
+      genres: text(form, "genres", 400),
+      streamingLinks: Object.fromEntries(
+        STREAMING_SERVICES.map(({ name }) => [name, text(form, `stream:${name}`, 300)] as const).filter(([, v]) => v),
+      ),
     },
     filmmaker: {
-      specialties: text(form, "specialties", 400),
+      studios: text(form, "studios", 400),
+      certifications: text(form, "certifications", 400),
       gear: text(form, "gear", 400),
-      openToCrew: form.get("openToCrew") === "on",
     },
   };
 }

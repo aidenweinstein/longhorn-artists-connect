@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { MIN_QUERY_LENGTH, type SearchResult } from "@/lib/search";
+import { MIN_QUERY_LENGTH, filtersInPlace, type SearchResult } from "@/lib/search";
 import { SearchGlyph } from "./icons";
 
 /** Row height in px; the list shows five rows and scrolls for the rest. */
@@ -11,7 +11,7 @@ const ROW = 56;
 const VISIBLE_ROWS = 5;
 
 function Thumb({ result }: { result: SearchResult }) {
-  const round = result.kind === "artist";
+  const round = result.kind === "artist" || result.kind === "organization";
   const shape = round ? "rounded-full" : "rounded-md";
   if (result.imageUrl) {
     // eslint-disable-next-line @next/next/no-img-element
@@ -97,6 +97,17 @@ export default function SearchBox() {
     if (showList && active >= 0 && results[active]) {
       setOpen(false);
       router.push(results[active].href);
+      return;
+    }
+    // Pages with a list of their own narrow it to what was typed. Anywhere else
+    // (Network, Portfolio, Share, a post...) Enter opens the best match instead.
+    if (trimmed && !filtersInPlace(pathname)) {
+      if (ready && loadedFor === trimmed && results[0]) {
+        setOpen(false);
+        router.push(results[0].href);
+      } else {
+        setOpen(true);
+      }
       return;
     }
     setOpen(false);
