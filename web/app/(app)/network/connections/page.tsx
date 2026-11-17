@@ -26,7 +26,8 @@ async function Body() {
   const current = await currentAccount();
   if (!current) return <Notice text="Sign in with your school email to see your connections." href="/signin" cta="Sign in" />;
   const me = current.session.userRecordName;
-  if (!me || !current.account) return <Notice text="This email isn't linked to a Nexus account yet. Finish creating your account to connect with people." />;
+  if (!me) return <Notice text="This email doesn't have a Nexus account yet. Create one to connect with people." href="/signup/finish" cta="Create your account" />;
+  if (!current.account) return <Notice text="Your account couldn't be loaded right now. Try again in a moment." />;
 
   let ids: Awaited<ReturnType<typeof myConnections>>;
   try {

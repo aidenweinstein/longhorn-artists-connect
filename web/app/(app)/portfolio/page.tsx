@@ -31,11 +31,24 @@ async function Profile() {
 
   const { session, account } = current;
   if (!account) {
+    // Verified email, no account yet: make one here (people without an iPhone can't use the app).
+    if (!session.userRecordName) {
+      return (
+        <Notice
+          title={`Signed in as ${session.email}`}
+          body="This email doesn't have a Nexus account yet. Add your name, major and tags to create one."
+        >
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/signup/finish" className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110">
+              Create your account
+            </Link>
+            <SignOutButton />
+          </div>
+        </Notice>
+      );
+    }
     return (
-      <Notice
-        title={`Signed in as ${session.email}`}
-        body="This email isn't linked to a Nexus account yet. Verify it in the Nexus app, then sign out and back in here to see your profile."
-      >
+      <Notice title={`Signed in as ${session.email}`} body="Your profile couldn't be loaded right now. Try again in a moment.">
         <SignOutButton />
       </Notice>
     );

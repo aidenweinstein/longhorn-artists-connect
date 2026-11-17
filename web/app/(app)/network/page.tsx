@@ -86,8 +86,10 @@ export default async function Network(props: PageProps<"/network">) {
   if (!me || !current.account) {
     return (
       <Notice
-        title="Link your Nexus account"
-        body="This email isn't linked to a Nexus account yet. Verify it in the Nexus app, then sign out and back in here to see your messages."
+        title="Create your Nexus account"
+        body="This email doesn't have a Nexus account yet. Create one to see and send messages."
+        href="/signup/finish"
+        cta="Create your account"
       />
     );
   }

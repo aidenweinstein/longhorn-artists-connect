@@ -28,7 +28,13 @@ async function LikedPosts() {
   }
   const user = current.session.userRecordName;
   if (!user) {
-    return <Notice body="This email isn't linked to a Nexus account yet, so there are no likes to show." />;
+    return (
+      <Notice body="This email doesn't have a Nexus account yet, so there are no likes to show.">
+        <Link href="/signup/finish" className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110">
+          Create your account
+        </Link>
+      </Notice>
+    );
   }
   if (!isCloudKitConfigured()) return <Empty />;
 

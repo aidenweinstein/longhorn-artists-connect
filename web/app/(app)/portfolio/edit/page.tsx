@@ -27,11 +27,14 @@ async function Editor() {
           {!current
             ? "Sign in with your school email to edit your profile."
             : !current.account
-              ? "This email isn't linked to a Nexus account yet. Verify it in the Nexus app, then sign out and back in here."
+              ? "This email doesn't have a Nexus account yet. Create one first, then you can edit your profile."
               : "Your profile couldn't be loaded right now. Try again in a moment."}
         </p>
-        <Link href={current ? "/portfolio" : "/signin"} className="inline-block rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110">
-          {current ? "Back to profile" : "Sign in"}
+        <Link
+          href={!current ? "/signin" : !current.account && !userRecordName ? "/signup/finish" : "/portfolio"}
+          className="inline-block rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110"
+        >
+          {!current ? "Sign in" : !current.account && !userRecordName ? "Create your account" : "Back to profile"}
         </Link>
       </div>
     );
