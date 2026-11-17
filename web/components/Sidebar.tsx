@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PAGES } from "@/lib/pages";
-import { OTHER_SCHOOLS, schoolForPath } from "@/lib/schools";
+import { schoolForPath } from "@/lib/schools";
 import { Suspense, useState, type ReactNode } from "react";
 import { PageGlyph, RocketGlyph } from "./icons";
 
@@ -14,7 +14,7 @@ const ALSO_UNDER: Record<string, string[]> = {
 };
 
 // Labels fade in only while the bar is open (data-open on the <nav>).
-const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opacity duration-150 group-data-[open=true]/nav:opacity-100";
+export const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opacity duration-150 group-data-[open=true]/nav:opacity-100";
 
 /**
  * `account` is the server-rendered Sign in button, or "Signed in as" once signed in.
@@ -23,20 +23,23 @@ const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opacity dura
  * prerendering on dynamic routes. The sidebar renders right away with nothing
  * highlighted, and the highlight streams in a moment later.
  */
-export default function Sidebar({ account, school }: { account: ReactNode; school: ReactNode }) {
+export default function Sidebar({ account, school, otherSchools }: { account: ReactNode; school: ReactNode; otherSchools: ReactNode }) {
   return (
-    <Suspense fallback={<SidebarView account={account} school={school} pathname={null} />}>
-      <CurrentSidebar account={account} school={school} />
+    <Suspense fallback={<SidebarView account={account} school={school} otherSchools={otherSchools} pathname={null} />}>
+      <CurrentSidebar account={account} school={school} otherSchools={otherSchools} />
     </Suspense>
   );
 }
 
-function CurrentSidebar({ account, school }: { account: ReactNode; school: ReactNode }) {
-  return <SidebarView account={account} school={school} pathname={usePathname()} />;
+function CurrentSidebar({ account, school, otherSchools }: { account: ReactNode; school: ReactNode; otherSchools: ReactNode }) {
+  return <SidebarView account={account} school={school} otherSchools={otherSchools} pathname={usePathname()} />;
 }
 
-/** `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the main pages. */
-function SidebarView({ account, school, pathname: current }: { account: ReactNode; school: ReactNode; pathname: string | null }) {
+/**
+ * `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the
+ * main pages; `otherSchools` is every other school (OtherSchools), under "Other Schools".
+ */
+function SidebarView({ account, school, otherSchools, pathname: current }: { account: ReactNode; school: ReactNode; otherSchools: ReactNode; pathname: string | null }) {
   // `null` while the address is still streaming in: nothing is highlighted yet.
   const known = current !== null;
   const pathname = current ?? "";
@@ -106,28 +109,7 @@ function SidebarView({ account, school, pathname: current }: { account: ReactNod
           <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
             Other Schools
           </p>
-          <div className="flex flex-col gap-0.5">
-            {OTHER_SCHOOLS.map((school) => {
-              const selected = otherSchool?.slug === school.slug;
-              return (
-                <Link
-                  key={school.slug}
-                  href={`/school/${school.slug}`}
-                  aria-label={school.name}
-                  aria-current={selected ? "page" : undefined}
-                  // The school you're viewing is shown in its own colors: main color behind, secondary (gold) text.
-                  style={selected ? { backgroundColor: school.color, color: school.accent } : undefined}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${
-                    selected ? "" : "text-muted hover:bg-surface hover:text-foreground"
-                  }`}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={school.logo} alt="" className="h-6 w-6 shrink-0 rounded-full object-cover" />
-                  <span className={LABEL}>{school.name}</span>
-                </Link>
-              );
-            })}
-          </div>
+          {otherSchools}
         </div>
 
         <div className="mt-3 border-t border-border pt-3">

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { currentSession } from "@/lib/account";
 import { HOME_SCHOOL, schoolForID } from "@/lib/schools";
+import OtherSchools from "./OtherSchools";
 
 const row = "flex items-center gap-3.5 rounded-xl px-2 py-2 transition-colors hover:bg-surface";
 
@@ -29,4 +30,9 @@ export default async function SchoolBadge() {
       </span>
     </Link>
   );
+}
+
+/** The sidebar's other schools: all but the visitor's own (the home school when signed out). */
+export async function VisitorOtherSchools() {
+  return <OtherSchools mine={schoolForID((await currentSession())?.schoolID).slug} />;
 }

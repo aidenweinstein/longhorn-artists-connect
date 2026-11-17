@@ -20,11 +20,12 @@ export const HOME_SCHOOL: School = SCHOOLS[0];
 // Each one gets its own Home feed at /school/<slug>, tinted in its school colors.
 export const OTHER_SCHOOLS: readonly School[] = SCHOOLS.filter((s) => s.slug !== HOME_SCHOOL.slug);
 
+/** Any school by slug: every school, the home one included, has a feed at /school/<slug>. */
 export function schoolForSlug(slug: string): School | undefined {
-  return OTHER_SCHOOLS.find((s) => s.slug === slug);
+  return SCHOOLS.find((s) => s.slug === slug);
 }
 
-/** The other school whose feed this path shows, if any. */
+/** The school whose feed this path shows (/school/<slug>), if any. */
 export function schoolForPath(pathname: string): School | undefined {
   const m = pathname.match(/^\/school\/([^/]+)/);
   return m ? schoolForSlug(m[1]) : undefined;
