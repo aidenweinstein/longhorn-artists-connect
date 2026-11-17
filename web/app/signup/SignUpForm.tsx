@@ -20,12 +20,13 @@ const ROLES: { id: Role; title: string }[] = [
   { id: "educator", title: "I'm an Educator" },
 ];
 
-const STEPS: Step[] = ["school", "role", "details", "code", "profile"];
+const STEPS: Step[] = ["school", "role", "profile", "details", "code"];
 
 /**
  * Sign-up. The school comes first, on a black and white screen with each school in its
  * own colors; picking one turns the rest of sign-up that school's colors. Name, major,
- * class and tags are all on the one step after the code.
+ * class and tags come next, and the email and code come last: the right code creates the
+ * account in that same request, so there's no gap for the sign-in to go missing in.
  * `finish` picks up after the email code for someone who signed in with an email that
  * has no account yet (`schoolID` is the school they signed in at), so it asks student or
  * educator and skips the school, email and code steps.
@@ -51,6 +52,8 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
   const [tags, setTags] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [signInAgain, setSignInAgain] = useState(false);
+  // The code was right but creating the account failed: Create account retries it.
+  const [codeDone, setCodeDone] = useState(false);
   const [existing, setExisting] = useState(false);
   const [busy, startTransition] = useTransition();
   // TESTING ONLY (`npm run dev`): the email and code steps were skipped, so the rest of the
@@ -69,12 +72,17 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
   const [firstName, ...rest] = name.trim().split(/\s+/);
   const lastName = rest.join(" ");
 
-  function verified(hasAccount: boolean) {
+  function verified(hasAccount: boolean, outcome?: { created?: boolean; createError?: string; signInAgain?: boolean }) {
     // This email already has a Nexus account (made in the app or here): they're signed in.
     if (hasAccount) {
-      setExisting(hasAccount);
+      setExisting(true);
       return setStep("done");
     }
+    if (practice || outcome?.created) return setStep("done");
+    // Verified, but the account wasn't made: back to the details, where Create account retries.
+    setCodeDone(true);
+    setError(outcome?.createError ?? "Something went wrong creating your account. Try again.");
+    setSignInAgain(!!outcome?.signInAgain);
     startProfile();
   }
 
@@ -103,6 +111,8 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
     if (!profileOk || busy) return;
     setError(null);
     setSignInAgain(false);
+    // New sign-ups go on to the email and code; the account is made when the code is right.
+    if (!finish && !codeDone) return setStep("details");
     if (practice) return setStep("done");
     startTransition(async () => {
       const result = await createAccountAction({ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" });
@@ -141,7 +151,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
               <p className="font-semibold">{r.title}</p>
             </button>
           ))}
-          <button type="button" disabled={!role} onClick={() => (finish ? startProfile() : setStep("details"))} className={`${primaryBtn} mt-3`}>
+          <button type="button" disabled={!role} onClick={startProfile} className={`${primaryBtn} mt-3`}>
             Next
           </button>
           {!finish && (
@@ -167,7 +177,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
           <button type="submit" disabled={!emailOk || busy} className={primaryBtn}>
             {busy ? "Sending…" : "Send code"}
           </button>
-          <button type="button" onClick={() => setStep("role")} className="w-full text-sm text-white/60 hover:text-white">Back</button>
+          <button type="button" onClick={() => setStep("profile")} className="w-full text-sm text-white/60 hover:text-white">Back</button>
           {/* Testing shortcut; only under `npm run dev`, never on the live site. */}
           {process.env.NODE_ENV === "development" && !mock && (
             <button
@@ -175,7 +185,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
               onClick={() => {
                 setError(null);
                 setSkipped(true);
-                startProfile();
+                setStep("done");
               }}
               className="h-10 w-full rounded-full border border-dashed border-yellow-400/60 text-sm font-semibold text-yellow-300 transition hover:bg-yellow-300/10"
             >
@@ -186,7 +196,14 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
       )}
 
       {step === "code" && (
-        <CodeStep mock={mock} email={email} pendingID={pendingID} onBack={() => setStep("details")} onVerified={verified} />
+        <CodeStep
+          mock={mock}
+          email={email}
+          pendingID={pendingID}
+          onBack={() => setStep("details")}
+          onVerified={verified}
+          account={{ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" }}
+        />
       )}
 
       {step === "profile" && (
@@ -243,8 +260,11 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
             </p>
           )}
           <button type="submit" disabled={!profileOk || busy} className={primaryBtn}>
-            {busy ? "Creating account…" : "Create account"}
+            {finish || codeDone ? (busy ? "Creating account…" : "Create account") : "Next"}
           </button>
+          {!finish && !codeDone && (
+            <button type="button" onClick={() => setStep("role")} className="w-full text-sm text-white/60 hover:text-white">Back</button>
+          )}
         </form>
       )}
 

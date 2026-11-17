@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useTransition, type FormEvent } from "react";
-import { confirmCodeAction, confirmGuestCodeAction, requestCodeAction, requestGuestCodeAction } from "@/app/auth/actions";
+import { confirmCodeAction, confirmGuestCodeAction, requestCodeAction, requestGuestCodeAction, type NewAccount } from "@/app/auth/actions";
 import { field, primaryBtn } from "./AuthShell";
 
 /** Six-digit email code entry. Confirms with verification-service and starts a session. */
-export default function CodeStep({ email, pendingID: initialID, onBack, onVerified, mock = false, guest = false }: {
+export default function CodeStep({ email, pendingID: initialID, onBack, onVerified, mock = false, guest = false, account }: {
+  /** Sign-up: the details already filled in, so the account is created when the code is right. */
+  account?: NewAccount;
   /** "Continue as guest": the code confirms any email and grants a guest pass, not a sign-in. */
   guest?: boolean;
   /** Mock launch: no email was sent and any 6 digits pass. */
@@ -13,8 +15,11 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
   email: string;
   pendingID: string;
   onBack: () => void;
-  /** `hasAccount` is false when no Nexus account owns this email yet. */
-  onVerified: (hasAccount: boolean) => void;
+  /**
+   * `hasAccount` is false when no Nexus account owns this email yet. With `account`,
+   * `outcome` says whether the new account was created, or why not.
+   */
+  onVerified: (hasAccount: boolean, outcome?: { created?: boolean; createError?: string; signInAgain?: boolean }) => void;
 }) {
   const [pendingID, setPendingID] = useState(initialID);
   const [code, setCode] = useState("");
@@ -35,8 +40,8 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
         else setError(result.message);
         return;
       }
-      const result = await confirmCodeAction(pendingID, code);
-      if (result.ok) onVerified(result.hasAccount);
+      const result = await confirmCodeAction(pendingID, code, account);
+      if (result.ok) onVerified(result.hasAccount, result);
       else setError(result.message);
     });
   }
@@ -77,7 +82,7 @@ export default function CodeStep({ email, pendingID: initialID, onBack, onVerifi
       {mock && <p className="text-xs text-white/70">Mock launch: no email was sent. Type any 6 digits.</p>}
       {notice && !error && <p className="text-sm text-white/60">{notice}</p>}
       <button type="submit" disabled={!ready} className={primaryBtn}>
-        {busy ? "Checking…" : "Verify"}
+        {busy ? (account ? "Creating account…" : "Checking…") : account ? "Verify and create account" : "Verify"}
       </button>
       <div className="flex justify-between text-sm text-white/60">
         <button type="button" onClick={onBack} className="hover:text-white">Use a different email</button>

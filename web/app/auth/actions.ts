@@ -52,12 +52,20 @@ export async function requestCodeAction(email: string, schoolID?: string, role?:
 
 /**
  * Confirms the email code and signs the visitor in. `hasAccount` is false when no
- * Nexus account owns this email yet; the visitor then finishes sign-up to create one.
+ * Nexus account owns this email yet.
+ * Sign-up passes the details it already collected as `account`: the account is then
+ * created in this same request, straight from the verified code, so it never depends
+ * on the session cookie making it back between two steps. `created` says it worked;
+ * `createError` says why it didn't (the visitor is still signed in and can retry).
  */
 export async function confirmCodeAction(
   pendingID: string,
   code: string,
-): Promise<{ ok: true; hasAccount: boolean } | { ok: false; message: string }> {
+  account?: NewAccount,
+): Promise<
+  | { ok: true; hasAccount: boolean; created?: boolean; createError?: string; signInAgain?: boolean }
+  | { ok: false; message: string }
+> {
   if (!/^\d{6}$/.test(code)) return { ok: false, message: "Enter the 6-digit code." };
 
   const result = await confirmCode(pendingID, code, await clientIP());
@@ -65,15 +73,21 @@ export async function confirmCodeAction(
   // A guest's code proves a personal address, never a school one: it can't sign anyone in.
   if (result.domainKind === "guest") return { ok: false, message: "Sign in with your school email address." };
 
-  await startSession({
+  const session: Omit<Session, "issuedAt"> = {
     email: result.email,
     schoolID: result.schoolID,
     schoolName: result.schoolName,
     domainKind: result.domainKind,
     userRecordName: result.userRecordName,
     accountToken: result.userRecordName ? undefined : result.accountToken,
-  });
-  return { ok: true, hasAccount: !!result.userRecordName };
+  };
+  await startSession(session);
+  if (result.userRecordName) return { ok: true, hasAccount: true };
+  if (!account) return { ok: true, hasAccount: false };
+
+  const created = await createFromSession(session, account);
+  if (created.ok) return { ok: true, hasAccount: false, created: true };
+  return { ok: true, hasAccount: false, createError: created.message, signInAgain: created.signInAgain };
 }
 
 /** "Continue as guest", step 1: emails a code to any address the visitor gives. */
@@ -121,6 +135,14 @@ export async function createAccountAction(
 ): Promise<{ ok: true } | { ok: false; message: string; signInAgain?: boolean }> {
   const session = decodeSession((await cookies()).get(SESSION_COOKIE)?.value);
   if (!session) return { ok: false, message: "Your sign-in expired. Sign in again to finish.", signInAgain: true };
+  return createFromSession(session, input);
+}
+
+/** Creates the account for a verified session that has an accountToken, then signs it in. */
+async function createFromSession(
+  session: Omit<Session, "issuedAt">,
+  input: NewAccount,
+): Promise<{ ok: true } | { ok: false; message: string; signInAgain?: boolean }> {
   if (session.userRecordName) return { ok: true }; // already has one
   if (!session.accountToken) {
     return { ok: false, message: "Your sign-in expired. Sign in again to finish.", signInAgain: true };
