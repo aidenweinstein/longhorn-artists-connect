@@ -13,6 +13,27 @@ export const SCHOOLS = [
 
 export type School = (typeof SCHOOLS)[number];
 
+/** Every way a profile's `school` field names each school (the app and verification-service write the full name). */
+const SCHOOL_NAMES: Record<string, string[]> = {
+  "ut-austin": ["The University of Texas at Austin", "University of Texas at Austin", "UT Austin", "UT"],
+  berkeley: ["University of California, Berkeley", "UC Berkeley", "Berkeley", "Cal"],
+  usc: ["University of Southern California", "USC"],
+  umich: ["University of Michigan", "UMich", "Michigan"],
+  tamu: ["Texas A&M University", "Texas A&M"],
+};
+
+const normalized = (name: string) => name.toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();
+
+/**
+ * Which school a profile's `school` field means. Empty is UT Austin, as in the app: its
+ * first accounts were all UT and never stored a school. A school not on the website is undefined.
+ */
+export function schoolSlugForName(name: string | undefined): string | undefined {
+  const n = normalized(name ?? "");
+  if (!n) return HOME_SCHOOL.slug;
+  return Object.keys(SCHOOL_NAMES).find((slug) => SCHOOL_NAMES[slug].some((alias) => normalized(alias) === n));
+}
+
 /** The school the site is themed for: Home is its feed, and it's the badge shown to anyone not signed in. */
 export const HOME_SCHOOL: School = SCHOOLS[0];
 

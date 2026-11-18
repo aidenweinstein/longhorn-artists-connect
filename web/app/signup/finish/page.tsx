@@ -30,5 +30,8 @@ export default function FinishSignUp() {
 
 async function FinishForm() {
   const session = await currentSession();
-  return <SignUpForm finish schoolID={session?.schoolID} />;
+  // A sign-in from before website accounts worked (or whose token was lost) can't make an
+  // account by itself: that email gets a fresh code at the end, which creates the account.
+  const recheck = !!session && !session.userRecordName && !session.accountToken;
+  return <SignUpForm finish schoolID={session?.schoolID} recheckEmail={recheck ? session.email : undefined} />;
 }

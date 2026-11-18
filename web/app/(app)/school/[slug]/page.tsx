@@ -5,11 +5,11 @@ import PostGrid from "@/components/PostGrid";
 import { feedPosts } from "@/lib/content";
 import { filterPosts } from "@/lib/filterPosts";
 import { mixFeed, newFeedSeed } from "@/lib/mixFeed";
-import { schoolForSlug } from "@/lib/schools";
+import { schoolForSlug, schoolSlugForName } from "@/lib/schools";
 
 export const instant = false;
 
-// Another school's Home feed: only posts from that school.
+// A school's feed: only posts by people at that school.
 export default async function SchoolHome(props: PageProps<"/school/[slug]">) {
   const { slug } = await props.params;
   const school = schoolForSlug(slug);
@@ -17,7 +17,8 @@ export default async function SchoolHome(props: PageProps<"/school/[slug]">) {
 
   const params = await props.searchParams;
   await connection();
-  const posts = (await feedPosts()).filter((p) => p.school === school.name);
+  // Posts made or credited by people at this school (an early app post with no school is UT Austin's).
+  const posts = (await feedPosts()).filter((p) => (p.schoolSlugs ?? [schoolSlugForName(p.school)]).includes(school.slug));
 
   return (
     // The school's secondary color (gold for USC, Berkeley and Michigan) stands in for the brand color on its feed, e.g. preview progress bars.

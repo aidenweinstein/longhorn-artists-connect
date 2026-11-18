@@ -8,6 +8,8 @@ export type Post = {
   title: string;
   creator: string;
   school: string;
+  /** The schools (lib/schools.ts slugs) of the creator and everyone credited: the school feeds the post is on. */
+  schoolSlugs?: string[];
   category: CategoryId;
   meta: string;
   /** Width / height of the media, e.g. 16 / 9. */

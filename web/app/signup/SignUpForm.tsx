@@ -33,7 +33,13 @@ const STEPS: Step[] = ["school", "role", "profile", "details", "code"];
  * `mock` is the Mock launch walkthrough: every screen works, but no email is sent, any
  * 6-digit code passes, and no account or session is created.
  */
-export default function SignUpForm({ finish = false, mock = false, schoolID }: { finish?: boolean; mock?: boolean; schoolID?: string }) {
+export default function SignUpForm({ finish = false, mock = false, schoolID, recheckEmail }: {
+  finish?: boolean;
+  mock?: boolean;
+  schoolID?: string;
+  /** Finish: this signed-in email has no account token, so it's sent a new code after the details. */
+  recheckEmail?: string;
+}) {
   const [step, setStep] = useState<Step>(finish ? "role" : "school");
   const [role, setRole] = useState<Role | null>(null);
   const [school, setSchool] = useState<SignupSchool | null>(() => (finish ? signupSchool(schoolID) ?? null : null));
@@ -67,7 +73,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
   // domain, educators one of its educator domains.
   const domains = school && role ? emailDomains(school, role) : [];
   const domain = domains.includes(pickedDomain) ? pickedDomain : domains[0] ?? "";
-  const email = emailID && domain ? `${emailID}@${domain}` : "";
+  const email = recheckEmail ?? (emailID && domain ? `${emailID}@${domain}` : "");
   const emailOk = !!school && !!role && isSchoolEmail(email, school, role);
   const [firstName, ...rest] = name.trim().split(/\s+/);
   const lastName = rest.join(" ");
@@ -113,6 +119,17 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
     setSignInAgain(false);
     // New sign-ups go on to the email and code; the account is made when the code is right.
     if (!finish && !codeDone) return setStep("details");
+    // Finishing with an old sign-in: a fresh code to the same email, which makes the account.
+    if (recheckEmail && !codeDone) {
+      startTransition(async () => {
+        const result = await requestCodeAction(recheckEmail, school?.id, role ?? "student");
+        if (result.ok) {
+          setPendingID(result.pendingID);
+          setStep("code");
+        } else setError(result.message);
+      });
+      return;
+    }
     if (practice) return setStep("done");
     startTransition(async () => {
       const result = await createAccountAction({ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" });
@@ -200,7 +217,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
           mock={mock}
           email={email}
           pendingID={pendingID}
-          onBack={() => setStep("details")}
+          onBack={() => setStep(recheckEmail ? "profile" : "details")}
           onVerified={verified}
           account={{ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" }}
         />
@@ -260,7 +277,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID }: {
             </p>
           )}
           <button type="submit" disabled={!profileOk || busy} className={primaryBtn}>
-            {finish || codeDone ? (busy ? "Creating account…" : "Create account") : "Next"}
+            {recheckEmail && !codeDone ? (busy ? "Sending code…" : "Next") : finish || codeDone ? (busy ? "Creating account…" : "Create account") : "Next"}
           </button>
           {!finish && !codeDone && (
             <button type="button" onClick={() => setStep("role")} className="w-full text-sm text-white/60 hover:text-white">Back</button>

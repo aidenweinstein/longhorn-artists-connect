@@ -6,6 +6,7 @@ import type { ProfileFields } from "../profileFields";
 import { cleanWorkStatus } from "../workStatus";
 import type { Credit, CreditGroup } from "../postDetails";
 import { imageAspect } from "./imageSize";
+import { schoolSlugForName } from "../schools";
 import { posterSource, profileImage } from "../smallImage";
 import { asset, assetChecksum, assetChecksums, assets, fileURL, fileURLs, isCloudKitConfigured, list, lookup, num, queryAll, str, type CKRecord } from "./client";
 
@@ -463,11 +464,13 @@ type Profile = {
   /** In profileDirectory, `imageUrl` is a small copy and this is the full-size upload. */
   fullImageUrl?: string;
   roles: string[];
+  /** The profile's school as stored ("University of Southern California"); empty for early UT accounts. */
+  school?: string;
 };
 
 async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile> }> {
   // Only the fields used here: profiles also hold bios, links and more that no list needs.
-  const records = await safeQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes"]);
+  const records = await safeQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes", "school"]);
   const byID = new Map<string, Profile>();
   const nameCounts = new Map<string, number>();
   const byName = new Map<string, Profile>();
@@ -480,6 +483,7 @@ async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<str
       imageKey: assetChecksum(r, "profileImage"),
       // The app's role tags ("Director", "Actor"...), stored as one comma-separated string.
       roles: str(r, "userTypes").split(",").map((t) => t.trim()).filter(Boolean),
+      school: str(r, "school"),
     };
     byID.set(r.recordName, profile);
     const key = name.toLowerCase();
@@ -530,14 +534,22 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     post.creatorAvatarUrl = creator?.imageUrl;
     post.creatorAvatarKey = creator?.imageKey;
     post.creatorProfileID = creator?.id ?? post.creatorProfileID;
+    // A post is on the feed of its creator's school and of every credited person's school,
+    // so a UT and USC collaboration shows on both. An unknown creator counts as UT, like the app's early posts.
+    const schools = new Set<string>();
+    const creatorSchool = schoolSlugForName(creator?.school);
+    if (creatorSchool) schools.add(creatorSchool);
     for (const group of post.details?.creditGroups ?? []) {
       for (const c of group.credits) {
         const person = find(c.profileID, c.name);
         c.avatarUrl = person?.imageUrl;
         c.avatarKey = person?.imageKey;
         c.profileID = person?.id ?? c.profileID;
+        const school = person ? schoolSlugForName(person.school) : undefined;
+        if (school) schools.add(school);
       }
     }
+    post.schoolSlugs = [...schools];
   }
 }
 
