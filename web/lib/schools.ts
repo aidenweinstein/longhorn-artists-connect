@@ -54,3 +54,18 @@ export function schoolForPath(pathname: string): School | undefined {
 
 /** The school a signed-in visitor verified with (a session's `schoolID`), or the home school. */
 export const schoolForID = (id: string | undefined | null): School => SCHOOLS.find((s) => s.slug === id) ?? HOME_SCHOOL;
+
+/**
+ * Colors for buttons that belong to someone at `slug` (Connect, Message on their
+ * portfolio), as CSS variables, so they show that person's school whatever the
+ * viewer's own school is. Uses a color that reads on the dark page: UT's orange,
+ * and the other schools' bright accent (Berkeley gold, A&M white) with the school
+ * color for text on it. Undefined when it's the viewer's own school.
+ */
+export function schoolButtonStyle(slug: string | undefined, viewerSlug: string | undefined): Record<string, string> | undefined {
+  const school = slug ? schoolForSlug(slug) : undefined;
+  if (!school || school.slug === (viewerSlug || HOME_SCHOOL.slug)) return undefined;
+  return school.slug === HOME_SCHOOL.slug
+    ? { "--brand": school.color, "--brand-foreground": "#ffffff" }
+    : { "--brand": school.accent, "--brand-foreground": school.color };
+}

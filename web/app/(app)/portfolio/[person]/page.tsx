@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+import { Suspense, type CSSProperties } from "react";
 import { notFound } from "next/navigation";
 import ProfileView, { ProfileSkeleton } from "@/components/ProfileView";
 import StyledProfile from "@/components/StyledProfile";
@@ -10,6 +10,7 @@ import ProfileActions from "@/components/ProfileActions";
 import { connectionState } from "@/lib/cloudkit/connections";
 import { collaboratorsFor, creditedPosts, currentAccount, personAccount } from "@/lib/account";
 import { sampleAccount, sampleById, sampleCreative } from "@/lib/sampleProfiles";
+import { schoolButtonStyle, schoolSlugForName } from "@/lib/schools";
 
 /** Anyone's portfolio, opened by clicking their name anywhere on the site. */
 export default function PersonPortfolio(props: PageProps<"/portfolio/[person]">) {
@@ -69,7 +70,14 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
       actions={isMe ? <SignOutButton /> : undefined}
       editableStatus={isMe}
       canEditGrid={isMe}
-      profileActions={canInteract ? <ProfileActions profileID={account.profileID} name={account.name} initialState={connection} /> : undefined}
+      profileActions={
+        canInteract ? (
+          // In the person's school colors, not the viewer's.
+          <div style={schoolButtonStyle(schoolSlugForName(account.school), current?.session.schoolID) as CSSProperties | undefined}>
+            <ProfileActions profileID={account.profileID} name={account.name} initialState={connection} />
+          </div>
+        ) : undefined
+      }
       note={linked ? undefined : "Credited on Nexus, but not linked to a Nexus profile yet."}
       emptyText={`No credited work from ${account.name.split(" ")[0] || "them"} yet.`}
     />
