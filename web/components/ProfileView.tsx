@@ -24,6 +24,7 @@ export default function ProfileView({
   collaborators,
   profileActions,
   canEditGrid,
+  connects,
 }: {
   account: Account;
   posts: Post[];
@@ -46,11 +47,13 @@ export default function ProfileView({
   profileActions?: React.ReactNode;
   /** Your own portfolio: shows Edit grid, to reorder the Work grid and resize its posts. */
   canEditGrid?: boolean;
+  /** How many people they're connected with (both sides accepted), from myConnections. */
+  connects?: number;
 }) {
   const stats: [string, number][] = [
     ["Projects", posts.length],
-    // Connects are requested and accepted in the app; none exist yet to count.
-    ["Connects", 0],
+    // Accepted connections (both people's Connection records exist), app and website alike.
+    ["Connects", connects ?? 0],
   ];
   // Without a directory check, anyone linked to a profile counts as on Nexus.
   const collabs = collaborators ?? collaboratorList(posts, account);

@@ -7,6 +7,7 @@ import { discoverItems } from "@/lib/content";
 import type { DiscoverItem, NexusEvent } from "@/lib/discoverContent";
 import SignOutButton from "@/components/SignOutButton";
 import { collaboratorsFor, creditedPosts, currentAccount } from "@/lib/account";
+import { myConnections } from "@/lib/cloudkit/connections";
 
 export default function Portfolio() {
   return (
@@ -54,10 +55,13 @@ async function Profile() {
     );
   }
 
-  const [posts, creative, items] = await Promise.all([
+  const [posts, creative, items, connects] = await Promise.all([
     creditedPosts(account),
     session.userRecordName ? getCreativeProfile(session.userRecordName) : Promise.resolve(null),
     discoverItems().catch((): DiscoverItem[] => []),
+    session.userRecordName
+      ? myConnections(session.userRecordName).then((c) => c.connected.length).catch(() => 0)
+      : Promise.resolve(0),
   ]);
   const events = items.filter((i): i is NexusEvent => i.kind === "event");
   const collaborators = await collaboratorsFor(posts, account);
@@ -72,6 +76,7 @@ async function Profile() {
       displayName={session.email}
       schoolFallback={session.schoolName}
       canEditGrid={!!session.userRecordName}
+      connects={connects}
       // On anything wider than a phone these two are on the top bar (PortfolioBarActions).
       actions={
         <div className="flex items-center gap-2 sm:hidden">

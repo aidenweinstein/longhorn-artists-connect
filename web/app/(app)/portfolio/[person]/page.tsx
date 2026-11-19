@@ -7,7 +7,7 @@ import { discoverItems } from "@/lib/content";
 import type { DiscoverItem, NexusEvent } from "@/lib/discoverContent";
 import SignOutButton from "@/components/SignOutButton";
 import ProfileActions from "@/components/ProfileActions";
-import { connectionState } from "@/lib/cloudkit/connections";
+import { connectionState, myConnections } from "@/lib/cloudkit/connections";
 import { collaboratorsFor, creditedPosts, currentAccount, personAccount } from "@/lib/account";
 import { sampleAccount, sampleById, sampleCreative } from "@/lib/sampleProfiles";
 import { schoolButtonStyle, schoolSlugForName } from "@/lib/schools";
@@ -47,10 +47,11 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
 
   const linked = account.profileID !== "";
   const isMe = linked && current?.account?.profileID === account.profileID;
-  const [posts, creative, items] = await Promise.all([
+  const [posts, creative, items, connects] = await Promise.all([
     creditedPosts(account),
     linked ? getCreativeProfile(account.profileID) : Promise.resolve(null),
     discoverItems().catch((): DiscoverItem[] => []),
+    linked ? connectCount(account.profileID) : Promise.resolve(0),
   ]);
   const events = items.filter((i): i is NexusEvent => i.kind === "event");
   const collaborators = await collaboratorsFor(posts, account);
@@ -70,6 +71,7 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
       actions={isMe ? <SignOutButton /> : undefined}
       editableStatus={isMe}
       canEditGrid={isMe}
+      connects={connects}
       profileActions={
         canInteract ? (
           // In the person's school colors, not the viewer's.
@@ -82,4 +84,10 @@ async function Person({ params }: { params: PageProps<"/portfolio/[person]">["pa
       emptyText={`No credited work from ${account.name.split(" ")[0] || "them"} yet.`}
     />
   );
+}
+
+/** How many people this account is connected with; 0 if CloudKit can't be read. */
+async function connectCount(profileID: string): Promise<number> {
+  if (!profileID) return 0;
+  return myConnections(profileID).then((c) => c.connected.length).catch(() => 0);
 }
