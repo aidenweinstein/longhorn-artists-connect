@@ -429,3 +429,12 @@ npm run dev        # http://localhost:3000
   replacing `portfolioLayout` in the notes above. `portfolioLayoutMobile` (String) also exists for the
   app's own grid sizes; nothing reads or writes it yet. The website's phone layout (one post per row)
   doesn't use it.
+
+## Cal Poly SLO, Ohio State, UVA, UC Santa Barbara (2026-11-19)
+- Added to `SCHOOLS` (lib/schools.ts) and `SIGNUP_SCHOOLS` (lib/signupSchools.ts), with feeds at
+  `/school/calpoly-slo`, `/school/ohio-state`, `/school/uva`, `/school/ucsb`. Email domains: calpoly.edu,
+  osu.edu, virginia.edu, ucsb.edu.
+- Their logos in `public/schools/` are placeholder lettermarks in school colors (CP, OSU, UVA, UCSB) until
+  the real marks are dropped in under the same names.
+- The app (OnboardingSchool.all, SchoolScope, SchoolColors) and `verification-service/seed/schools.sql`
+  have them too; the seed must be applied to D1 before their addresses verify.

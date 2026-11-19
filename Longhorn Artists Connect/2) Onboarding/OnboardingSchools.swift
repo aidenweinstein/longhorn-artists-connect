@@ -83,15 +83,51 @@ struct OnboardingSchool: Identifiable, Hashable {
         OnboardingSchool(name: "USC", shortName: "USC",
                          studentDomain: "usc.edu", facultyDomain: "usc.edu",
                          idPlaceholder: "username"),
-        OnboardingSchool(name: "University of Michigan", shortName: "UMich",
-                         studentDomain: "umich.edu", facultyDomain: "umich.edu",
-                         idPlaceholder: "uniqname"),
         OnboardingSchool(name: "Texas A&M", shortName: "Texas A&M",
                          studentDomain: "tamu.edu", facultyDomain: "tamu.edu",
+                         idPlaceholder: "netid"),
+        OnboardingSchool(name: "Cal Poly SLO", shortName: "Cal Poly SLO",
+                         studentDomain: "calpoly.edu", facultyDomain: "calpoly.edu",
+                         idPlaceholder: "username"),
+        // Ohio State addresses are lastname.#@osu.edu for students and staff alike.
+        OnboardingSchool(name: "Ohio State", shortName: "Ohio State",
+                         studentDomain: "osu.edu", facultyDomain: "osu.edu",
+                         idPlaceholder: "lastname.#"),
+        // UVA addresses are computingID@virginia.edu.
+        OnboardingSchool(name: "UVA", shortName: "UVA",
+                         studentDomain: "virginia.edu", facultyDomain: "virginia.edu",
+                         idPlaceholder: "computing id"),
+        OnboardingSchool(name: "UC Santa Barbara", shortName: "UCSB",
+                         studentDomain: "ucsb.edu", facultyDomain: "ucsb.edu",
                          idPlaceholder: "netid")
     ]
 
+    /// Schools that aren't offered in onboarding but that existing accounts may
+    /// have on file (they're in `SchoolScope.registeredSchools`). Listed here so
+    /// verification can pin their members to the school's domain too, instead
+    /// of accepting any address. Domains match verification-service/seed/schools.sql.
+    static let notOffered: [OnboardingSchool] = [
+        // Michigan came off the sign-in list on 2026-11-19; its existing
+        // accounts still verify with @umich.edu.
+        OnboardingSchool(name: "University of Michigan", shortName: "UMich",
+                         studentDomain: "umich.edu", facultyDomain: "umich.edu",
+                         idPlaceholder: "uniqname"),
+        OnboardingSchool(name: "NYU", shortName: "NYU",
+                         studentDomain: "nyu.edu", facultyDomain: "nyu.edu",
+                         idPlaceholder: "netid"),
+        OnboardingSchool(name: "DePaul", shortName: "DePaul",
+                         studentDomain: "depaul.edu", facultyDomain: "depaul.edu",
+                         idPlaceholder: "username"),
+        OnboardingSchool(name: "BU", shortName: "BU",
+                         studentDomain: "bu.edu", facultyDomain: "bu.edu",
+                         idPlaceholder: "username")
+    ]
+
+    /// Every school a member could have on file, whether or not onboarding
+    /// still offers it. Use this — not `all` — when resolving a stored school.
+    static var verifiable: [OnboardingSchool] { all + notOffered }
+
     static func named(_ name: String) -> OnboardingSchool? {
-        all.first { $0.name == name }
+        verifiable.first { $0.name == name }
     }
 }

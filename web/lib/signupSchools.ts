@@ -51,6 +51,16 @@ export const SIGNUP_SCHOOLS: SignupSchool[] = [
     color: "#00274C", onColor: "#FFCB05", highlight: "#FFCB05", glow: 0.9 },
   { id: "tamu", name: "Texas A&M", studentDomain: "tamu.edu", educatorDomains: ["tamu.edu"], idPlaceholder: "netid", exampleNames: [],
     color: "#500000", onColor: "#ffffff", highlight: "#ffffff", glow: 0.8 },
+  { id: "calpoly-slo", name: "Cal Poly SLO", studentDomain: "calpoly.edu", educatorDomains: ["calpoly.edu"], idPlaceholder: "username", exampleNames: [],
+    color: "#154734", onColor: "#BD8B13", highlight: "#BD8B13", glow: 0.8 },
+  // Ohio State addresses are lastname.#@osu.edu for students and staff alike.
+  { id: "ohio-state", name: "Ohio State", studentDomain: "osu.edu", educatorDomains: ["osu.edu"], idPlaceholder: "lastname.#", exampleNames: [],
+    color: "#ba0c2f", onColor: "#ffffff", highlight: "#a7b1b7", glow: 0.5 },
+  // UVA addresses are computingID@virginia.edu.
+  { id: "uva", name: "UVA", studentDomain: "virginia.edu", educatorDomains: ["virginia.edu"], idPlaceholder: "computing id", exampleNames: [],
+    color: "#232D4B", onColor: "#E57200", highlight: "#E57200", glow: 0.85 },
+  { id: "ucsb", name: "UC Santa Barbara", studentDomain: "ucsb.edu", educatorDomains: ["ucsb.edu"], idPlaceholder: "netid", exampleNames: [],
+    color: "#003660", onColor: "#FEBC11", highlight: "#FEBC11", glow: 0.85 },
 ];
 
 export const signupSchool = (id: string | undefined | null) => SIGNUP_SCHOOLS.find((s) => s.id === id);

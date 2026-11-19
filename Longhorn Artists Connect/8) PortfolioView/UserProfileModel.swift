@@ -240,7 +240,8 @@ class UserProfileModel: ObservableObject {
     /// for its email domain — otherwise the school can be picked but never
     /// verified, and its posts land in the wrong feed.
     static let otherSchools = ["University of California, Berkeley", "University of Michigan",
-                               "Cal Poly SLO", "USC", "NYU", "DePaul", "BU", "Other"]
+                               "Cal Poly SLO", "USC", "NYU", "DePaul", "BU",
+                               "Ohio State", "UVA", "UC Santa Barbara", "Other"]
     
     // MARK: - Computed Properties
     

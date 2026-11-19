@@ -103,7 +103,26 @@ struct SchoolTheme {
         (["Texas A&M", "Texas A&M University", "TAMU"],
          SchoolTheme(bubble: Color(hex: "500000"), text: .white,
                      toolbarPill: Color(hex: "8C2B2B"),
-                     toolbarHighlight: Color(hex: "3A0000")))
+                     toolbarHighlight: Color(hex: "3A0000"))),
+        // Scarlet + white (gray is Ohio State's other color, but too light for the
+        // name chip and the artwork's white), with a lighter scarlet pill and deeper
+        // scarlet highlight. No alternate home-screen icon yet, so it keeps `AppIcon`.
+        (["Ohio State", "The Ohio State University", "Ohio State University", "OSU"],
+         SchoolTheme(bubble: Color(hex: "BA0C2F"), text: .white,
+                     toolbarPill: Color(hex: "D9415F"),
+                     toolbarHighlight: Color(hex: "8A0922"))),
+        // UVA Blue + Orange, with a lighter blue pill and deeper blue highlight.
+        // No alternate home-screen icon yet, so it keeps `AppIcon`.
+        (["UVA", "University of Virginia", "Virginia"],
+         SchoolTheme(bubble: Color(hex: "232D4B"), text: Color(hex: "E57200"),
+                     toolbarPill: Color(hex: "4A5880"),
+                     toolbarHighlight: Color(hex: "161D33"))),
+        // Navy + Gold, with a lighter navy pill and deeper navy highlight.
+        // No alternate home-screen icon yet, so it keeps `AppIcon`.
+        (["UC Santa Barbara", "University of California, Santa Barbara", "UCSB"],
+         SchoolTheme(bubble: Color(hex: "003660"), text: Color(hex: "FEBC11"),
+                     toolbarPill: Color(hex: "2F6596"),
+                     toolbarHighlight: Color(hex: "002446")))
     ]
 
     /// `registry` flattened to a lookup table, built once. `forSchool` sits behind
