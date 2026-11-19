@@ -434,7 +434,7 @@ npm run dev        # http://localhost:3000
 - Added to `SCHOOLS` (lib/schools.ts) and `SIGNUP_SCHOOLS` (lib/signupSchools.ts), with feeds at
   `/school/calpoly-slo`, `/school/ohio-state`, `/school/uva`, `/school/ucsb`. Email domains: calpoly.edu,
   osu.edu, virginia.edu, ucsb.edu.
-- Their logos in `public/schools/` are placeholder lettermarks in school colors (CP, OSU, UVA, UCSB) until
-  the real marks are dropped in under the same names.
+- Their logos in `public/schools/` (calpoly-slo, ohio-state, uva, ucsb .png) are the schools' marks from
+  Aiden, on the school color like the others; UVA's is on white because its navy sabres vanish on UVA blue.
 - The app (OnboardingSchool.all, SchoolScope, SchoolColors) and `verification-service/seed/schools.sql`
   have them too; the seed must be applied to D1 before their addresses verify.

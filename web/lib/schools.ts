@@ -9,10 +9,10 @@ export const SCHOOLS = [
   { slug: "usc", name: "USC", short: "SC", mascot: "Trojans", color: "#990000", accent: "#FFCC00", logo: "/schools/usc.png" },
   { slug: "umich", name: "UMich", short: "M", mascot: "Wolverines", color: "#00274C", accent: "#FFCB05", logo: "/schools/umich.png" },
   { slug: "tamu", name: "Texas A&M", short: "A&M", mascot: "Aggies", color: "#500000", accent: "#ffffff", logo: "/schools/tamu.svg" },
-  { slug: "calpoly-slo", name: "Cal Poly SLO", short: "Cal Poly", mascot: "Mustangs", color: "#154734", accent: "#BD8B13", logo: "/schools/calpoly-slo.svg" },
-  { slug: "ohio-state", name: "Ohio State", short: "OSU", mascot: "Buckeyes", color: "#ba0c2f", accent: "#a7b1b7", logo: "/schools/ohio-state.svg" },
-  { slug: "uva", name: "UVA", short: "UVA", mascot: "Cavaliers", color: "#232D4B", accent: "#E57200", logo: "/schools/uva.svg" },
-  { slug: "ucsb", name: "UC Santa Barbara", short: "UCSB", mascot: "Gauchos", color: "#003660", accent: "#FEBC11", logo: "/schools/ucsb.svg" },
+  { slug: "calpoly-slo", name: "Cal Poly SLO", short: "Cal Poly", mascot: "Mustangs", color: "#154734", accent: "#BD8B13", logo: "/schools/calpoly-slo.png" },
+  { slug: "ohio-state", name: "Ohio State", short: "OSU", mascot: "Buckeyes", color: "#ba0c2f", accent: "#a7b1b7", logo: "/schools/ohio-state.png" },
+  { slug: "uva", name: "UVA", short: "UVA", mascot: "Cavaliers", color: "#232D4B", accent: "#E57200", logo: "/schools/uva.png" },
+  { slug: "ucsb", name: "UC Santa Barbara", short: "UCSB", mascot: "Gauchos", color: "#003660", accent: "#FEBC11", logo: "/schools/ucsb.png" },
 ] as const;
 
 export type School = (typeof SCHOOLS)[number];
