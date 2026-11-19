@@ -87,6 +87,9 @@ const accountPrefix = (userRecordName: string) =>
   `posts/${/^[\w-]{1,100}$/.test(userRecordName) ? userRecordName : createHash("sha256").update(userRecordName).digest("hex").slice(0, 40)}/`;
 const keyPrefix = (userRecordName: string, recordName: string, field: string, staging = false) =>
   `${accountPrefix(userRecordName)}${recordName}/${staging ? "staging/" : ""}${field}-`;
+/** Files uploaded early, while the form was still being filled in, before anyone knew their field. */
+const earlyPrefix = (userRecordName: string, recordName: string, staging: boolean) =>
+  `${accountPrefix(userRecordName)}${recordName}/${staging ? "staging/" : ""}early-`;
 const declaredBytes = (key: string) => Number(/-(\d{1,12})\.[a-z0-9]{1,8}$/.exec(key)?.[1] ?? NaN);
 const gb = (bytes: number) => `${Math.floor((bytes / 1024 ** 3) * 10) / 10} GB`;
 
@@ -130,6 +133,79 @@ async function slotFor(key: string, spec: LargeFileSpec): Promise<LargeUploadSlo
   return { key, uploadID, partSize: LARGE_PART_BYTES, partURLs: partUploadURLs(key, uploadID, partSizes, PART_URL_SECONDS) };
 }
 
+/** A message when this account can't start `bytes` more of uploads today, else null. */
+async function dailyRefusal(userRecordName: string, bytes: number): Promise<string | null> {
+  try {
+    const used = await largeBytesToday(userRecordName);
+    if (used + bytes <= DAILY_LARGE_BYTES_PER_ACCOUNT) return null;
+    const left = Math.max(0, DAILY_LARGE_BYTES_PER_ACCOUNT - used);
+    return `You can upload ${gb(DAILY_LARGE_BYTES_PER_ACCOUNT)} of files a day, and have ${gb(left)} left. Try again in a few hours.`;
+  } catch (error) {
+    console.error("[share] daily upload check:", error);
+    return "Couldn't start the upload. Try again in a moment.";
+  }
+}
+
+/** Whether `token` is the one issued for this record name and account. */
+function validToken(recordName: unknown, token: unknown, userRecordName: string): recordName is string {
+  if (typeof recordName !== "string" || !/^[0-9A-F-]{36}$/.test(recordName) || typeof token !== "string") return false;
+  const expected = Buffer.from(tokenFor(recordName, userRecordName));
+  const presented = Buffer.from(token);
+  return expected.length === presented.length && timingSafeEqual(expected, presented);
+}
+
+export type EarlyUploadResult =
+  | { ok: true; recordName: string; token: string; staging: boolean; slot: LargeUploadSlot }
+  | { ok: false; message: string };
+
+/**
+ * Starts uploading a video or audio file the moment it's picked, while the rest of the
+ * form is filled in, so pressing Post has little or nothing left to send. Under 45 MB it
+ * goes to staging (on to CloudKit at publish), else it stays in R2. All of a form's early
+ * uploads share one record name, which startPost and publishPost then continue with.
+ */
+export async function startEarlyUpload(
+  spec: LargeFileSpec,
+  continueAs?: { recordName: string; token: string },
+  editPostID?: string,
+): Promise<EarlyUploadResult> {
+  if (!isCloudKitConfigured() || !isR2Configured()) return { ok: false, message: "File uploads aren't set up on this server yet." };
+  const who = await poster();
+  if (!who) return { ok: false, message: NOT_LINKED };
+  const size = Number(spec?.size);
+  if (!Number.isSafeInteger(size) || size <= 0) return { ok: false, message: "This file is empty." };
+  if (size > MAX_LARGE_FILE_BYTES) return { ok: false, message: "Files can be up to 10 GB. Try a smaller export." };
+
+  let recordName = randomUUID().toUpperCase();
+  if (editPostID !== undefined) {
+    const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
+    if (!owned) return { ok: false, message: "You can only edit posts you made." };
+    recordName = owned.record.recordName;
+  } else if (continueAs && validToken(continueAs.recordName, continueAs.token, who.userRecordName)) {
+    recordName = continueAs.recordName;
+  }
+  const refused = await dailyRefusal(who.userRecordName, size);
+  if (refused) return { ok: false, message: refused };
+
+  const staging = size < CLOUDKIT_MAX_BYTES;
+  try {
+    const key = `${earlyPrefix(who.userRecordName, recordName, staging)}${randomUUID().slice(0, 8)}-${size}.${safeExt(spec.ext)}`;
+    const slot = await slotFor(key, { ...spec, size });
+    return { ok: true, recordName, token: tokenFor(recordName, who.userRecordName), staging, slot };
+  } catch (error) {
+    console.error("[share] startEarlyUpload:", error);
+    return { ok: false, message: "Couldn't start the upload. Try again in a moment." };
+  }
+}
+
+/** Stops an early upload whose file was removed or replaced (so it stops counting toward the daily limit). */
+export async function abortEarlyUpload(key: string, uploadID: string): Promise<void> {
+  const who = await poster();
+  if (!who || typeof key !== "string" || typeof uploadID !== "string" || !uploadID || uploadID.length > 1000) return;
+  if (!key.startsWith(accountPrefix(who.userRecordName)) || !/^[\w./-]{1,240}$/.test(key) || !/\/(staging\/)?early-[^/]+$/.test(key)) return;
+  await abortMultipartUpload(key, uploadID);
+}
+
 /**
  * Sets up a post's uploads. `smallFiles` (under 45 MB) go to R2 to be moved on to CloudKit
  * when the post is published; `largeFiles` (45 MB to 10 GB, video and audio fields only) go
@@ -141,6 +217,8 @@ export async function startPost(
   largeFiles: Record<string, LargeFileSpec[]> = {},
   /** Editing: the post being changed (its maker only). New files then replace its old ones. */
   editPostID?: string,
+  /** The record name (and its token) startEarlyUpload already gave this form's early uploads. */
+  continueAs?: { recordName: string; token: string },
 ): Promise<StartResult> {
   if (!isShareType(type)) return { ok: false, message: "Unknown post type." };
   if (!isCloudKitConfigured()) return { ok: false, message: "Posting isn't set up on this server yet." };
@@ -153,6 +231,8 @@ export async function startPost(
     const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
     if (!owned || owned.type !== type) return { ok: false, message: "You can only edit posts you made." };
     recordName = owned.record.recordName;
+  } else if (continueAs && validToken(continueAs.recordName, continueAs.token, who.userRecordName)) {
+    recordName = continueAs.recordName;
   }
 
   const bigWanted: [string, LargeFileSpec[]][] = [];
@@ -183,19 +263,8 @@ export async function startPost(
     return { ok: false, message: `Files over 45 MB can add up to ${gb(MAX_LARGE_BYTES_PER_POST)} per post. This one has ${gb(bigTotal)}.` };
   }
   if (allTotal > 0) {
-    try {
-      const used = await largeBytesToday(who.userRecordName);
-      if (used + allTotal > DAILY_LARGE_BYTES_PER_ACCOUNT) {
-        const left = Math.max(0, DAILY_LARGE_BYTES_PER_ACCOUNT - used);
-        return {
-          ok: false,
-          message: `You can upload ${gb(DAILY_LARGE_BYTES_PER_ACCOUNT)} of files a day, and have ${gb(left)} left. Try again in a few hours.`,
-        };
-      }
-    } catch (error) {
-      console.error("[share] daily upload check:", error);
-      return { ok: false, message: "Couldn't start the upload. Try again in a moment." };
-    }
+    const refused = await dailyRefusal(who.userRecordName, allTotal);
+    if (refused) return { ok: false, message: refused };
   }
 
   try {
@@ -527,9 +596,7 @@ export async function publishPost(input: PostInput, editPostID?: string): Promis
 
   // The record name must be one startPost issued to this same account.
   const recordName = typeof input.recordName === "string" ? input.recordName : "";
-  const expected = Buffer.from(tokenFor(recordName, who.userRecordName));
-  const presented = Buffer.from(typeof input.token === "string" ? input.token : "");
-  if (!/^[0-9A-F-]{36}$/.test(recordName) || expected.length !== presented.length || !timingSafeEqual(expected, presented)) {
+  if (!validToken(recordName, input.token, who.userRecordName)) {
     return { ok: false, message: "This upload expired. Press Post again." };
   }
   let editing: CKRecord | null = null;
@@ -564,7 +631,8 @@ export async function publishPost(input: PostInput, editPostID?: string): Promis
     const etags = Array.isArray(up?.etags) ? up.etags : [];
     const declared = declaredBytes(key);
     // Only files set up for this record, by this account.
-    if (!key.startsWith(keyPrefix(who!.userRecordName, recordName, field, staging)) || !(declared > 0) || !/^[\w./-]{1,240}$/.test(key) || !uploadID || uploadID.length > 1000) {
+    const ours = key.startsWith(keyPrefix(who!.userRecordName, recordName, field, staging)) || key.startsWith(earlyPrefix(who!.userRecordName, recordName, staging));
+    if (!ours || !(declared > 0) || !/^[\w./-]{1,240}$/.test(key) || !uploadID || uploadID.length > 1000) {
       return { message: "This upload expired. Press Post again." };
     }
     if (etags.length !== Math.max(1, Math.ceil(declared / LARGE_PART_BYTES)) || !etags.every((e) => typeof e === "string" && /^"?[\w-]{1,100}"?$/.test(e))) {

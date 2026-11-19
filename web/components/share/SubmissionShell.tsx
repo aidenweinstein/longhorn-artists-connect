@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { deletePost } from "@/app/(app)/share/editActions";
-import { publish, type PostDraft, type Progress } from "@/lib/shareUpload";
+import { earlyStatus, earlyVersion, publish, subscribeEarly, timeLeftLabel, type PostDraft, type Progress } from "@/lib/shareUpload";
 import type { ShareTypeID } from "@/lib/sharePost";
 import { useDrafts, useEditing } from "./DraftContext";
 
@@ -45,6 +45,10 @@ export default function SubmissionShell({
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const ready = missing.length === 0;
   const busy = progress !== null;
+  // Videos and audio upload as soon as they're picked; this re-renders as they go.
+  useSyncExternalStore(subscribeEarly, earlyVersion, () => 0);
+  const early = busy ? null : earlyStatus();
+  const earlyPercent = early ? Math.floor((early.sent / Math.max(1, early.total)) * 100) : 0;
 
   async function post() {
     setTried(true);
@@ -168,11 +172,28 @@ export default function SubmissionShell({
             <p className="mb-2 text-muted">
               {STAGE_LABEL[progress.stage]}
               {progress.stage === "uploading" && ` ${Math.round(progress.fraction * 100)}%`}
+              {progress.stage === "uploading" && timeLeftLabel(progress.secondsLeft) && ` · ${timeLeftLabel(progress.secondsLeft)}`}
             </p>
             <div className="h-1.5 overflow-hidden rounded-full bg-border">
               <div className="h-full bg-brand transition-[width]" style={{ width: `${Math.round(progress.fraction * 100)}%` }} />
             </div>
             {progress.stage === "uploading" && <p className="mt-2 text-xs text-muted">Keep this page open until it finishes.</p>}
+          </div>
+        )}
+        {early && (
+          <div className="rounded-2xl border border-border p-4">
+            <p className="mb-2 text-muted">
+              {early.failed
+                ? "Background upload paused. Your file will upload when you post."
+                : early.done
+                  ? "Your file is uploaded. Post whenever you're ready."
+                  : `Uploading your file while you fill this in: ${earlyPercent}%${timeLeftLabel(early.secondsLeft) ? ` · ${timeLeftLabel(early.secondsLeft)}` : ""}`}
+            </p>
+            {!early.failed && (
+              <div className="h-1.5 overflow-hidden rounded-full bg-border">
+                <div className="h-full bg-brand transition-[width]" style={{ width: `${earlyPercent}%` }} />
+              </div>
+            )}
           </div>
         )}
         {error && <p className="rounded-2xl border border-red-500/40 p-4 text-red-500">{error}</p>}

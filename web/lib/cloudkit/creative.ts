@@ -36,7 +36,7 @@ function parse(r: CKRecord): CreativeProfile | null {
 
 /** One person's style profile, by user record name or profile ID. */
 export async function getCreativeProfile(id: string): Promise<CreativeProfile | null> {
-  "use cache";
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   const user = rawID(id);
   cacheTag(creativeTag(user));

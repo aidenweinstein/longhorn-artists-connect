@@ -83,7 +83,7 @@ export default async function PostPage(props: PageProps<"/post/[id]">) {
         <div className="mt-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
           <h1 className="min-w-0 text-2xl font-bold leading-tight">{post.title}</h1>
           <div className="flex items-center gap-2">
-            <EditPostLink postID={post.id} />
+            <EditPostLink postID={post.id} type={post.category} makerProfileID={post.creatorProfileID} />
             <PostActions postID={post.id} title={post.title} />
           </div>
         </div>

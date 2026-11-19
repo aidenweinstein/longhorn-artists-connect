@@ -657,7 +657,8 @@ export const accountTag = (userRecordName: string) => `account:${userRecordName}
  * the owner's own portfolio layout (see app/(app)/portfolio/actions.ts).
  */
 export async function getAccount(userRecordName: string): Promise<Account | null> {
-  "use cache";
+  // Shared by every server instance (like the post lists): it's on every signed-in page.
+  "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(accountTag(userRecordName));
 

@@ -9,16 +9,27 @@ import type { ShareTypeID } from "@/lib/sharePost";
  * "Edit" on a post's page, shown only to the account that made the post. Checked after
  * the page loads, so the post page itself stays the same (and cached) for everyone.
  */
-export default function EditPostLink({ postID, className = "" }: { postID: string; className?: string }) {
-  const [type, setType] = useState<ShareTypeID | null>(null);
+export default function EditPostLink({
+  postID,
+  type,
+  makerProfileID,
+  className = "",
+}: {
+  postID: string;
+  type: ShareTypeID;
+  /** The post's maker ("UserProfile_<id>"), from the page. */
+  makerProfileID?: string;
+  className?: string;
+}) {
+  const [mine, setMine] = useState(false);
   useEffect(() => {
     let live = true;
-    canEditPost(postID).then((t) => live && setType(t), () => {});
+    if (makerProfileID) canEditPost(makerProfileID).then((ok) => live && setMine(ok), () => {});
     return () => {
       live = false;
     };
-  }, [postID]);
-  if (!type) return null;
+  }, [makerProfileID]);
+  if (!mine) return null;
   return (
     <Link
       href={`/share/${type}?edit=${encodeURIComponent(postID)}`}

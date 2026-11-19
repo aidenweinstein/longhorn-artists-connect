@@ -56,3 +56,4 @@ _backup_*/
 
 # macOS copy junk
 ._*
+.vercel

@@ -14,6 +14,7 @@ import {
 } from "react";
 import { loadPostForEdit } from "@/app/(app)/share/editActions";
 import { deleteDraft, getDraft, saveDraft } from "@/lib/shareDrafts";
+import { syncEarlyUploads } from "@/lib/shareUpload";
 import type { ShareTypeID } from "@/lib/sharePost";
 
 /**
@@ -49,9 +50,12 @@ export function DraftProvider({ type, children }: { type: ShareTypeID; children:
   const [editing, setEditing] = useState<Ctx["editing"]>(null);
   const [editError, setEditError] = useState<string | null>(null);
   const values = useRef<Record<string, unknown>>({});
+  const [watchers] = useState(() => new Set<() => void>());
   const record = useCallback((key: string, value: unknown) => {
+    if (values.current[key] === value) return;
     values.current[key] = value;
-  }, []);
+    watchers.forEach((w) => w());
+  }, [watchers]);
   const snapshot = useCallback(() => ({ ...values.current }), []);
 
   useEffect(() => {
@@ -91,7 +95,49 @@ export function DraftProvider({ type, children }: { type: ShareTypeID; children:
 
   if (editError) return <p className="px-6 py-10 text-muted">{editError}</p>;
   if (!loaded) return <p className="px-6 py-10 text-muted">{editID ? "Opening post…" : "Opening draft…"}</p>;
-  return <DraftCtx.Provider value={{ type, loaded, record, snapshot, draftID, setDraftID, editing }}>{children}</DraftCtx.Provider>;
+  return (
+    <DraftCtx.Provider value={{ type, loaded, record, snapshot, draftID, setDraftID, editing }}>
+      {children}
+      <EarlyUploads watchers={watchers} snapshot={snapshot} editPostID={editing?.postID ?? null} />
+    </DraftCtx.Provider>
+  );
+}
+
+/** Every File anywhere in the form's fields (lists and small objects included). */
+function filesIn(value: unknown, depth = 0, out: File[] = []): File[] {
+  if (value instanceof File) out.push(value);
+  else if (depth < 4 && Array.isArray(value)) value.forEach((v) => filesIn(v, depth + 1, out));
+  else if (depth < 4 && value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    Object.values(value).forEach((v) => filesIn(v, depth + 1, out));
+  }
+  return out;
+}
+
+/**
+ * Starts uploading each video and audio file as soon as it's picked (lib/shareUpload.ts),
+ * and stops when it's removed or replaced, or the form is left. Rendered after the form,
+ * so its fields have recorded their values first.
+ */
+function EarlyUploads({ watchers, snapshot, editPostID }: { watchers: Set<() => void>; snapshot: () => Record<string, unknown>; editPostID: string | null }) {
+  useEffect(() => {
+    let queued = false;
+    const sync = () => syncEarlyUploads(filesIn(snapshot()), editPostID);
+    const schedule = () => {
+      if (queued) return;
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        sync();
+      });
+    };
+    sync();
+    watchers.add(schedule);
+    return () => {
+      watchers.delete(schedule);
+      syncEarlyUploads([], editPostID);
+    };
+  }, [watchers, snapshot, editPostID]);
+  return null;
 }
 
 /** useState for a Share form field that drafts save and restore. Keys are unique per form. */

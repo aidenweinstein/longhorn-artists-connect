@@ -137,7 +137,7 @@ function ProjectDetail({ p }: { p: Project }) {
         <p className="text-sm font-semibold uppercase tracking-wide text-brand">{p.projectType}</p>
         <div className="mt-1 flex flex-wrap items-start justify-between gap-3">
           <h1 className="text-3xl font-bold leading-tight">{p.title}</h1>
-          <EditPostLink postID={p.id} />
+          <EditPostLink postID={p.id} type="project" makerProfileID={p.postedByProfileID} />
         </div>
         {p.castNeeded.length + p.crewNeeded.length + (p.castAssembled?.length ?? 0) + (p.crewAssembled?.length ?? 0) > 0 && (
           <span
@@ -252,7 +252,7 @@ function EventDetail({ e }: { e: NexusEvent }) {
         {e.category && <p className="text-sm font-semibold uppercase tracking-wide text-brand">{e.category}</p>}
         <div className="mt-1 flex flex-wrap items-start justify-between gap-3">
           <h1 className="text-3xl font-bold leading-tight">{e.title}</h1>
-          <EditPostLink postID={e.id} />
+          <EditPostLink postID={e.id} type="event" makerProfileID={e.postedByProfileID} />
         </div>
         {dateLine && <p className="mt-2 text-lg font-semibold">{dateLine}</p>}
 

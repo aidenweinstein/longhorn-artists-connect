@@ -1,7 +1,7 @@
 "use server";
 
 import { updateTag } from "next/cache";
-import { currentAccount } from "@/lib/account";
+import { currentAccount, currentSession } from "@/lib/account";
 import { isCloudKitConfigured, list, modify, str, type CKRecord } from "@/lib/cloudkit/client";
 import { POSTS_TAG, accountTag } from "@/lib/cloudkit/content";
 import { formFields, keptFormFiles, ownedPost } from "@/lib/editPost";
@@ -15,11 +15,15 @@ async function me(): Promise<string | null> {
   return current?.account ? (current.session.userRecordName ?? null) : null;
 }
 
-/** Whether the person looking can edit this post: only the account that made it. */
-export async function canEditPost(postID: string): Promise<ShareTypeID | null> {
-  const user = await me();
-  if (!user) return null;
-  return (await ownedPost(postID, user).catch(() => null))?.type ?? null;
+/**
+ * Whether to show Edit on a post: the person looking is the account that made it. Only
+ * compares the sign-in with the post's maker (no CloudKit request), since this runs on
+ * every post view; opening and saving the edit check the post itself.
+ */
+export async function canEditPost(makerProfileID: string | undefined): Promise<boolean> {
+  if (!makerProfileID) return false;
+  const user = (await currentSession().catch(() => null))?.userRecordName;
+  return !!user && makerProfileID === `UserProfile_${user}`;
 }
 
 export type EditStart =

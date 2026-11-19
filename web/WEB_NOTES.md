@@ -403,6 +403,11 @@ npm run dev        # http://localhost:3000
   finished or not, counted by listing its keys in R2 (keys are `posts/<account>/<record>/<field>-<n>-<bytes>.<ext>`).
   Every part URL is signed with its exact Content-Length, and the finished file must match the
   size declared in its key, or it's deleted.
+- Early uploads (2026-11-17): videos and audio start uploading the moment they're picked
+  (`syncEarlyUploads` in `lib/shareUpload.ts`, driven by `EarlyUploads` in `DraftContext.tsx`), via
+  `startEarlyUpload` (keys `.../<record>/early-…` or `.../<record>/staging/early-…`). Post reuses them
+  when the same files are still there (`startPost(..., continueAs)` keeps the record name); removed or
+  replaced files are aborted (`abortEarlyUpload`). Progress bars show "about N min left".
 - Bucket CORS rules for wrangler: `scripts/r2-cors.json`. Bucket CORS must allow PUT from the site's origins and expose `ETag`, or every upload fails
   with "Upload failed (no ETag)."
 - Not yet: deleting a post doesn't delete its R2 file. The app has no music-video player, so a
