@@ -25,6 +25,8 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
   const [pickedDomain, setPickedDomain] = useState("");
   const [pendingID, setPendingID] = useState<string | null>(null);
   const [mockDone, setMockDone] = useState(false);
+  // After Sign in with Apple: this email also verified the person's app account.
+  const [verifiedApp, setVerifiedApp] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
   const themeSchool = useAuthSchool();
@@ -50,6 +52,10 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
 
   if (!school) return <SchoolPicker onPick={setSchool} />;
 
+  if (verifiedApp) {
+    return <SignedIn heading="You're in!" note="Your school email is verified in the Nexus app too, and Sign in with Apple now works on both." />;
+  }
+
   if (mockDone) {
     return <SignedIn heading="Welcome back!" note="That was the mock launch: nobody was signed in." />;
   }
@@ -62,7 +68,11 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
         pendingID={pendingID}
         onBack={() => setPendingID(null)}
         // No account owns this email yet: finish sign-up to create one.
-        onVerified={(hasAccount) => (mock ? setMockDone(true) : router.replace(hasAccount ? "/" : "/signup/finish"))}
+        onVerified={(hasAccount, outcome) => {
+          if (mock) return setMockDone(true);
+          if ((outcome as { verifiedApp?: boolean } | undefined)?.verifiedApp) return setVerifiedApp(true);
+          router.replace(hasAccount ? "/" : "/signup/finish");
+        }}
       />
     );
   }

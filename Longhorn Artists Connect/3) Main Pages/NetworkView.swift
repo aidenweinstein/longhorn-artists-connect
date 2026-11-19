@@ -85,7 +85,9 @@ struct NetworkView: View {
             .compactMap { convo -> (otherUserID: String, row: NetworkConversation)? in
                 // Group chats: titled by name or members, with a collage avatar.
                 if convo.isGroup {
-                    let members = convo.allMemberIDs.compactMap { userProfileManager.findUser(byID: $0) }
+                    // Avatar collage shows the other members only, never your own photo.
+                    let members = convo.otherMemberIDs(for: currentUserID)
+                        .compactMap { userProfileManager.findUser(byID: $0) }
                     let title = convo.displayTitle(for: currentUserID) { userProfileManager.findUser(byID: $0)?.firstName }
                     let row = NetworkConversation(
                         conversationID: convo.id,

@@ -22,7 +22,8 @@ enum MessageThread: Equatable {
 
 // MARK: - Group Avatar
 
-/// The round avatar for a group thread: the first two members' photos overlapping,
+/// The round avatar for a group thread: the first two other members' photos overlapping
+/// (callers pass everyone except the current user),
 /// or a people symbol when there are no photos to show.
 struct GroupAvatarView: View {
     let members: [DirectoryUser]
@@ -94,6 +95,12 @@ struct GroupInfoView: View {
         memberIDs.map { ($0, profileManager.findUser(byID: $0)) }
     }
 
+    /// Everyone but the current user — what the avatar collage shows.
+    private var otherMembers: [DirectoryUser] {
+        let me = messageStore.currentUserID.map(canonicalMessagingID)
+        return members.filter { $0.id != me }.compactMap(\.user)
+    }
+
     private var currentTitle: String {
         conversation?.displayTitle(for: messageStore.currentUserID) { profileManager.findUser(byID: $0)?.firstName } ?? "Group"
     }
@@ -103,7 +110,7 @@ struct GroupInfoView: View {
             List {
                 Section {
                     HStack(spacing: 14) {
-                        GroupAvatarView(members: members.compactMap(\.user), size: 64)
+                        GroupAvatarView(members: otherMembers, size: 64)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(currentTitle)
                                 .font(.headline)

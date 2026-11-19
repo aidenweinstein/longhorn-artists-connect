@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { GUEST_COOKIE, SESSION_COOKIE, decodeSession, hasGuestPass } from "@/lib/session";
+import { GUEST_COOKIE, SESSION_COOKIE, decodeSession, guestCanSee, hasGuestPass } from "@/lib/session";
 import { discoverItems, feedPosts, organizations } from "@/lib/content";
 import { isCloudKitConfigured, profileDirectory } from "@/lib/cloudkit/content";
 import { allCreativeProfiles } from "@/lib/cloudkit/creative";
@@ -49,7 +49,7 @@ function creativeExtras(c: CreativeProfile | undefined): string[] {
 // site never shows students' work to anyone who hasn't signed in.
 export async function GET(request: NextRequest) {
   const signedIn = decodeSession(request.cookies.get(SESSION_COOKIE)?.value) !== null;
-  const guest = hasGuestPass(request.cookies.get(GUEST_COOKIE)?.value);
+  const guest = !signedIn && hasGuestPass(request.cookies.get(GUEST_COOKIE)?.value);
   if (!signedIn && !guest) return NextResponse.json({ results: [] }, { status: 401 });
 
   const q = fold(request.nextUrl.searchParams.get("q")?.trim());
@@ -150,7 +150,13 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json(
-    { results: [...byName, ...byDetail].slice(0, MAX_RESULTS).map((s) => s.result) },
+    {
+      results: [...byName, ...byDetail]
+        .map((s) => s.result)
+        // Guests only see Home, the school pages and posts: no projects, events, groups or people.
+        .filter((r) => !guest || guestCanSee(r.href))
+        .slice(0, MAX_RESULTS),
+    },
     { headers: { "Cache-Control": "private, no-store" } },
   );
 }

@@ -41,7 +41,25 @@ npm run dev        # http://localhost:3000
   sets a signed guest pass (`nexus_guest`, `lib/session.ts`). A pass lets someone browse, in
   production too; it is not a session and can't create or act as an account. Needs
   `verification-service` redeployed. The old unsigned `nexus_guest=1` cookie no longer works.
+- Guests (2026-11-19): a guest confirms their email ONCE per device. The pass lasts a year and
+  `proxy.ts` renews it after a week (same as sessions), so regular visitors never re-verify;
+  `/welcome` and `/guest` send anyone already in straight to Home. Sign out clears it too.
+  Guests only see Home, each school's page and posts (`guestCanSee` in `lib/session.ts`);
+  every other page redirects to Home, search only returns posts, and `/api/people` is
+  signed-in only. Guest sidebar: Home on top, then every school under "Schools" (no school
+  badge). Guest look: black and white with the launch page's glows behind Home
+  (`SchoolTheme`, `GuestGlows`); school pages keep their own colors.
 
+- Sign in with Apple (2026-11-19, website only; replaces "email only" below): "Continue with
+  Apple" on the welcome page and "Sign in with Apple" on /signin (`components/AppleSignIn*.tsx`).
+  `/auth/apple` → Apple → `/auth/apple/callback` (form_post) → verification-service
+  `/v1/web/apple/session`, which checks Apple's token (`lib/apple.ts`,
+  `verification-service/src/apple.ts`). The first time, the visitor gets a `nexus_apple` ticket
+  cookie and the usual school email code; confirming it links the Apple ID to the account that
+  owns the email (app or website), or to the account sign-up creates next. After that, Sign in
+  with Apple alone signs in. The app has no Apple sign-in (it uses iCloud).
+  Needs `APPLE_WEB_CLIENT_ID` (Services ID) on Vercel; `/auth` is excluded from `proxy.ts`.
+  Can't be tried on localhost: Apple only returns to the https URL registered on the Services ID.
 - Email only (2026-11-16): the Sign in with Apple button is gone. Student sign-up now has a
   "Select your school" step (`lib/signupSchools.ts`, same five schools as the app), and the
   email must be at that school's student domain (UT Austin: `@my.utexas.edu`). Checked in the
@@ -127,6 +145,13 @@ npm run dev        # http://localhost:3000
   `recipientUserIDs` (everyone else), `readByUserIDs` (just the sender) and `groupName` (the
   push title); opening one adds the visitor to each unread message's `readByUserIDs`.
   The group queries fail quietly until the Production schema has those fields.
+- Group photos (2026-11-19): any member can add, change or remove a group's picture by
+  clicking its avatar in the thread header, and New message has a photo button beside the
+  group's name. Saved as the `groupPhoto` ASSET on the group's `Conversation` record
+  (`setGroupPhoto` in `lib/cloudkit/messages.ts`); shown in the conversation list and header.
+  NEEDS SCHEMA: add `groupPhoto` (Asset) to `Conversation` in Development and deploy it to
+  Production. Until then saving one shows a message, and a new group is made without it.
+  The app doesn't show these pictures yet.
 - Not yet: starting a new conversation or group, group settings (name, members, leaving),
   sending attachments, and blocked users (the app keeps those on the device only). Without
   CloudKit keys it falls back to `lib/mockConversations.ts`.
@@ -429,6 +454,17 @@ npm run dev        # http://localhost:3000
   replacing `portfolioLayout` in the notes above. `portfolioLayoutMobile` (String) also exists for the
   app's own grid sizes; nothing reads or writes it yet. The website's phone layout (one post per row)
   doesn't use it.
+
+## Profile picture required at sign-up (2026-11-19)
+- The profile step (name, major, class, tags) now starts with a required Profile Picture. Next stays
+  off until one is picked. The browser shrinks it to a JPEG (`lib/preparePhoto.ts`), the same as
+  Edit profile.
+- It's sent with the other details (`NewAccount.photo`). `createFromSession` refuses to make an
+  account without one, then saves it to `UserProfile.profileImage` right after the account is made.
+- If the upload fails, the account still exists and the visitor is signed in: they're sent back to
+  the profile step with "Your account was created, but your profile picture didn't upload. Try
+  again.", and Create account uploads just the picture.
+- Applies to `/signup`, `/signup/finish` and the mock walkthrough (which uploads nothing).
 
 ## Cal Poly SLO, Ohio State, UVA, UC Santa Barbara (2026-11-19)
 - Added to `SCHOOLS` (lib/schools.ts) and `SIGNUP_SCHOOLS` (lib/signupSchools.ts), with feeds at

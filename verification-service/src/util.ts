@@ -27,6 +27,9 @@ export interface Env {
     /// keys other than this Worker's (e.g. the website's), whose records the
     /// sweep judges by their `userID` field. See postOwner in src/sweep.ts.
     SERVER_CREATORS?: string;
+    /// Sign in with Apple (src/apple.ts). The website's Services ID: the audience of identity tokens from the
+    /// website. Unset disables /v1/web/apple/session.
+    APPLE_WEB_CLIENT_ID?: string;
 }
 
 export function json(body: unknown, status = 200): Response {

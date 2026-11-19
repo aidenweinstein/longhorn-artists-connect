@@ -565,9 +565,12 @@ struct Portfolio_5: View {
                 VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            // Long names shrink to fit rather than wrapping to a second line.
                             Text(displayName)
                                 .font(.title)
                                 .bold()
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
                             // School-colored seal once this account's email is verified.
                             CurrentUserVerifiedBadge()
                                 .font(.title3)
@@ -575,12 +578,13 @@ struct Portfolio_5: View {
                         academicInfoView
                     }
 
-                    // Experience from being on set: collaborations across every
-                    // credited post. Tapping Unique Collaborators lists everyone
-                    // you've worked with.
+                    // The same three numbers as the website: posts you're credited
+                    // on, your connections, and the Nexus members you've worked with.
+                    // Tapping Connections or Collabs lists the people behind them.
                     CollaborationStatsView(
                         stats: collaborationStats,
                         postCount: userSubmissions.count,
+                        connectionCount: nil,
                         personName: displayName
                     )
                 }
@@ -2792,11 +2796,30 @@ struct UserPortfolioView: View {
 
     @State private var selectedProject: Submission?
     @State private var liked = false
+    /// How many people this user is connected with, for the header's Connections tile.
+    @State private var connectionCount = 0
 
     // MARK: Data
 
     private var sourceSubmissions: [Submission] {
         previewSubmissions ?? store.approvedSubmissions
+    }
+
+    /// This user's directory record name, when they have a Nexus account.
+    private var directoryUserID: String? {
+        profileManager.findUser(byName: user.fullName)?.id
+    }
+
+    /// Reads how many people they're connected with. A failed lookup keeps the last
+    /// value rather than dropping the tile to zero.
+    private func loadConnectionCount() async {
+        guard let directoryUserID else {
+            connectionCount = 0
+            return
+        }
+        if let count = await ConnectionsManager.shared.connectionCount(for: directoryUserID) {
+            connectionCount = count
+        }
     }
 
     /// Projects (excluding events and open projects) this user is credited on,
@@ -2878,14 +2901,16 @@ struct UserPortfolioView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     profileInfoView
 
-                    // Experience from being on set: collaborations across every
-                    // credited post. Tapping Unique Collaborators lists everyone
-                    // they've worked with.
+                    // The same three numbers as the website: posts they're credited
+                    // on, their connections, and the Nexus members they've worked with.
+                    // Tapping Collabs lists those people.
                     CollaborationStatsView(
                         stats: collaborationStats,
                         postCount: creditedSubmissions.count,
+                        connectionCount: connectionCount,
                         personName: user.fullName
                     )
+                    .task(id: directoryUserID) { await loadConnectionCount() }
                 }
             }
 

@@ -4,9 +4,10 @@
 //
 //  Private, mutual connections between Nexus members. Unlike Collaborators (earned by
 //  sharing credits on a post), a connection is simply two people who agreed to connect —
-//  a contact list, not a credential. It is never shown as a number anywhere, not even to
-//  the person themselves; it only surfaces as a "Connections" section in the Directory,
-//  a "connections only" feed filter on Home, and a notification when a connection posts.
+//  a contact list, not a credential. Who someone is connected with stays private: only
+//  the count shows, as the "Connections" number on every portfolio header (matching the
+//  website). Otherwise it surfaces as a "Connections" section in the Directory, a
+//  "connections only" feed filter on Home, and a notification when a connection posts.
 //
 //  Storage model: one `Connection` record per *direction*, written only by its sender
 //  (`fromUserID` → `toUserID`). In the public database only a record's creator may
@@ -60,6 +61,11 @@ final class ConnectionsManager: ObservableObject {
     static let subscriptionIDs: Set<String> = [requestSubscriptionID, acceptSubscriptionID]
     private static let requestSubscriptionID = "ConnectionRequestSubscription"
     private static let acceptSubscriptionID = "ConnectionAcceptSubscription"
+    /// True once both push subscriptions have been saved this session. Until then every
+    /// `refresh()` retries, so a cold launch before iCloud is reachable doesn't leave the
+    /// user without request/accept notifications until the next launch.
+    private var subscriptionsReady = false
+    private var isSavingSubscriptions = false
 
     private let container = CKContainer.default()
     private var database: CKDatabase { container.publicCloudDatabase }
@@ -70,10 +76,7 @@ final class ConnectionsManager: ObservableObject {
 
     private init() {
         loadCache()
-        Task {
-            await refresh()
-            await setupSubscriptions()
-        }
+        Task { await refresh() }
     }
 
     // MARK: - Reading
@@ -111,6 +114,21 @@ final class ConnectionsManager: ObservableObject {
         let ids = pendingIncomingIDs
         guard !ids.isEmpty else { return [] }
         return directory.filter { ids.contains($0.messagingUserID) }
+    }
+
+    /// How many people `userID` is connected with (edges both ways) — the portfolio
+    /// header's Connections number. The signed-in user's own count comes from the live
+    /// edge sets; anyone else's is read from CloudKit on demand. Nil when a query failed,
+    /// so callers can keep whatever they last showed instead of dropping to zero.
+    func connectionCount(for userID: String) async -> Int? {
+        let id = canonicalMessagingID(userID)
+        if let me = await resolveCurrentUserID(), me == id { return connectedIDs.count }
+
+        async let outgoing = fetchIDs(where: "fromUserID", equals: id, returning: "toUserID")
+        async let incoming = fetchIDs(where: "toUserID", equals: id, returning: "fromUserID")
+        let (fetchedOutgoing, fetchedIncoming) = await (outgoing, incoming)
+        guard let fetchedOutgoing, let fetchedIncoming else { return nil }
+        return fetchedOutgoing.intersection(fetchedIncoming).count
     }
 
     // MARK: - Writing
@@ -183,6 +201,10 @@ final class ConnectionsManager: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
+        // Make sure this device is subscribed to incoming requests/acceptances. Runs
+        // alongside the fetch so it never delays the edge sets.
+        if !subscriptionsReady { Task { await setupSubscriptions() } }
+
         async let outgoing = fetchIDs(where: "fromUserID", equals: me, returning: "toUserID")
         async let incoming = fetchIDs(where: "toUserID", equals: me, returning: "fromUserID")
         let (fetchedOutgoing, fetchedIncoming) = await (outgoing, incoming)
@@ -222,14 +244,21 @@ final class ConnectionsManager: ObservableObject {
     /// Two subscriptions on edges written *to* me, split by `kind` so the banner can say
     /// "sent you a connection request" vs. "accepted your connection request".
     private func setupSubscriptions() async {
+        guard !subscriptionsReady, !isSavingSubscriptions else { return }
+        isSavingSubscriptions = true
+        defer { isSavingSubscriptions = false }
         guard let me = await resolveCurrentUserID() else { return }
-        await saveSubscription(id: Self.requestSubscriptionID, kind: "request", me: me,
-                               alert: "%@ sent you a connection request")
-        await saveSubscription(id: Self.acceptSubscriptionID, kind: "accept", me: me,
-                               alert: "%@ accepted your connection request")
+        async let request = saveSubscription(id: Self.requestSubscriptionID, kind: "request", me: me,
+                                             alert: "%@ sent you a connection request")
+        async let accept = saveSubscription(id: Self.acceptSubscriptionID, kind: "accept", me: me,
+                                            alert: "%@ accepted your connection request")
+        let (savedRequest, savedAccept) = await (request, accept)
+        subscriptionsReady = savedRequest && savedAccept
     }
 
-    private func saveSubscription(id: String, kind: String, me: String, alert: String) async {
+    /// Saves one subscription; false when CloudKit rejected it so the caller retries later.
+    @discardableResult
+    private func saveSubscription(id: String, kind: String, me: String, alert: String) async -> Bool {
         let predicate = NSPredicate(format: "toUserID == %@ AND kind == %@", me, kind)
         let subscription = CKQuerySubscription(
             recordType: CloudKitRecordTypes.connection,
@@ -248,8 +277,13 @@ final class ConnectionsManager: ObservableObject {
         subscription.notificationInfo = info
         do {
             _ = try await database.save(subscription)
+            return true
         } catch {
+            // A rejected save usually means CloudKit already has this subscription from
+            // an earlier launch; confirm rather than guess so a real failure still retries.
+            if (try? await database.subscription(for: id)) != nil { return true }
             print("⚠️ Couldn't save \(id): \(error.localizedDescription)")
+            return false
         }
     }
 

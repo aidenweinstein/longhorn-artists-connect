@@ -257,29 +257,10 @@ struct EventDetailView: View {
         return orgStore.organizations.first { $0.name.caseInsensitiveCompare(host) == .orderedSame }
     }
 
-    // Check if current user is the event creator or a moderator
+    /// Edit shows for the creator, anyone they shared edit access with, and moderators;
+    /// Delete and Edit Access only for the creator and moderators (`PostEditAccess`).
     private var canEditOrDelete: Bool {
-        // Check if user is the creator
-        let userFirstName = UserDefaults.standard.string(forKey: "userFirstName") ?? ""
-        let userLastName = UserDefaults.standard.string(forKey: "userLastName") ?? ""
-        let currentUser = "\(userFirstName) \(userLastName)".trimmingCharacters(in: .whitespaces)
-        let isUserCreator = !currentUser.isEmpty && currentUser == event.submittedBy
-        
-        // Debug logging
-        print("🔍 [Event] Edit/Delete Permission Check:")
-        print("   Current User: '\(currentUser)'")
-        print("   Event Submitted By: '\(event.submittedBy)'")
-        print("   Is User Creator: \(isUserCreator)")
-        
-        // Check if user is the moderator (gated on the CloudKit user record ID).
-        let isModeratorMode = UserDefaults.standard.bool(forKey: "isModeratorMode")
-        let canUseModerator = isModeratorMode && ModeratorAccess.isModerator
-
-        print("   Is Moderator Mode: \(isModeratorMode)")
-        print("   Is Moderator: \(ModeratorAccess.isModerator)")
-        print("   Can Edit/Delete: \(isUserCreator || canUseModerator)")
-
-        return isUserCreator || canUseModerator
+        PostEditAccess.canEdit(event)
     }
 
     /// The event category (Concert, Info Session, …), stored in the submission's `genres`.
@@ -590,6 +571,7 @@ struct EventDetailView: View {
                         // Edit and Delete buttons for creator or moderator
                         if canEditOrDelete {
                             OwnerActionButtons(
+                                post: event,
                                 onEdit: { showEditSheet = true },
                                 onDelete: {
                                     store.delete(event)

@@ -8,13 +8,63 @@ import { PHOTO_EQUIPMENT } from "./shareOptions";
  * values turned back into the Share form's fields, so the form opens filled in.
  */
 
-/** The post's record if `userRecordName` made it, with its Share type. */
-export async function ownedPost(postID: string, userRecordName: string): Promise<{ record: CKRecord; type: ShareTypeID } | null> {
-  if (!/^[0-9A-Fa-f-]{36}$/.test(postID) || !userRecordName) return null;
+/**
+ * The field on every post record listing who else may edit it: the profile IDs
+ * ("UserProfile_<id>") its maker shared edit access with. A String List, the same on
+ * every post type, read and written the same way by the app.
+ */
+export const EDITORS_FIELD = "editorIDs";
+/** How many people one post can share edit access with. */
+export const MAX_EDITORS = 20;
+
+/** A profile ID or a bare account record name, as the bare record name. */
+export const accountOf = (id: string) => id.replace(/^UserProfile_/, "");
+
+/** The accounts (bare record names) the maker gave edit access to. */
+export function editorAccounts(r: CKRecord): string[] {
+  return list(r, EDITORS_FIELD).map(accountOf).filter(Boolean);
+}
+
+/** Whether `userRecordName` may edit a post: its maker, or someone it was shared with. */
+export function mayEdit(makerProfileID: string | undefined, editorIDs: readonly string[] | undefined, userRecordName: string | undefined): boolean {
+  if (!userRecordName) return false;
+  if (makerProfileID && accountOf(makerProfileID) === userRecordName) return true;
+  return (editorIDs ?? []).some((id) => accountOf(id) === userRecordName);
+}
+
+/** A post record and its Share type, when the record is a post. */
+async function postRecord(postID: string): Promise<{ record: CKRecord; type: ShareTypeID } | null> {
+  if (!/^[0-9A-Fa-f-]{36}$/.test(postID)) return null;
   const record = await lookup(postID);
-  if (!record || str(record, "userID") !== userRecordName) return null;
+  if (!record) return null;
   const type = (Object.keys(RECORD_TYPES) as ShareTypeID[]).find((t) => RECORD_TYPES[t] === record.recordType);
   return type ? { record, type } : null;
+}
+
+/**
+ * The post's record if `userRecordName` made it, with its Share type. Only the maker can
+ * delete a post or change who else may edit it.
+ */
+export async function ownedPost(postID: string, userRecordName: string): Promise<{ record: CKRecord; type: ShareTypeID } | null> {
+  if (!userRecordName) return null;
+  const found = await postRecord(postID);
+  return found && str(found.record, "userID") === userRecordName ? found : null;
+}
+
+/**
+ * The post's record if `userRecordName` may edit it: they made it, or its maker shared
+ * edit access with them. `isMaker` tells the two apart.
+ */
+export async function editablePost(
+  postID: string,
+  userRecordName: string,
+): Promise<{ record: CKRecord; type: ShareTypeID; isMaker: boolean } | null> {
+  if (!userRecordName) return null;
+  const found = await postRecord(postID);
+  if (!found) return null;
+  const isMaker = str(found.record, "userID") === userRecordName;
+  if (!isMaker && !editorAccounts(found.record).includes(userRecordName)) return null;
+  return { ...found, isMaker };
 }
 
 /** Whether the record holds a file for an asset field, in CloudKit or as an R2 link. */

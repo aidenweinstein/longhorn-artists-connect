@@ -4,7 +4,15 @@ import type { Post } from "./mockContent";
 // sections mirror the app's detail views (FilmDetailView, MusicDetailView,
 // ReelDetailView, and the Photography and Design models in MediaModels.swift).
 
-export type Credit = { role: string; name: string; avatarUrl?: string; avatarKey?: string; profileID?: string };
+export type Credit = {
+  role: string;
+  name: string;
+  avatarUrl?: string;
+  avatarKey?: string;
+  profileID?: string;
+  /** The credited person's school (lib/schools.ts slug), when they have a Nexus account. */
+  schoolSlug?: string;
+};
 export type CreditGroup = { title: string; credits: Credit[] };
 
 export type PostDetails = {

@@ -23,8 +23,10 @@ struct SchoolTheme {
     /// Replaces white. Also the name-chip text.
     let text: Color
     /// The alternate home-screen icon in Assets.xcassets (an `.appiconset`), or
-    /// `nil` to keep the default `AppIcon`. The system can't recolor an icon at
-    /// runtime, so each school's icon is a pre-rendered asset.
+    /// `nil` to keep the default `AppIcon` (the white graph on the launch page's
+    /// orange, blue and red glows — for guests, signed out, and schools without
+    /// their own icon yet). The system can't recolor an icon at runtime, so each
+    /// school's icon is a pre-rendered asset.
     var appIconName: String? = nil
     /// The capsule behind the icons in each main page's top bar (`Color.pillActive`).
     /// The icons themselves always stay white. Defaults to a lighter tint of UT
@@ -52,6 +54,7 @@ struct SchoolTheme {
         // (the same light/dark pairing every other school uses).
         (["The University of Texas at Austin", "UT", "UT Austin"],
          SchoolTheme(bubble: .utBurntOrange, text: .white,
+                     appIconName: "AppIcon-UTAustin",
                      toolbarPill: Color(hex: "E97D25"),
                      toolbarHighlight: Color(hex: "A24A00"))),
         // Berkeley Blue + California Gold. The top-bar pill is a lighter blue
@@ -93,37 +96,46 @@ struct SchoolTheme {
                      toolbarPill: Color(hex: "3D8BDB"),
                      toolbarHighlight: Color(hex: "00468A"))),
         // Boston University Scarlet + white, with a lighter scarlet pill and deeper
-        // scarlet highlight. No alternate home-screen icon yet, so it keeps `AppIcon`.
+        // scarlet highlight.
         (["BU", "Boston University"],
          SchoolTheme(bubble: Color(hex: "CC0000"), text: .white,
+                     appIconName: "AppIcon-BU",
                      toolbarPill: Color(hex: "E54444"),
                      toolbarHighlight: Color(hex: "990000"))),
         // Aggie Maroon + white, with a lighter maroon pill and deeper maroon
-        // highlight. No alternate home-screen icon yet, so it keeps `AppIcon`.
+        // highlight.
         (["Texas A&M", "Texas A&M University", "TAMU"],
          SchoolTheme(bubble: Color(hex: "500000"), text: .white,
+                     appIconName: "AppIcon-TexasAM",
                      toolbarPill: Color(hex: "8C2B2B"),
                      toolbarHighlight: Color(hex: "3A0000"))),
         // Scarlet + white (gray is Ohio State's other color, but too light for the
         // name chip and the artwork's white), with a lighter scarlet pill and deeper
-        // scarlet highlight. No alternate home-screen icon yet, so it keeps `AppIcon`.
+        // scarlet highlight.
         (["Ohio State", "The Ohio State University", "Ohio State University", "OSU"],
          SchoolTheme(bubble: Color(hex: "BA0C2F"), text: .white,
+                     appIconName: "AppIcon-OhioState",
                      toolbarPill: Color(hex: "D9415F"),
                      toolbarHighlight: Color(hex: "8A0922"))),
         // UVA Blue + Orange, with a lighter blue pill and deeper blue highlight.
-        // No alternate home-screen icon yet, so it keeps `AppIcon`.
         (["UVA", "University of Virginia", "Virginia"],
          SchoolTheme(bubble: Color(hex: "232D4B"), text: Color(hex: "E57200"),
+                     appIconName: "AppIcon-UVA",
                      toolbarPill: Color(hex: "4A5880"),
                      toolbarHighlight: Color(hex: "161D33"))),
         // Navy + Gold, with a lighter navy pill and deeper navy highlight.
-        // No alternate home-screen icon yet, so it keeps `AppIcon`.
         (["UC Santa Barbara", "University of California, Santa Barbara", "UCSB"],
          SchoolTheme(bubble: Color(hex: "003660"), text: Color(hex: "FEBC11"),
+                     appIconName: "AppIcon-UCSB",
                      toolbarPill: Color(hex: "2F6596"),
                      toolbarHighlight: Color(hex: "002446")))
     ]
+
+    /// Every themed school once, under its canonical display name (the one
+    /// `OnboardingSchool` and `SchoolScope.registeredSchools` use), in registry
+    /// order. Drives the More → App Icon picker.
+    static let allSchools: [(name: String, theme: SchoolTheme)] =
+        registry.map { ($0.names[0], $0.theme) }
 
     /// `registry` flattened to a lookup table, built once. `forSchool` sits behind
     /// `Color.brandOrange`, which hundreds of view bodies read on every render, so it

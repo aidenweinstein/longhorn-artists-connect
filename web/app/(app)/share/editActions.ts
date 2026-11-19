@@ -2,9 +2,9 @@
 
 import { updateTag } from "next/cache";
 import { currentAccount, currentSession } from "@/lib/account";
-import { isCloudKitConfigured, list, modify, str, type CKRecord } from "@/lib/cloudkit/client";
-import { POSTS_TAG, accountTag } from "@/lib/cloudkit/content";
-import { formFields, keptFormFiles, ownedPost } from "@/lib/editPost";
+import { isCloudKitConfigured, list, modify, str, updateRecord, type CKRecord } from "@/lib/cloudkit/client";
+import { POSTS_TAG, accountTag, profileDirectory } from "@/lib/cloudkit/content";
+import { EDITORS_FIELD, MAX_EDITORS, accountOf, editablePost, editorAccounts, formFields, keptFormFiles, mayEdit, ownedPost } from "@/lib/editPost";
 import { deleteObject, keyFromPublicURL } from "@/lib/r2";
 import type { ShareTypeID } from "@/lib/sharePost";
 
@@ -16,32 +16,112 @@ async function me(): Promise<string | null> {
 }
 
 /**
- * Whether to show Edit on a post: the person looking is the account that made it. Only
- * compares the sign-in with the post's maker (no CloudKit request), since this runs on
- * every post view; opening and saving the edit check the post itself.
+ * Whether to show Edit on a post: the person looking made it, or its maker shared edit
+ * access with them. Only compares the sign-in with the IDs on the page (no CloudKit
+ * request), since this runs on every post view; opening and saving the edit check the
+ * post itself. `isMaker` also shows "Edit access", which only the maker can change.
  */
-export async function canEditPost(makerProfileID: string | undefined): Promise<boolean> {
-  if (!makerProfileID) return false;
+export async function postAccess(
+  makerProfileID: string | undefined,
+  editorIDs: string[] | undefined,
+): Promise<{ canEdit: boolean; isMaker: boolean }> {
   const user = (await currentSession().catch(() => null))?.userRecordName;
-  return !!user && makerProfileID === `UserProfile_${user}`;
+  const isMaker = !!user && !!makerProfileID && accountOf(makerProfileID) === user;
+  return { canEdit: mayEdit(makerProfileID, Array.isArray(editorIDs) ? editorIDs.map(String) : [], user), isMaker };
 }
 
 export type EditStart =
-  | { ok: true; type: ShareTypeID; fields: Record<string, unknown>; kept: string[] }
+  | { ok: true; type: ShareTypeID; fields: Record<string, unknown>; kept: string[]; isMaker: boolean }
   | { ok: false; message: string };
 
-/** A post's current values for the Share form, for its maker only. */
+/** A post's current values for the Share form, for its maker and anyone they shared edit access with. */
 export async function loadPostForEdit(postID: string): Promise<EditStart> {
   const user = await me();
   if (!user) return { ok: false, message: "Sign in to edit your posts." };
   try {
-    const owned = await ownedPost(postID, user);
-    if (!owned) return { ok: false, message: "You can only edit posts you made." };
-    return { ok: true, type: owned.type, fields: formFields(owned.type, owned.record), kept: keptFormFiles(owned.type, owned.record) };
+    const owned = await editablePost(postID, user);
+    if (!owned) return { ok: false, message: "You can only edit posts you made or were given edit access to." };
+    return {
+      ok: true,
+      type: owned.type,
+      fields: formFields(owned.type, owned.record),
+      kept: keptFormFiles(owned.type, owned.record),
+      isMaker: owned.isMaker,
+    };
   } catch (error) {
     console.error("[edit] load:", error);
     return { ok: false, message: "Couldn't open this post. Try again in a moment." };
   }
+}
+
+/** Someone with edit access, as the Edit access panel lists them. */
+export type Editor = { id: string; name: string; imageUrl?: string };
+
+export type EditorsResult = { ok: true; editors: Editor[] } | { ok: false; message: string };
+
+/** Everyone the post's maker shared edit access with (the maker only). */
+export async function getEditors(postID: string): Promise<EditorsResult> {
+  const user = await me();
+  if (!user) return { ok: false, message: "Sign in to manage edit access." };
+  try {
+    const owned = await ownedPost(postID, user);
+    if (!owned) return { ok: false, message: "Only the person who posted this can change who can edit it." };
+    return { ok: true, editors: await namesFor(editorAccounts(owned.record)) };
+  } catch (error) {
+    console.error("[edit] editors:", error);
+    return { ok: false, message: "Couldn't load who can edit this. Try again in a moment." };
+  }
+}
+
+/** Profiles for account record names, in the order given (unknown ones keep a placeholder name). */
+async function namesFor(accounts: string[]): Promise<Editor[]> {
+  const byID = new Map((await profileDirectory().catch(() => [])).map((p) => [p.id, p]));
+  return accounts.map((a) => {
+    const p = byID.get(`UserProfile_${a}`);
+    return { id: `UserProfile_${a}`, name: p?.name || "Nexus member", imageUrl: p?.imageUrl };
+  });
+}
+
+/**
+ * Replaces who else can edit the post (the maker only). Only that one field changes;
+ * the post's other fields, owner and dates stay as they are.
+ */
+export async function setEditors(postID: string, profileIDs: string[]): Promise<EditorsResult> {
+  const user = await me();
+  if (!user) return { ok: false, message: "Sign in to manage edit access." };
+  if (!Array.isArray(profileIDs)) return { ok: false, message: "Something went wrong. Try again." };
+  const owned = await ownedPost(postID, user).catch(() => null);
+  if (!owned) return { ok: false, message: "Only the person who posted this can change who can edit it." };
+
+  // Real Nexus members only, never the maker, each once.
+  const members = new Set((await profileDirectory().catch(() => [])).map((p) => accountOf(p.id)));
+  const current = new Set(editorAccounts(owned.record));
+  const accounts = [
+    ...new Set(
+      profileIDs
+        .map((id) => accountOf(String(id)))
+        .filter((a) => /^[\w-]{1,100}$/.test(a) && a !== user && (members.has(a) || current.has(a))),
+    ),
+  ];
+  if (accounts.length > MAX_EDITORS) return { ok: false, message: `A post can be shared with up to ${MAX_EDITORS} editors.` };
+
+  try {
+    await updateRecord(
+      owned.record.recordType,
+      owned.record.recordName,
+      { [EDITORS_FIELD]: { value: accounts.map((a) => `UserProfile_${a}`), type: "STRING_LIST" } },
+      [EDITORS_FIELD],
+    );
+  } catch (error) {
+    console.error("[edit] setEditors:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes(EDITORS_FIELD)) {
+      return { ok: false, message: `Edit access can't be saved yet: add ${EDITORS_FIELD} (String List) to ${owned.record.recordType} in CloudKit first.` };
+    }
+    return { ok: false, message: "Couldn't save who can edit this. Try again in a moment." };
+  }
+  updateTag(POSTS_TAG);
+  return { ok: true, editors: await namesFor(accounts) };
 }
 
 /** The post's files in R2: every `<field>URL` / `<field>URLs` link that points at the bucket. */
@@ -61,7 +141,7 @@ export async function deletePost(postID: string): Promise<{ ok: true; href: stri
   const user = await me();
   if (!user) return { ok: false, message: "Sign in to delete your posts." };
   const owned = await ownedPost(postID, user).catch(() => null);
-  if (!owned) return { ok: false, message: "You can only delete posts you made." };
+  if (!owned) return { ok: false, message: "Only the person who posted this can delete it." };
   const { record, type } = owned;
 
   try {

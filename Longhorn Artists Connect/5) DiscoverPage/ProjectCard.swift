@@ -442,19 +442,10 @@ struct UpcomingProjectDetailView: View {
     @State private var carouselIndex = 0
 
 
-    // Check if current user is the project creator or a moderator
+    /// Edit shows for the creator, anyone they shared edit access with, and moderators;
+    /// Delete and Edit Access only for the creator and moderators (`PostEditAccess`).
     private var canEditOrDelete: Bool {
-        // Check if user is the creator
-        let userFirstName = UserDefaults.standard.string(forKey: "userFirstName") ?? ""
-        let userLastName = UserDefaults.standard.string(forKey: "userLastName") ?? ""
-        let currentUser = "\(userFirstName) \(userLastName)".trimmingCharacters(in: .whitespaces)
-        let isUserCreator = !currentUser.isEmpty && currentUser == submission.submittedBy
-        
-        // Check if user is the moderator (gated on the CloudKit user record ID).
-        let isModeratorMode = UserDefaults.standard.bool(forKey: "isModeratorMode")
-        let canUseModerator = isModeratorMode && ModeratorAccess.isModerator
-
-        return isUserCreator || canUseModerator
+        PostEditAccess.canEdit(submission)
     }
 
     /// True for accounts created via the "I'm an Industry Professional" flow (the same
@@ -1008,6 +999,7 @@ struct UpcomingProjectDetailView: View {
     private var editDeleteButtons: some View {
         if canEditOrDelete {
             OwnerActionButtons(
+                post: submission,
                 onEdit: { showEditSheet = true },
                 onDelete: {
                     store.delete(submission)

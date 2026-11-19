@@ -114,8 +114,10 @@ struct SendPostMessageView: View {
         group.displayTitle(for: currentUserID) { userManager.findUser(byID: $0)?.firstName }
     }
 
+    /// The other members of a group (for its avatar collage) — never the current user.
     private func groupMembers(of group: Conversation) -> [DirectoryUser] {
-        group.allMemberIDs.compactMap { userManager.findUser(byID: $0) }
+        (currentUserID.map { group.otherMemberIDs(for: $0) } ?? group.allMemberIDs)
+            .compactMap { userManager.findUser(byID: $0) }
     }
 
     private var recipientCount: Int { selectedUserIDs.count + selectedGroupIDs.count }

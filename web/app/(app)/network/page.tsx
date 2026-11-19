@@ -109,7 +109,7 @@ export default async function Network(props: PageProps<"/network">) {
     const fresh = await messagesIn(me, id).catch(() => null);
     if (fresh) {
       summaries = [
-        { id, otherUserID: fresh.other, lastMessage: "", lastAt: 0, unread: 0, isGroup: fresh.isGroup, groupName: fresh.groupName, memberIDs: fresh.members },
+        { id, otherUserID: fresh.other, lastMessage: "", lastAt: 0, unread: 0, isGroup: fresh.isGroup, groupName: fresh.groupName, memberIDs: fresh.members, groupPhotoUrl: fresh.groupPhotoUrl, groupPhotoKey: fresh.groupPhotoKey },
         ...summaries,
       ];
     }
@@ -124,7 +124,7 @@ export default async function Network(props: PageProps<"/network">) {
       // Groups: their name, or the other members' first names, like the app.
       const others = t.memberIDs.filter((id) => id !== meRaw);
       const name = t.groupName || groupAutoName(others.map((id) => (people.get(id)?.name ?? "").split(" ")[0]));
-      return { id: t.id, name, lastMessage: t.lastMessage, time: listTime(t.lastAt), unread: t.unread, isGroup: true, memberCount: t.memberIDs.length };
+      return { id: t.id, name, imageUrl: t.groupPhotoUrl, lastMessage: t.lastMessage, time: listTime(t.lastAt), unread: t.unread, isGroup: true, memberCount: t.memberIDs.length };
     }
     const person = people.get(t.otherUserID);
     return {

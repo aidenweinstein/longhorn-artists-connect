@@ -5,10 +5,11 @@
 //  "Experience" earned by being on set: how many distinct people worked on each
 //  post, and — per person — how many collaborations they've racked up across every
 //  post they're credited on (films, reels, music, photography, design, projects and
-//  events alike) plus how many distinct people that was with. Shown on portfolios;
-//  tapping the Collaborators tile lists everyone they've worked with and tapping Collabs
-//  lists every post they shared credits on. (Connections — the private, mutual
-//  request-based relationship — live in `ConnectionsManager` and are never a number.)
+//  events alike) plus how many distinct people that was with. Shown on portfolios as
+//  the same three numbers the website shows — Projects, Connections, Collabs — where
+//  Collabs is the distinct Nexus members they've worked with; tapping it lists them.
+//  (Connections — the private, mutual request-based relationship — live in
+//  `ConnectionsManager`; only their count is shown here.)
 //
 
 import SwiftUI
@@ -362,52 +363,66 @@ struct CollaborationStats: Equatable {
 
 // MARK: - Portfolio Stats View
 
-/// Instagram-style stats row for a portfolio header, shown beside the profile photo:
-/// projects, then unique collaborators ("Collaborators"), then total collaborations
-/// ("Collabs") — each a bold number over a small label, in three equal columns.
-/// Tapping Collaborators opens the searchable list of people this person has worked
-/// with; tapping Collabs opens the searchable list of posts they shared credits on.
-/// Shared by the user's own portfolio and every view of someone else's. Every number
-/// here is earned from approved posts — connections are deliberately not counted.
+/// Instagram-style stats row for a portfolio header, shown beside the profile photo —
+/// the same three numbers as the website: posts they're credited on ("Projects"),
+/// people they're connected with ("Connections"), then the distinct Nexus members
+/// they've shared credits with ("Collabs") — each a bold number over a small label, in
+/// three equal columns. Tapping Collabs opens the searchable list of people this
+/// person has worked with; on the user's own portfolio tapping Connections opens their
+/// connections list (who someone else is connected with stays private). Shared by the
+/// user's own portfolio and every view of someone else's. Projects and Collabs are
+/// earned from approved posts; Connections are mutual requests from `ConnectionsManager`.
 struct CollaborationStatsView: View {
     let stats: CollaborationStats
     /// How many posts appear on this person's portfolio.
     let postCount: Int
+    /// How many people this person is connected with. Pass nil on the signed-in user's
+    /// own portfolio: the tile then shows their live count and opens their list.
+    let connectionCount: Int?
     /// Whose stats these are, for the list pages' accessibility hints.
     let personName: String
 
+    /// Observed so the user's own Connections number moves as requests are accepted.
+    @ObservedObject private var connections = ConnectionsManager.shared
+    @State private var showConnections = false
     @State private var showCollaborators = false
-    @State private var showCollaborations = false
+
+    private var isOwnProfile: Bool { connectionCount == nil }
+    private var connectionsValue: Int { connectionCount ?? connections.connectedIDs.count }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             stat(value: postCount, title: "Projects")
 
-            // Both tappable tiles stay enabled even when empty so their labels keep
-            // the same color as Projects (a disabled plain button dims to grey); the
-            // page they open simply shows an empty state.
+            // Tappable tiles stay enabled even when empty so their labels keep the
+            // same color as Projects (a disabled plain button dims to grey); the page
+            // they open simply shows an empty state.
+            if isOwnProfile {
+                Button {
+                    showConnections = true
+                } label: {
+                    stat(value: connectionsValue, title: "Connections")
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows everyone you're connected with")
+            } else {
+                stat(value: connectionsValue, title: "Connections")
+            }
+
             Button {
                 showCollaborators = true
             } label: {
-                stat(value: stats.uniqueCollaborators, title: "Collaborators")
+                stat(value: stats.uniqueCollaborators, title: "Collabs")
             }
             .buttonStyle(.plain)
             .accessibilityHint("Shows everyone \(personName) has worked with")
-
-            Button {
-                showCollaborations = true
-            } label: {
-                stat(value: stats.totalCollaborations, title: "Collabs")
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows every post \(personName) shared credits on")
         }
         .frame(maxWidth: .infinity)
+        .sheet(isPresented: $showConnections) {
+            ConnectionsListView()
+        }
         .sheet(isPresented: $showCollaborators) {
             CollaboratorsListView(collaborators: stats.collaborators)
-        }
-        .sheet(isPresented: $showCollaborations) {
-            CollaborationsListView(collaborations: stats.collaborations)
         }
     }
 
@@ -674,6 +689,137 @@ struct CollaboratorsListView: View {
     }
 }
 
+// MARK: - Connections List
+
+/// Everyone the signed-in user is connected with (requests accepted both ways), opened
+/// from the Connections number on their own portfolio. Sectioned like the Collaborators
+/// page — the viewer's school, then other schools — and searchable by name. Rows open
+/// the person's profile.
+struct ConnectionsListView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var connections = ConnectionsManager.shared
+    @ObservedObject private var profileManager = UserProfileManager.shared
+    @State private var selectedPerson: CreditedPerson?
+    @State private var searchText = ""
+
+    /// My connections the directory knows about, A–Z.
+    private var connectedUsers: [DirectoryUser] {
+        connections.connectedUsers(in: profileManager.allUsers)
+            .sorted { $0.fullName.localizedCaseInsensitiveCompare($1.fullName) == .orderedAscending }
+    }
+
+    /// Rows matching the search text (all of them when it's blank).
+    private var filteredUsers: [DirectoryUser] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return connectedUsers }
+        return connectedUsers.filter { $0.fullName.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var sections: [(title: String, rows: [DirectoryUser])] {
+        CollaborationSchoolSections.group(filteredUsers, school: { $0.school })
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if connectedUsers.isEmpty {
+                    Text("No connections yet.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filteredUsers.isEmpty {
+                    Text("No connections match “\(searchText)”.")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(sections, id: \.title) { section in
+                            Section(section.title) {
+                                ForEach(section.rows) { user in
+                                    Button {
+                                        selectedPerson = CreditedPerson(name: user.fullName)
+                                    } label: {
+                                        row(for: user)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search connections")
+            .navigationTitle("Connections")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .tint(.secondary)
+                    .accessibilityLabel("Close")
+                }
+            }
+            .task {
+                // Make sure the directory is loaded so connections resolve to rows, and
+                // pick up any request accepted since the edges were last fetched.
+                await profileManager.fetchAllUsers()
+                await connections.refresh()
+            }
+        }
+        .sheet(item: $selectedPerson) { person in
+            PersonProfileView(name: person.name)
+        }
+        .presentationDragIndicator(.hidden)
+    }
+
+    private func row(for user: DirectoryUser) -> some View {
+        HStack(spacing: 12) {
+            Group {
+                if let data = user.profileImageData, let image = UIImage(data: data) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        Circle().fill(Color.secondary.opacity(0.15))
+                        Text(user.initials.isEmpty ? "?" : user.initials)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            // ====== UI CONTROLS!!!!! ======
+            .frame(width: 44, height: 44)
+            // ==============================
+            .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(user.fullName)
+                    .font(.headline)
+                if !user.school.isEmpty {
+                    Text(user.school)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 // MARK: - Collaborations List
 
 /// Every post a person shared credits on, newest first, with who else was on it. Posts
@@ -873,6 +1019,6 @@ struct CollaborationsListView: View {
                                 sharedPostCount: 1, sharedPostTitles: ["Golden Hour"])
         ]
     )
-    return CollaborationStatsView(stats: stats, postCount: 12, personName: "Maya Rodriguez")
+    return CollaborationStatsView(stats: stats, postCount: 12, connectionCount: 5, personName: "Maya Rodriguez")
         .padding()
 }

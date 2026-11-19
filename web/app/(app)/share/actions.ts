@@ -4,7 +4,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { updateTag } from "next/cache";
 import { currentAccount } from "@/lib/account";
 import { createRecord, isCloudKitConfigured, queryAll, list as readList, str as readStr, updateRecord, uploadAsset, type CKField, type CKRecord } from "@/lib/cloudkit/client";
-import { ownedPost, recordHasFile } from "@/lib/editPost";
+import { editablePost, recordHasFile } from "@/lib/editPost";
 import { POSTS_TAG, accountTag, getAllPosts, profileDirectory } from "@/lib/cloudkit/content";
 import { isAdmin } from "@/lib/featured";
 import {
@@ -178,8 +178,8 @@ export async function startEarlyUpload(
 
   let recordName = randomUUID().toUpperCase();
   if (editPostID !== undefined) {
-    const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
-    if (!owned) return { ok: false, message: "You can only edit posts you made." };
+    const owned = await editablePost(String(editPostID), who.userRecordName).catch(() => null);
+    if (!owned) return { ok: false, message: "You can only edit posts you made or were given edit access to." };
     recordName = owned.record.recordName;
   } else if (continueAs && validToken(continueAs.recordName, continueAs.token, who.userRecordName)) {
     recordName = continueAs.recordName;
@@ -228,8 +228,8 @@ export async function startPost(
   const allowed = ASSET_FIELDS[type];
   let recordName = randomUUID().toUpperCase();
   if (editPostID !== undefined) {
-    const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
-    if (!owned || owned.type !== type) return { ok: false, message: "You can only edit posts you made." };
+    const owned = await editablePost(String(editPostID), who.userRecordName).catch(() => null);
+    if (!owned || owned.type !== type) return { ok: false, message: "You can only edit posts you made or were given edit access to." };
     recordName = owned.record.recordName;
   } else if (continueAs && validToken(continueAs.recordName, continueAs.token, who.userRecordName)) {
     recordName = continueAs.recordName;
@@ -601,9 +601,9 @@ export async function publishPost(input: PostInput, editPostID?: string): Promis
   }
   let editing: CKRecord | null = null;
   if (editPostID !== undefined) {
-    const owned = await ownedPost(String(editPostID), who.userRecordName).catch(() => null);
+    const owned = await editablePost(String(editPostID), who.userRecordName).catch(() => null);
     if (!owned || owned.type !== input.type || owned.record.recordName !== recordName) {
-      return { ok: false, message: "You can only edit posts you made." };
+      return { ok: false, message: "You can only edit posts you made or were given edit access to." };
     }
     editing = owned.record;
   }
@@ -841,6 +841,9 @@ async function saveEdit(
     await new Promise((r) => setTimeout(r, 2500));
     updateTag(POSTS_TAG);
     updateTag(accountTag(ctx.userRecordName));
+    // Someone the maker shared edit access with: the maker's portfolio shows the post too.
+    const maker = readStr(record, "userID");
+    if (maker && maker !== ctx.userRecordName) updateTag(accountTag(maker));
     const href = input.type === "project" || input.type === "event" ? `/discover/${recordName}` : `/post/${recordName}`;
     return { ok: true, href, note };
   } catch (error) {

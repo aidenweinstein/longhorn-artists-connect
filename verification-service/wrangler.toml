@@ -30,6 +30,9 @@ APP_ATTEST_REQUIRED = "false"
 # verification on file (the grandfathered accounts). Must match
 # SchoolScope.legacyDefault in the app.
 BACKFILL_DEFAULT_SCHOOL = "ut-austin"
+# Sign in with Apple on the website (src/apple.ts): the audience Apple identity tokens
+# must name, i.e. the website's Services ID (Apple Developer > Identifiers > Services IDs).
+APPLE_WEB_CLIENT_ID = "LAA.Longhorn-Artists-Connect.web"
 
 # Secrets — set with `wrangler secret put <NAME>`, never commit:
 #   CK_KEY_ID          CloudKit server-to-server key ID

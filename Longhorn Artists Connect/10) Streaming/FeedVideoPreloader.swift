@@ -427,9 +427,13 @@ final class FeedAutoplayCoordinator {
     private var candidates: [UUID: Candidate] = [:]
     /// The card currently chosen to autoplay.
     private(set) var focusedID: UUID?
-    /// True while a post's detail view is open over the feed; nothing autoplays
-    /// underneath it (the detail view runs its own player).
-    private var isSuspended = false
+    /// Why autoplay is currently paused. Nothing autoplays while a post's detail
+    /// view is open over the feed (it runs its own player) or while another tab is
+    /// showing (a hidden feed must not keep burning CPU or playing audio). Tracked
+    /// per reason so one ending doesn't resume autoplay while the other still holds.
+    enum SuspensionReason: Hashable { case detailView, feedHidden }
+    private var suspensions: Set<SuspensionReason> = []
+    private var isSuspended: Bool { !suspensions.isEmpty }
 
     private init() {}
 
@@ -451,13 +455,22 @@ final class FeedAutoplayCoordinator {
         reevaluate()
     }
 
-    /// Pauses all autoplay while a detail view covers the feed; resuming re-picks
-    /// the centered card, which starts its countdown afresh.
-    func setSuspended(_ suspended: Bool) {
-        guard suspended != isSuspended else { return }
-        isSuspended = suspended
+    /// Pauses all autoplay for `reason` (a detail view covering the feed, or the
+    /// Home tab no longer being the visible one); once every reason has lifted,
+    /// resuming re-picks the centered card, which starts its countdown afresh.
+    func setSuspended(_ suspended: Bool, reason: SuspensionReason = .detailView) {
+        let wasSuspended = isSuspended
         if suspended {
+            suspensions.insert(reason)
+        } else {
+            suspensions.remove(reason)
+        }
+        guard isSuspended != wasSuspended else { return }
+        if isSuspended {
             unfocus()
+            // A hover-started preview isn't tied to the autoplay slot, so make sure
+            // no card at all is left playing behind the sheet or the other tab.
+            for candidate in candidates.values { candidate.controller?.stop() }
         } else {
             reevaluate()
         }

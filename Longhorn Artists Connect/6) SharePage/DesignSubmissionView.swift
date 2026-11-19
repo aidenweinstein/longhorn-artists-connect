@@ -596,16 +596,10 @@ struct DesignDetailView: View {
         design.videoFileName != nil || (design.videoDuration ?? 0) > 0
     }
 
+    /// Edit shows for the creator, anyone they shared edit access with, and moderators;
+    /// Delete and Edit Access only for the creator and moderators (`PostEditAccess`).
     private var canEditOrDelete: Bool {
-        let userFirstName = UserDefaults.standard.string(forKey: "userFirstName") ?? ""
-        let userLastName = UserDefaults.standard.string(forKey: "userLastName") ?? ""
-        let currentUser = "\(userFirstName) \(userLastName)".trimmingCharacters(in: .whitespaces)
-        let isUserCreator = !currentUser.isEmpty && currentUser == design.submittedBy
-
-        let isModeratorMode = UserDefaults.standard.bool(forKey: "isModeratorMode")
-        let canUseModerator = isModeratorMode && ModeratorAccess.isModerator
-
-        return isUserCreator || canUseModerator
+        PostEditAccess.canEdit(design)
     }
 
     var body: some View {
@@ -672,6 +666,7 @@ struct DesignDetailView: View {
 
                     if canEditOrDelete {
                         OwnerActionButtons(
+                            post: design,
                             onEdit: { showEditSheet = true },
                             onDelete: { showDeleteConfirmation = true }
                         )

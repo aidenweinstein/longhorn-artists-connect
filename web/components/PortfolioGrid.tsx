@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { savePortfolioLayout } from "@/app/(app)/portfolio/actions";
 import type { Post } from "@/lib/mockContent";
@@ -21,7 +21,44 @@ const SPAN: Record<TileSize, string> = {
   large: "sm:col-span-6 lg:col-span-4",
 };
 const SIZE_LABEL: Record<TileSize, string> = { small: "Small", medium: "Medium", large: "Large" };
-const GRID = "grid grid-cols-1 items-start gap-x-4 gap-y-8 sm:grid-cols-6";
+/*
+ * Rows are only ROW_PX tall, and each tile takes as many rows as its own height needs
+ * (useRowSpans), so a tall post such as a poster runs down several rows and the posts
+ * after it fill the space beside it instead of leaving a gap under shorter neighbours.
+ * The space between rows is each tile's own bottom padding (TILE_GAP), not a row gap.
+ */
+const ROW_PX = 4;
+const GRID = "grid grid-cols-1 items-start gap-x-4 sm:grid-cols-6";
+const TILE_GAP = "pb-8";
+
+/**
+ * Sizes each tile of the grid at `ref` to the number of ROW_PX rows its height needs,
+ * and keeps it right as tiles resize (images load, the window changes, a size changes).
+ * Until this runs (before the page's script loads) the grid is plain rows. `deps`
+ * changes whenever the tiles or their sizes do, so new tiles are measured.
+ */
+function useRowSpans<T extends HTMLElement>(deps: string) {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const grid = ref.current;
+    if (!grid) return;
+    const tiles = Array.from(grid.children) as HTMLElement[];
+    const fit = (tile: HTMLElement) => {
+      const rows = Math.max(1, Math.ceil(tile.getBoundingClientRect().height / ROW_PX));
+      tile.style.gridRowEnd = `span ${rows}`;
+    };
+    grid.style.gridAutoRows = `${ROW_PX}px`;
+    tiles.forEach(fit);
+    const observer = new ResizeObserver((entries) => entries.forEach((e) => fit(e.target as HTMLElement)));
+    tiles.forEach((t) => observer.observe(t));
+    return () => {
+      observer.disconnect();
+      grid.style.gridAutoRows = "";
+      tiles.forEach((t) => (t.style.gridRowEnd = ""));
+    };
+  }, [deps]);
+  return ref;
+}
 
 type Layout = { order: string[]; sizes: TileSizes };
 
@@ -42,7 +79,8 @@ function arrange(posts: Post[], order: string[]): Post[] {
  * Save writes it through savePortfolioLayout, so the app shows the same order.
  *
  * With every post small, the grid is the same masonry as the rest of the site. Once
- * any post is bigger it becomes rows, so sizes line up and the order reads across.
+ * any post is bigger it becomes a six-column grid read across in order, where a tall
+ * post (a poster) spans several rows and the next posts fill in beside it.
  */
 export default function PortfolioGrid({ posts, sizes, editable = false }: { posts: Post[]; sizes: TileSizes; editable?: boolean }) {
   const router = useRouter();
@@ -56,6 +94,11 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
 
   const shown = arrange(posts, layout.order);
   const custom = shown.some((p) => sizeOf(layout.sizes, p.id) !== "small");
+  const editing = draft ? arrange(posts, draft.order) : [];
+  // What each grid holds, so its tiles are re-measured whenever that changes.
+  const tilesKey = (list: Post[], sizes: TileSizes) => list.map((p) => `${p.id}:${sizeOf(sizes, p.id)}`).join(",");
+  const viewGrid = useRowSpans<HTMLDivElement>(draft || !custom ? "" : tilesKey(shown, layout.sizes));
+  const editGrid = useRowSpans<HTMLUListElement>(draft ? tilesKey(editing, draft.sizes) : "");
 
   if (!draft) {
     return (
@@ -76,9 +119,9 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
           </div>
         )}
         {custom ? (
-          <div className={GRID}>
+          <div ref={viewGrid} className={GRID}>
             {shown.map((p, i) => (
-              <div key={p.id} className={`min-w-0 ${SPAN[sizeOf(layout.sizes, p.id)]}`}>
+              <div key={p.id} className={`min-w-0 ${TILE_GAP} ${SPAN[sizeOf(layout.sizes, p.id)]}`}>
                 <ContentCard post={p} priority={i < 6} />
               </div>
             ))}
@@ -89,8 +132,6 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
       </>
     );
   }
-
-  const editing = arrange(posts, draft.order);
 
   /** Moves a post to another place in the order. */
   function move(id: string, to: number) {
@@ -157,7 +198,7 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
         </button>
       </div>
 
-      <ul className={GRID}>
+      <ul ref={editGrid} className={GRID}>
         {editing.map((p, i) => {
           const size = sizeOf(draft.sizes, p.id);
           const thumb = thumbSources(p);
@@ -182,7 +223,7 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
                 move(dragging, i);
               }}
               onDrop={(e) => e.preventDefault()}
-              className={`min-w-0 cursor-grab select-none active:cursor-grabbing ${SPAN[size]} ${dragging === p.id ? "opacity-40" : ""}`}
+              className={`min-w-0 cursor-grab select-none active:cursor-grabbing ${TILE_GAP} ${SPAN[size]} ${dragging === p.id ? "opacity-40" : ""}`}
             >
               <div
                 className={`relative overflow-hidden rounded-xl ring-1 ring-border ${thumb.src ? "bg-black" : `bg-gradient-to-br ${TINT[p.category]}`}`}

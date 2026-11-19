@@ -236,6 +236,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = film.createdDate
         submission.lastEditedDate = film.lastEditedDate
         submission.schoolID = film.schoolID
+        submission.editorIDs = film.editorIDs
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = film.thumbnailURL,
@@ -276,6 +277,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = music.createdDate
         submission.lastEditedDate = music.lastEditedDate
         submission.schoolID = music.schoolID
+        submission.editorIDs = music.editorIDs
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = music.thumbnailURL,
@@ -319,6 +321,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = reel.createdDate
         submission.lastEditedDate = reel.lastEditedDate
         submission.schoolID = reel.schoolID
+        submission.editorIDs = reel.editorIDs
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = reel.thumbnailURL,
@@ -355,6 +358,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = photography.createdDate
         submission.lastEditedDate = photography.lastEditedDate
         submission.schoolID = photography.schoolID
+        submission.editorIDs = photography.editorIDs
 
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = photography.thumbnailURL,
@@ -383,6 +387,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = design.createdDate
         submission.lastEditedDate = design.lastEditedDate
         submission.schoolID = design.schoolID
+        submission.editorIDs = design.editorIDs
 
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = design.thumbnailURL,
@@ -414,6 +419,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = project.createdDate
         submission.lastEditedDate = project.lastEditedDate
         submission.schoolID = project.schoolID
+        submission.editorIDs = project.editorIDs
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = project.thumbnailURL,
@@ -455,6 +461,7 @@ class CloudKitTransitionAdapter: ObservableObject {
         submission.createdDate = event.createdDate
         submission.lastEditedDate = event.lastEditedDate
         submission.schoolID = event.schoolID
+        submission.editorIDs = event.editorIDs
         
         // Convert thumbnailFileName to thumbnailData if needed
         if let thumbnailURL = event.thumbnailURL,

@@ -5,6 +5,7 @@ import { updateTag } from "next/cache";
 import { PROFILES_TAG, accountTag } from "@/lib/cloudkit/content";
 import { CREATIVE_ALL_TAG, creativeTag, writeCreativeProfile } from "@/lib/cloudkit/creative";
 import { callPeople } from "@/lib/featured";
+import { updateFields, uploadAsset } from "@/lib/cloudkit/client";
 import { ROLE_TAGS } from "@/lib/profileFields";
 import { STYLE_INFO, emptyDetails, isProfileStyle } from "@/lib/profileStyle";
 import {
@@ -19,10 +20,20 @@ import {
 } from "@/lib/session";
 import { domainList, isSchoolEmail, isSignupRole, signupSchool, type SignupRole } from "@/lib/signupSchools";
 import { confirmCode, createAccount, requestCode, type RequestResult } from "@/lib/verification";
+import { APPLE_TICKET_COOKIE, decodeAppleTicket } from "@/lib/apple";
 
 async function clientIP(): Promise<string> {
   const h = await headers();
   return h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || "unknown";
+}
+
+/** Signed in with Apple and waiting on the school email step: the service's ticket. */
+async function pendingAppleTicket(): Promise<string | undefined> {
+  return decodeAppleTicket((await cookies()).get(APPLE_TICKET_COOKIE)?.value)?.ticket;
+}
+
+async function dropAppleTicket() {
+  (await cookies()).delete(APPLE_TICKET_COOKIE);
 }
 
 async function startSession(session: Omit<Session, "issuedAt">) {
@@ -57,19 +68,26 @@ export async function requestCodeAction(email: string, schoolID?: string, role?:
  * created in this same request, straight from the verified code, so it never depends
  * on the session cookie making it back between two steps. `created` says it worked;
  * `createError` says why it didn't (the visitor is still signed in and can retry).
+ * After Sign in with Apple, the code also links that Apple ID; `verifiedApp` says
+ * this email just verified the person's app account too.
  */
 export async function confirmCodeAction(
   pendingID: string,
   code: string,
   account?: NewAccount,
 ): Promise<
-  | { ok: true; hasAccount: boolean; created?: boolean; createError?: string; signInAgain?: boolean }
+  | { ok: true; hasAccount: boolean; created?: boolean; createError?: string; signInAgain?: boolean; verifiedApp?: boolean }
   | { ok: false; message: string }
 > {
   if (!/^\d{6}$/.test(code)) return { ok: false, message: "Enter the 6-digit code." };
 
-  const result = await confirmCode(pendingID, code, await clientIP());
-  if (!result.ok) return result;
+  const appleTicket = await pendingAppleTicket();
+  const result = await confirmCode(pendingID, code, await clientIP(), appleTicket);
+  if (!result.ok) {
+    // Apple's half timed out: drop it, so the next try is a plain email sign-in.
+    if (result.error === "apple_expired") await dropAppleTicket();
+    return { ok: false, message: result.message };
+  }
   // A guest's code proves a personal address, never a school one: it can't sign anyone in.
   if (result.domainKind === "guest") return { ok: false, message: "Sign in with your school email address." };
 
@@ -82,7 +100,8 @@ export async function confirmCodeAction(
     accountToken: result.userRecordName ? undefined : result.accountToken,
   };
   await startSession(session);
-  if (result.userRecordName) return { ok: true, hasAccount: true };
+  if (result.apple?.linked) await dropAppleTicket();
+  if (result.userRecordName) return { ok: true, hasAccount: true, verifiedApp: result.apple?.verifiedApp };
   if (!account) return { ok: true, hasAccount: false };
 
   const created = await createFromSession(session, account);
@@ -123,7 +142,38 @@ export type NewAccount = {
   style?: string;
   /** Educators give a department as `major` and have no class year. */
   role?: SignupRole;
+  /**
+   * The profile picture, already resized to a JPEG by the browser. Required for a new
+   * account: sign-up won't create one without it.
+   */
+  photo?: File;
 };
+
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+
+/** Why this sign-up photo can't be used, or null when it's fine. */
+function photoProblem(photo: unknown): string | null {
+  if (!(photo instanceof Blob) || photo.size === 0) return "Add a profile picture.";
+  if (photo.size > MAX_PHOTO_BYTES) return "That photo is too large. Try a smaller one.";
+  if (!/^image\/(jpeg|png)$/.test(photo.type)) return "Use a JPEG or PNG photo.";
+  return null;
+}
+
+/** Saves the profile picture on the account's UserProfile record, where the app reads it. */
+async function savePhoto(user: string, photo: Blob): Promise<boolean> {
+  const recordName = `UserProfile_${user}`;
+  try {
+    const profileImage = await uploadAsset("UserProfile", recordName, "profileImage", new Uint8Array(await photo.arrayBuffer()), photo.type);
+    const error = await updateFields("UserProfile", recordName, { profileImage });
+    if (error) console.error("[signup] photo:", error.code, error.reason);
+    return !error;
+  } catch (e) {
+    console.error("[signup] photo:", e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
+const PHOTO_RETRY = "Your account was created, but your profile picture didn't upload. Try again.";
 
 /**
  * The last step of sign-up: creates the visitor's Nexus account in CloudKit, the
@@ -143,7 +193,16 @@ async function createFromSession(
   session: Omit<Session, "issuedAt">,
   input: NewAccount,
 ): Promise<{ ok: true } | { ok: false; message: string; signInAgain?: boolean }> {
-  if (session.userRecordName) return { ok: true }; // already has one
+  if (session.userRecordName) {
+    // Already made: this is Create account again after the profile picture didn't upload.
+    if (!input.photo) return { ok: true };
+    const problem = photoProblem(input.photo);
+    if (problem) return { ok: false, message: problem };
+    if (!(await savePhoto(session.userRecordName, input.photo))) return { ok: false, message: PHOTO_RETRY };
+    updateTag(accountTag(session.userRecordName));
+    updateTag(PROFILES_TAG);
+    return { ok: true };
+  }
   if (!session.accountToken) {
     return { ok: false, message: "Your sign-in expired. Sign in again to finish.", signInAgain: true };
   }
@@ -165,19 +224,25 @@ async function createFromSession(
   const lastName = input.lastName.trim();
   if (!firstName || !lastName) return { ok: false, message: "Enter your first and last name." };
   if (role === "student" && !/^\d{4}$/.test(input.classOf)) return { ok: false, message: "Enter your graduation year as four digits, like 2028." };
+  // Every new account needs a profile picture.
+  const photoError = photoProblem(input.photo);
+  if (photoError) return { ok: false, message: photoError };
 
   // Stored the way Edit profile stores them: the app's tags, sorted, comma-separated.
   const picked = Array.isArray(input.tags) ? input.tags : [];
   const userTypes = ROLE_TAGS.filter((tag) => picked.includes(tag)).sort().join(", ");
 
+  const appleTicket = await pendingAppleTicket();
   const result = await createAccount(
     session.accountToken,
     role === "educator"
       ? { firstName, lastName, major: input.major.trim(), graduationYear: "", userTypes, role }
       : { firstName, lastName, major: input.major.trim(), graduationYear: input.classOf, userTypes },
     await clientIP(),
+    appleTicket,
   );
   if (!result.ok) return result;
+  if (appleTicket) await dropAppleTicket();
 
   const user = result.userRecordName;
   await startSession({
@@ -187,6 +252,9 @@ async function createFromSession(
     domainKind: session.domainKind,
     userRecordName: user, // and the spent accountToken is dropped
   });
+
+  // The account exists now, so its UserProfile record can take the picture.
+  const photoSaved = await savePhoto(user, input.photo!);
 
   const style = input.style;
   if (isProfileStyle(style)) {
@@ -210,9 +278,15 @@ async function createFromSession(
   }
   updateTag(accountTag(user));
   updateTag(PROFILES_TAG);
+  // Signed in either way; Create account tries the picture again.
+  if (!photoSaved) return { ok: false, message: PHOTO_RETRY };
   return { ok: true };
 }
 
 export async function signOutAction(): Promise<void> {
-  (await cookies()).delete(SESSION_COOKIE);
+  const jar = await cookies();
+  jar.delete(SESSION_COOKIE);
+  // Signing out means out on this device: a guest pass from before the sign-in goes too.
+  jar.delete(GUEST_COOKIE);
+  await dropAppleTicket();
 }

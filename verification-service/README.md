@@ -255,11 +255,21 @@ backwards-compatible with an unstamped database.
 
 ### Adding a school
 
-1. Rows in `seed/schools.sql` for `schools` and `school_domains` (see Berkeley).
-2. The slug in `SchoolScope.slugsByDisplayName`.
-3. The display name in `UserProfileModel.otherSchools`.
+1. Rows in `seed/schools.sql` for `schools` and `school_domains` (see Berkeley),
+   **then apply them to the live database** — editing the file changes nothing
+   on its own:
+   ```sh
+   wrangler d1 execute lac-verification --remote --file=./seed/schools.sql
+   ```
+   Check with `GET /v1/schools?q=<name>` on the deployed Worker. (Texas A&M sat
+   in the seed file but not the database until 2026-11-19, so its addresses
+   were refused as "unsupported domain" in both the app and the website.)
+2. The slug in `SchoolScope.registeredSchools` in the app.
+3. The school and its email domains in `OnboardingSchool.all` (app) and
+   `SIGNUP_SCHOOLS` in `web/lib/signupSchools.ts` plus `SCHOOLS` in
+   `web/lib/schools.ts` (website).
 
-Skip any one of the three and the school is either unpickable, unverifiable, or
+Skip any one of these and the school is either unpickable, unverifiable, or
 its posts land in the wrong feed.
 
 ### The schoolID cross-check
@@ -318,6 +328,30 @@ It finds this Worker's key automatically. If the website uses a **different**
 CloudKit key, set that key's user record name in the `SERVER_CREATORS` var
 (comma-separated) — otherwise the sweep reports website posts as
 `creator-unverified`.
+
+## Sign in with Apple (added 2026-11-19)
+
+Website only, in `src/apple.ts`. The app keeps using the iCloud account, which
+Apple gives no way to match to an Apple ID, so the school email does the matching:
+
+- `/v1/web/apple/session` checks Apple's identity token (Apple's keys, audience
+  `APPLE_WEB_CLIENT_ID`, the website's nonce). An Apple ID already linked to an
+  account whose school email is on file signs straight in.
+- Otherwise it returns an `appleTicket`, and the website asks for the school email
+  code. `/v1/web/session/confirm` with the ticket links the Apple ID to whichever
+  account owns that email (app or website). If nobody does, the account created at
+  `/v1/web/account/create` (same ticket) gets it.
+- Conflicts (the Apple ID's account has a different email; the email's account has
+  a different Apple ID) are refused before the code is spent.
+- When the app verifies the email of a website account and merges it, the Apple ID
+  moves to the app account (`moveAppleLink` in `/v1/verify/confirm`).
+- Apple IDs are stored as an HMAC (`apple_accounts.apple_hash`). The school email
+  for Apple sign-in is stored AES-GCM encrypted under a key derived from
+  `CODE_PEPPER` (rotating the pepper means everyone enters their email once more).
+
+**Deploying it:** `npm run db:init` (adds `apple_accounts` and `apple_tickets`;
+safe to re-run), check `APPLE_WEB_CLIENT_ID` in `wrangler.toml`, then
+`npm run deploy`. Tests: `test/apple.test.ts`.
 
 ## Follow-ups, in priority order
 

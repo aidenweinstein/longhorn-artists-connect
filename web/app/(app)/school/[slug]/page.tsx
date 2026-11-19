@@ -2,9 +2,11 @@ import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import type { CSSProperties } from "react";
 import PostGrid from "@/components/PostGrid";
+import PostLinkScope from "@/components/PostLinkScope";
 import { feedPosts } from "@/lib/content";
 import { filterPosts } from "@/lib/filterPosts";
 import { mixFeed, newFeedSeed } from "@/lib/mixFeed";
+import { creditForSchool } from "@/lib/schoolCredit";
 import { schoolForSlug, schoolSlugForName } from "@/lib/schools";
 
 export const instant = false;
@@ -18,7 +20,10 @@ export default async function SchoolHome(props: PageProps<"/school/[slug]">) {
   const params = await props.searchParams;
   await connection();
   // Posts made or credited by people at this school (an early app post with no school is UT Austin's).
-  const posts = (await feedPosts()).filter((p) => (p.schoolSlugs ?? [schoolSlugForName(p.school)]).includes(school.slug));
+  // Each card credits someone from this school, e.g. "Sound by …" when the director is from elsewhere.
+  const posts = (await feedPosts())
+    .filter((p) => (p.schoolSlugs ?? [schoolSlugForName(p.school)]).includes(school.slug))
+    .map((p) => creditForSchool(p, school.slug));
 
   return (
     // The school's secondary color (gold for USC, Berkeley and Michigan) stands in for the brand color on its feed, e.g. preview progress bars.
@@ -30,7 +35,10 @@ export default async function SchoolHome(props: PageProps<"/school/[slug]">) {
           <p className="mt-2 text-muted">Come on {school.mascot}, show us what you&apos;ve got!</p>
         </div>
       ) : (
-        <PostGrid posts={mixFeed(filterPosts(params, posts), newFeedSeed())} />
+        // Posts open under this school's address, so they keep its colors.
+        <PostLinkScope school={school.slug}>
+          <PostGrid posts={mixFeed(filterPosts(params, posts), newFeedSeed())} />
+        </PostLinkScope>
       )}
     </div>
   );

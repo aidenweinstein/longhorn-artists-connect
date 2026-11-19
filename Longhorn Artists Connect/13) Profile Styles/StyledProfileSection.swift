@@ -12,7 +12,7 @@
 //  • Actor / Dancer tags — like Actors Access: headshot, their reel, a resume of every
 //    role (Nexus credits plus ones they typed in), and skills, languages and training.
 //  • Film tags — like IMDb: a filmography grouped by job, newest first, with year,
-//    title and type, then a grid of stills from their work.
+//    title and type.
 //  • Musician / Singer / Composer tags — like Spotify: songs, albums & EPs, and
 //    upcoming shows.
 //
@@ -104,9 +104,12 @@ struct StyledProfileSection: View {
                 .padding(.bottom, 20)
             }
 
-            if !groups.isEmpty {
+            // Musicians with nothing credited yet (no shows, songs, or records) get no
+            // Musician section rather than an empty one.
+            let sections = groups.filter { $0 != .musician || hasMusicianCredits(details.musician) }
+            if !sections.isEmpty {
                 VStack(alignment: .leading, spacing: 24) {
-                    ForEach(groups) { group in
+                    ForEach(sections) { group in
                         VStack(alignment: .leading, spacing: 20) {
                             Divider()
                             header(group)
@@ -430,26 +433,6 @@ struct StyledProfileSection: View {
         }
     }
 
-    /// Still frames for the grid: the post's own stills when they're on this device,
-    /// otherwise its thumbnail.
-    private var stills: [(id: String, image: UIImage, post: Submission)] {
-        var result: [(id: String, image: UIImage, post: Submission)] = []
-        for item in credited where [.film, .reel, .photography, .design].contains(item.post.type) {
-            var added = false
-            for file in item.post.stillImageFileNames + item.post.photoImageFileNames {
-                guard result.count < 18 else { break }
-                if let url = FileManager.default.mediaFileURL(named: file), let image = UIImage(contentsOfFile: url.path) {
-                    result.append((id: "\(item.post.id.uuidString)-\(file)", image: image, post: item.post))
-                    added = true
-                }
-            }
-            if !added, result.count < 18, let data = item.post.thumbnailData, let image = UIImage(data: data) {
-                result.append((id: item.post.id.uuidString, image: image, post: item.post))
-            }
-        }
-        return result
-    }
-
     @ViewBuilder
     private func filmmakerLayout(_ details: FilmmakerDetails) -> some View {
         let groups = filmographyGroups
@@ -497,28 +480,6 @@ struct StyledProfileSection: View {
             }
         }
 
-        let stills = self.stills
-        if !stills.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Stills").font(.title3.bold())
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 3), spacing: 4) {
-                    ForEach(stills, id: \.id) { still in
-                        Button { open(still.post) } label: {
-                            Color.clear
-                                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                                .overlay(
-                                    Image(uiImage: still.image)
-                                        .resizable()
-                                        .scaledToFill()
-                                )
-                                .clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
     }
 
     // MARK: - Musician (Spotify)
@@ -552,6 +513,11 @@ struct StyledProfileSection: View {
             }
         }
         return result.sorted { ($0.eventStartDate ?? .distantFuture) < ($1.eventStartDate ?? .distantFuture) }
+    }
+
+    /// True when anything would appear under Musician: an upcoming show, a song, or a record.
+    private func hasMusicianCredits(_ details: MusicianDetails) -> Bool {
+        !releases(details).isEmpty || !upcomingShows(details).isEmpty
     }
 
     @ViewBuilder
@@ -593,46 +559,43 @@ struct StyledProfileSection: View {
             }
         }
 
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Songs").font(.title3.bold())
-            if songs.isEmpty {
-                Text(isOwn ? "Music you're credited on shows up here." : "No songs yet.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(Array(songs.prefix(10).enumerated()), id: \.element.id) { index, song in
-                Button { open(song) } label: {
-                    HStack(spacing: 12) {
-                        Text("\(index + 1)")
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20)
-                        NowThumbnail(data: song.thumbnailData, width: 44, height: 44)
-                        VStack(alignment: .leading, spacing: 1) {
-                            HStack(spacing: 4) {
-                                Text(song.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .lineLimit(1)
-                                if song.explicit {
-                                    Text("E")
-                                        .font(.system(size: 9, weight: .bold))
-                                        .padding(.horizontal, 3)
-                                        .background(Color.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 2))
+        if !songs.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Songs").font(.title3.bold())
+                ForEach(Array(songs.prefix(10).enumerated()), id: \.element.id) { index, song in
+                    Button { open(song) } label: {
+                        HStack(spacing: 12) {
+                            Text("\(index + 1)")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 20)
+                            NowThumbnail(data: song.thumbnailData, width: 44, height: 44)
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 4) {
+                                    Text(song.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .lineLimit(1)
+                                    if song.explicit {
+                                        Text("E")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .padding(.horizontal, 3)
+                                            .background(Color.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 2))
+                                    }
                                 }
+                                Text([song.artist, song.creditYear].filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
-                            Text([song.artist, song.creditYear].filter { !$0.isEmpty }.joined(separator: " · "))
+                            Spacer(minLength: 0)
+                            Image(systemName: "play.fill")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(1)
                         }
-                        Spacer(minLength: 0)
-                        Image(systemName: "play.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
 

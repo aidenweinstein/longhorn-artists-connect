@@ -62,28 +62,53 @@ export function encodeSession(session: Session): string {
 export const GUEST_COOKIE = "nexus_guest";
 export const GUEST_COOKIE_OPTIONS = SESSION_COOKIE_OPTIONS;
 
+export interface GuestPass {
+  email: string;
+  issuedAt: number;
+}
+
 export function encodeGuestPass(email: string): string {
   const payload = Buffer.from(JSON.stringify({ email, issuedAt: Math.floor(Date.now() / 1000) })).toString("base64url");
   return `${payload}.${sign(`guest:${payload}`)}`;
 }
 
-/** True for an unexpired guest pass this site issued. An unsigned cookie (the old "1") is not one. */
-export function hasGuestPass(value: string | undefined): boolean {
-  if (!value) return false;
+/**
+ * The guest pass this site issued, if it's unexpired. An unsigned cookie (the old "1") is not one.
+ * Like a session it lasts a year and proxy.ts renews it after a week, so a guest confirms
+ * their email once per device and stays in as long as they keep visiting.
+ */
+export function decodeGuestPass(value: string | undefined): GuestPass | null {
+  if (!value) return null;
   const [payload, signature] = value.split(".");
-  if (!payload || !signature) return false;
+  if (!payload || !signature) return null;
 
   const expected = Buffer.from(sign(`guest:${payload}`));
   const presented = Buffer.from(signature);
-  if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) return false;
+  if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) return null;
 
   try {
-    const pass = JSON.parse(Buffer.from(payload, "base64url").toString()) as { email?: string; issuedAt?: number };
-    const ageSeconds = Date.now() / 1000 - Number(pass.issuedAt);
-    return !!pass.email && ageSeconds >= 0 && ageSeconds < SESSION_MAX_AGE;
+    const pass = JSON.parse(Buffer.from(payload, "base64url").toString()) as Partial<GuestPass>;
+    const issuedAt = Number(pass.issuedAt);
+    const ageSeconds = Date.now() / 1000 - issuedAt;
+    return pass.email && ageSeconds >= 0 && ageSeconds < SESSION_MAX_AGE ? { email: pass.email, issuedAt } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** True for an unexpired guest pass this site issued. */
+export function hasGuestPass(value: string | undefined): boolean {
+  return decodeGuestPass(value) !== null;
+}
+
+/**
+ * Guests (a guest pass, no sign-in) only see the Home feed with every school's posts,
+ * each school's own home page, and the posts opened from those feeds. Everything else
+ * (Discover, Share, Network, Portfolio, people pages...) needs an account.
+ */
+export function guestCanSee(pathname: string): boolean {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  return path === "/" || path.startsWith("/school/") || path.startsWith("/post/");
 }
 
 export function decodeSession(value: string | undefined): Session | null {

@@ -85,17 +85,10 @@ struct FilmDetailView: View {
         colorScheme == .dark ? .white : .black
     }
 
-    // Check if current user is the film creator or a moderator
+    /// Edit shows for the creator, anyone they shared edit access with, and moderators;
+    /// Delete and Edit Access only for the creator and moderators (`PostEditAccess`).
     private var canEditOrDelete: Bool {
-        let userFirstName = UserDefaults.standard.string(forKey: "userFirstName") ?? ""
-        let userLastName = UserDefaults.standard.string(forKey: "userLastName") ?? ""
-        let currentUser = "\(userFirstName) \(userLastName)".trimmingCharacters(in: .whitespaces)
-        let isUserCreator = !currentUser.isEmpty && currentUser == film.submittedBy
-
-        let isModeratorMode = UserDefaults.standard.bool(forKey: "isModeratorMode")
-        let canUseModerator = isModeratorMode && ModeratorAccess.isModerator
-
-        return isUserCreator || canUseModerator
+        PostEditAccess.canEdit(film)
     }
 
     /// Opens the org page (the same one the Discover → Organizations list shows) for
@@ -503,6 +496,7 @@ struct FilmDetailView: View {
                             // Edit and Delete buttons
                             if canEditOrDelete {
                                 OwnerActionButtons(
+                                    post: film,
                                     onEdit: { showEditSheet = true },
                                     onDelete: { showDeleteConfirmation = true }
                                 )
@@ -654,16 +648,28 @@ struct FilmDetailView: View {
 /// Compact Edit/Delete controls shown to a post's owner (and moderators) at the
 /// bottom-left of a detail card. Small, horizontally stacked chips that keep their
 /// colored tint + glow. Shared by every detail card (film, music, reel, event, project).
+/// Edit and Delete on a post's detail page, plus Access (who else can edit it). Shown
+/// when `PostEditAccess.canEdit`; Delete and Access only to the creator and moderators,
+/// since people the post was shared with can edit it but not delete it or re-share it.
 struct OwnerActionButtons: View {
+    let post: Submission
     let onEdit: () -> Void
     let onDelete: () -> Void
+
+    @State private var showEditAccess = false
 
     var body: some View {
         HStack(spacing: 10) {
             chip(title: "Edit", systemImage: "pencil", tint: .orange, action: onEdit)
-            chip(title: "Delete", systemImage: "trash", tint: .red, action: onDelete)
+            if PostEditAccess.canManage(post) {
+                chip(title: "Access", systemImage: "person.badge.plus", tint: .blue) { showEditAccess = true }
+                chip(title: "Delete", systemImage: "trash", tint: .red, action: onDelete)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
+        .sheet(isPresented: $showEditAccess) {
+            EditAccessView(post: post)
+        }
     }
 
     private func chip(title: String, systemImage: String, tint: Color, action: @escaping () -> Void) -> some View {

@@ -23,7 +23,10 @@ const pragmatica = localFont({
 });
 
 // Site name only: the whole site is private, so no post content in metadata.
+// The link-preview card (app/opengraph-image.png, a copy of the launch page) is the same for
+// every page, so shared links never show a post. metadataBase makes its address absolute.
 export const metadata: Metadata = {
+  metadataBase: new URL("https://nexusbylac.com"),
   title: "Nexus",
   description: "Longhorn Artists Connect",
 };

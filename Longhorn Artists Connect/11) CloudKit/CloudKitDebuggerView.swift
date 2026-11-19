@@ -198,70 +198,37 @@ private enum DeviceInfo {
     ]
 }
 
-// MARK: - CloudKit Environment Detection
+// MARK: - CloudKit Environment
 
-/// Determines the *actual* CloudKit environment the running app is using, rather
-/// than guessing from the `DEBUG` compile flag. `#if DEBUG` only reflects how the
-/// binary was compiled — an archive built with the Debug configuration will report
-/// "Development" even after it's uploaded to the App Store, which is misleading.
+/// Which CloudKit environment the app talks to: always **Production**.
 ///
-/// CloudKit resolves to the **Development** environment only for builds signed with
-/// a *development* provisioning profile (one that permits debugging via
-/// `get-task-allow`, i.e. a build run from Xcode). Ad-Hoc, Enterprise, TestFlight,
-/// and App Store builds all talk to the **Production** environment.
+/// The `com.apple.developer.icloud-container-environment` entitlement pins it, in
+/// `Longhorn Artists Connect.entitlements` and the Notification Service extension's.
+/// Without that key Xcode picks the environment from the provisioning profile —
+/// Development for runs from Xcode and the simulator, Production for TestFlight and
+/// the App Store — which split the data in two: a Debug build never saw the posts,
+/// profiles and verifications the website and the shipped app use, and had its own
+/// schema to keep in step. Since 2026-11-19 every build reads and writes the one
+/// database the website does, so school verification is enforced in every build.
+///
+/// Kept as a type because many call sites ask it one question: cache prefixes, the
+/// web-services API token, the verification gate, the schema checker. To test against
+/// Development again, change the entitlement *and* `isDevelopment` together — if they
+/// disagree, the native container and the web-services layer look for a post in
+/// different places and streaming breaks.
 enum CloudKitEnvironmentDetector {
-    /// Whether this build's native `CKContainer` talks to the Development environment.
-    /// Resolved once — the provisioning profile can't change while the app runs.
-    static let isDevelopment: Bool = current == "Development"
+    /// Whether this build's `CKContainer` talks to the Development environment.
+    /// Must match the entitlement; see the type comment.
+    static let isDevelopment = false
 
-    /// Prefix for every on-device cache of CloudKit data. Development gets its own
-    /// namespace so a Debug build never shows posts cached by a TestFlight/App Store
-    /// build on the same device (and vice versa); Production keeps the unprefixed
-    /// names so existing installs keep their caches.
+    /// Prefix for every on-device cache of CloudKit data, so a Development build
+    /// never shows posts cached from Production on the same device (and vice
+    /// versa). Production keeps the unprefixed names so existing installs keep
+    /// their caches.
     static var localCachePrefix: String { isDevelopment ? "dev_" : "" }
 
-    /// "Development" or "Production", based on the embedded provisioning profile.
-    static var current: String {
-        #if targetEnvironment(simulator)
-        // Simulator builds always run against the Development environment.
-        return "Development"
-        #else
-        guard let allowsDebugging = embeddedProfileAllowsDebugging() else {
-            // No embedded provisioning profile means the binary was re-signed by
-            // Apple for distribution (TestFlight / App Store) → Production.
-            return "Production"
-        }
-        // A development profile permits debugging and maps to the CloudKit
-        // Development environment; everything else uses Production.
-        return allowsDebugging ? "Development" : "Production"
-        #endif
-    }
-
-    /// Reads `get-task-allow` from the bundle's `embedded.mobileprovision`.
-    /// Returns `nil` when no profile is embedded (App Store / TestFlight builds).
-    private static func embeddedProfileAllowsDebugging() -> Bool? {
-        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-              let data = try? Data(contentsOf: url) else {
-            return nil
-        }
-
-        // The profile is a CMS/PKCS7 blob, but the embedded entitlements plist is
-        // plain text inside it. ISO Latin-1 decodes any byte sequence losslessly.
-        guard let raw = String(data: data, encoding: .isoLatin1),
-              let start = raw.range(of: "<plist"),
-              let end = raw.range(of: "</plist>") else {
-            return nil
-        }
-
-        let plistString = String(raw[start.lowerBound..<end.upperBound])
-        guard let plistData = plistString.data(using: .isoLatin1),
-              let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
-              let entitlements = plist["Entitlements"] as? [String: Any] else {
-            return nil
-        }
-
-        return entitlements["get-task-allow"] as? Bool ?? false
-    }
+    /// "Development" or "Production", for the debugger and log lines.
+    static var current: String { isDevelopment ? "Development" : "Production" }
 }
 
 // MARK: - CloudKit Debugger Logic

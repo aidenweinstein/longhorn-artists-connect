@@ -2,8 +2,9 @@
 ///
 /// Routes (called server-to-server by the Nexus website, never by a browser):
 ///   POST /v1/web/session/request   { email, purpose? }  -> { pendingID, expiresAt, school }
-///   POST /v1/web/session/confirm   { pendingID, code }  -> { email, schoolID, schoolName, domainKind, userRecordName? | accountToken? }
-///   POST /v1/web/account/create    { accountToken, firstName, lastName, major, graduationYear }
+///   POST /v1/web/session/confirm   { pendingID, code, appleTicket? }
+///                                                       -> { email, schoolID, schoolName, domainKind, userRecordName? | accountToken?, apple? }
+///   POST /v1/web/account/create    { accountToken, firstName, lastName, major, graduationYear, appleTicket? }
 ///                                                       -> { userRecordName, schoolName, created }
 ///
 /// Unlike /v1/verify/*, there is no userRecordName and no nonce. A web session
@@ -47,6 +48,7 @@ import {
 } from "./util";
 import { sendVerificationCode } from "./email";
 import { createUserProfile, writeVerificationRecord } from "./cloudkit";
+import { applyPlan, defaultAppleDeps, linkNewWebAccount, planForEmail, readTicket, type AppleDeps } from "./apple";
 
 export const WEB_CODE_TTL_SECONDS = 600;
 export const WEB_MAX_CODE_ATTEMPTS = 5;
@@ -160,7 +162,11 @@ export async function handleWebSessionRequest(
     });
 }
 
-export async function handleWebSessionConfirm(request: Request, env: Env): Promise<Response> {
+/// `appleTicket` (from /v1/web/apple/session) links the visitor's Apple ID once
+/// the email is proven; see planForEmail in src/apple.ts. When that Apple ID
+/// belongs to an app account with no verified email, this email verifies the
+/// app account too.
+export async function handleWebSessionConfirm(request: Request, env: Env, appleDeps: AppleDeps = defaultAppleDeps): Promise<Response> {
     const denied = authorizeWebClient(request, env);
     if (denied) return denied;
 
@@ -201,6 +207,16 @@ export async function handleWebSessionConfirm(request: Request, env: Env): Promi
         return errorResponse("invalid_code", "That code isn't valid.", 400);
     }
 
+    // Sign in with Apple came first: decide what this email means for that Apple ID
+    // before spending the code, so a conflict leaves it usable with another address.
+    const wantsApple = !!body.appleTicket && pending.domain_kind !== WEB_GUEST_KIND;
+    const appleTicket = wantsApple ? await readTicket(env, body.appleTicket) : null;
+    if (wantsApple && !appleTicket) {
+        return errorResponse("apple_expired", "Your Sign in with Apple timed out. Start again.", 401);
+    }
+    const plan = appleTicket ? await planForEmail(env, appleTicket, pending.email_hash) : null;
+    if (plan?.kind === "error") return errorResponse(plan.code, plan.message, plan.status);
+
     // Consume only if still unconsumed, so two concurrent confirms can't both succeed.
     const consumed = await env.DB.prepare(
         `UPDATE pending_web_sessions SET consumed_at = ?, email_normalized = ''
@@ -217,6 +233,16 @@ export async function handleWebSessionConfirm(request: Request, env: Env): Promi
     if (pending.domain_kind === WEB_GUEST_KIND) {
         return json({ email: pending.email_normalized, schoolID: "", schoolName: "", domainKind: WEB_GUEST_KIND });
     }
+
+    // Link the Apple ID (and, for an unverified app account, verify it with this email).
+    const apple = plan && appleTicket
+        ? await applyPlan(env, appleDeps, plan, appleTicket, {
+            address: pending.email_normalized,
+            hash: pending.email_hash,
+            schoolID: pending.school_id,
+            domainKind: pending.domain_kind,
+        })
+        : null;
 
     const school = await env.DB.prepare(`SELECT id, name FROM schools WHERE id = ?`)
         .bind(pending.school_id)
@@ -259,6 +285,9 @@ export async function handleWebSessionConfirm(request: Request, env: Env): Promi
         domainKind: pending.domain_kind,
         ...(linked ? { userRecordName: linked.user_record_name } : {}),
         ...(accountToken ? { accountToken } : {}),
+        ...(apple
+            ? { apple: { linked: !!apple.user, verifiedApp: apple.verifiedApp, ...(apple.mergedWebAccount ? { mergedWebAccount: apple.mergedWebAccount } : {}) } }
+            : {}),
     });
 }
 
@@ -330,6 +359,8 @@ export async function handleWebAccountCreate(
     if (existing) {
         return json({ userRecordName: existing.user_record_name, schoolName: "", created: false });
     }
+    // Signed in with Apple first: the new account gets that Apple ID (below).
+    const appleTicket = body.appleTicket ? await readTicket(env, body.appleTicket) : null;
 
     // Spend the token. The conditional update means two concurrent creates can't both proceed.
     const spent = await env.DB.prepare(
@@ -404,7 +435,14 @@ export async function handleWebAccountCreate(
         return errorResponse("create_failed", "Couldn't create your account. Try again in a moment.", 502);
     }
 
-    return json({ userRecordName, schoolName, created: true });
+    const appleLinked = appleTicket
+        ? await linkNewWebAccount(env, appleTicket, userRecordName).catch((error) => {
+            console.error("apple link after create failed", error);
+            return false;
+        })
+        : false;
+
+    return json({ userRecordName, schoolName, created: true, ...(appleTicket ? { appleLinked } : {}) });
 }
 
 async function readJSON(request: Request): Promise<Record<string, unknown> | null> {

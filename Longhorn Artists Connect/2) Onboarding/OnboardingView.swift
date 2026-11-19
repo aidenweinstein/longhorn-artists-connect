@@ -91,8 +91,8 @@ struct OnboardingView: View {
 
     private var step: Step { steps.last ?? .welcome }
 
-    /// Whether email verification steps are shown. Development builds (and
-    /// builds with no service configured) skip them, as before.
+    /// Whether email verification steps are shown. Every build talks to
+    /// Production now, so only a build with no service configured skips them.
     private var isVerificationEnabled: Bool {
         StudentVerificationManager.isUIAvailable && StudentVerificationManager.isRequired
     }

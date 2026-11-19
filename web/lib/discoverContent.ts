@@ -31,6 +31,8 @@ export type Project = {
   writers?: string;
   scriptPages?: number;
   postedByProfileID?: string;
+  /** Everyone else its poster shared edit access with (profile IDs). */
+  editorIDs?: string[];
   createdAt?: number;
   editedAt?: number;
 };
@@ -62,6 +64,8 @@ export type NexusEvent = {
   showings?: [number, number][];
   postedBy?: string;
   postedByProfileID?: string;
+  /** Everyone else its poster shared edit access with (profile IDs). */
+  editorIDs?: string[];
   createdAt?: number;
   editedAt?: number;
 };

@@ -38,6 +38,7 @@ export default function TopBar({ portfolioActions }: { portfolioActions?: ReactN
       style={{ backgroundColor: barColor, ...(school ? { "--brand": school.color, "--brand-foreground": school.accent } : {}) } as CSSProperties}
       // In normal flow, not position: fixed: Safari tints its toolbar from a fixed
       // element at the top of the window, whatever its color. See app/(app)/layout.tsx.
+      data-topbar
       className="relative z-30 flex h-16 shrink-0 items-center gap-3 px-3 sm:gap-4 sm:px-4 text-brand-foreground shadow-sm lg:gap-6 lg:px-6">
       {/* Page wordmark, swaps per page */}
       <Link

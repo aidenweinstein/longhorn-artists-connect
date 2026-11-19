@@ -101,8 +101,12 @@ struct InMessageView: View {
         return ([me].compactMap { $0 } + pendingMemberIDs.map(canonicalMessagingID))
     }
 
+    /// The other members, for the header's avatar collage — never the current user.
     private var groupMembers: [DirectoryUser] {
-        groupMemberIDs.compactMap { profileManager.findUser(byID: $0) }
+        let me = currentUserID.map(canonicalMessagingID)
+        return groupMemberIDs
+            .filter { $0 != me }
+            .compactMap { profileManager.findUser(byID: $0) }
     }
 
     /// The group's title: its name, or the other members' first names.

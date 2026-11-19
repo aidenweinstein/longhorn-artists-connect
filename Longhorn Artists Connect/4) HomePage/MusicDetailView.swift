@@ -581,6 +581,7 @@ struct MusicDetailView: View {
                             // Edit and Delete buttons
                             if model.canEditOrDelete {
                                 OwnerActionButtons(
+                                    post: model.submission,
                                     onEdit: { showEditSheet = true },
                                     onDelete: { showDeleteConfirmation = true }
                                 )

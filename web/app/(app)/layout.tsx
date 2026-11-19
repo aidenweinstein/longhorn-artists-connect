@@ -5,6 +5,7 @@ import PortfolioBarActions from "@/components/PortfolioBarActions";
 import AccountLink, { AccountPlaceholder } from "@/components/AccountLink";
 import SchoolBadge, { SchoolBadgePlaceholder, VisitorOtherSchools } from "@/components/SchoolBadge";
 import SchoolTheme from "@/components/SchoolTheme";
+import VisitorPages, { VisitorPagesPlaceholder } from "@/components/VisitorPages";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -32,9 +33,20 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               <SchoolBadge />
             </Suspense>
           }
+          pages={
+            // All five main pages when signed in; a guest only gets Home.
+            <Suspense fallback={<VisitorPagesPlaceholder />}>
+              <VisitorPages />
+            </Suspense>
+          }
           otherSchools={
             <Suspense>
-              <VisitorOtherSchools />
+              <VisitorOtherSchools part="first" />
+            </Suspense>
+          }
+          moreSchools={
+            <Suspense>
+              <VisitorOtherSchools part="rest" />
             </Suspense>
           }
           account={

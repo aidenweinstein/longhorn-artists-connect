@@ -563,7 +563,7 @@ class CloudKitManager: ObservableObject {
     /// Keep in sync with the parsers in MediaModels.swift.
     private enum FeedKeys {
         static let film: [CKRecord.FieldKey] = [
-            "filmTitle", "filmDescription", "isApproved", "submittedBy", "createdDate",
+            "filmTitle", "filmDescription", "isApproved", "submittedBy", PostEditAccess.field, "createdDate",
             "lastEditedDate", "filmLogline", "filmAgeRating", "filmExplicit", "filmStudio",
             "filmReleaseYear", "filmGenres", "filmCast", "filmCastIDs", "filmCrew", "filmCrewIDs",
             // Small numeric field (not the heavy video asset) written whenever a video was
@@ -578,7 +578,7 @@ class CloudKitManager: ObservableObject {
             "filmVideoURL", "filmTrailerURL"
         ]
         static let music: [CKRecord.FieldKey] = [
-            "musicTitle", "musicDescription", "isApproved", "submittedBy", "createdDate",
+            "musicTitle", "musicDescription", "isApproved", "submittedBy", PostEditAccess.field, "createdDate",
             "lastEditedDate", "musicArtist", "musicCategory", "musicExplicit", "musicGenres", "musicSpotifyLink",
             "musicAppleMusicLink", "amazonMusicLink", "youtubeMusicLink", "soundcloudLink",
             "lyrics", "musicRecording", "musicRecordingIDs", "musicProduction", "musicProductionIDs",
@@ -594,7 +594,7 @@ class CloudKitManager: ObservableObject {
             "musicAudioURL", "musicTracksURLs"
         ]
         static let reel: [CKRecord.FieldKey] = [
-            "reelTitle", "reelDescription", "isApproved", "submittedBy", "createdDate",
+            "reelTitle", "reelDescription", "isApproved", "submittedBy", PostEditAccess.field, "createdDate",
             "lastEditedDate", "reelType", "orderedCrew", "orderedCrewIDs",
             // Cast credits, stored the same way as crew (see `Reel.toCloudKitRecord`).
             "orderedCast", "orderedCastIDs",
@@ -614,7 +614,7 @@ class CloudKitManager: ObservableObject {
             "reelVideoURL"
         ]
         static let project: [CKRecord.FieldKey] = [
-            "projectTitle", "projectDescription", "isApproved", "submittedBy", "createdDate",
+            "projectTitle", "projectDescription", "isApproved", "submittedBy", PostEditAccess.field, "createdDate",
             "lastEditedDate", "projectShootDatesText", "projectShootStart", "projectReleaseDateText",
             "projectExpectedReleaseDate", "projectGenres", "projectCastNeeded", "projectCrewNeeded",
             "projectCastAssembled", "projectCastAssembledIDs", "projectCrewAssembled", "projectCrewAssembledIDs",
@@ -631,7 +631,7 @@ class CloudKitManager: ObservableObject {
             "projectStudio"
         ]
         static let event: [CKRecord.FieldKey] = [
-            "eventTitle", "eventDescription", "isApproved", "submittedBy", "createdDate",
+            "eventTitle", "eventDescription", "isApproved", "submittedBy", PostEditAccess.field, "createdDate",
             "lastEditedDate", "eventStartTime", "eventEndTime", "eventLocationText", "eventLocation", "eventHost",
             "eventCategory", "eventTicketsURL",
             // Category-specific fields. `desiredKeys` is an allowlist, so leaving these
@@ -649,7 +649,7 @@ class CloudKitManager: ObservableObject {
         // the gallery asset list is included in the feed fetch. The small card thumbnail
         // is still hydrated separately (see `photographyThumbnail`).
         static let photography: [CKRecord.FieldKey] = [
-            "photographyTitle", "photographyDescription", "isApproved", "submittedBy", "createdDate",
+            "photographyTitle", "photographyDescription", "isApproved", "submittedBy", PostEditAccess.field, "createdDate",
             "lastEditedDate", "photographyArtist", "photographyReleaseYear", "photographyImages",
             "photographyGear", "orderedCrew", "orderedCrewIDs"
         ]
@@ -657,7 +657,7 @@ class CloudKitManager: ObservableObject {
         /// list rides along with the feed fetch. `designVideo` is deliberately omitted —
         /// it's heavy and streams on demand (see `streamResolutionDetailed`).
         static let design: [CKRecord.FieldKey] = [
-            "designTitle", "designDescription", "isApproved", "submittedBy", "designCreatedDate",
+            "designTitle", "designDescription", "isApproved", "submittedBy", PostEditAccess.field, "designCreatedDate",
             "designLastEditedDate", "designCategory", "designReleaseYear", "designImages",
             "designVideoDuration", "designVideoCrop", "orderedCrew", "orderedCrewIDs",
             // Link to a big website upload kept in Cloudflare R2 rather than as a CloudKit
@@ -1186,6 +1186,29 @@ class CloudKitManager: ObservableObject {
     private func stampSchool(on record: CKRecord, preservingOwner: Bool) {
         guard !preservingOwner else { return }
         SchoolScope.stamp(on: record)
+    }
+
+    // MARK: - Shared Edit Access
+
+    /// Writes who else may edit a post (`PostEditAccess`) and nothing else: a record
+    /// carrying only that key, saved with `.changedKeys`, leaves every other field —
+    /// content, files, owner, school — at its server value.
+    ///
+    /// Deliberately not routed through `save(record:)`: that strips fields the deployed
+    /// schema lacks, which here would "succeed" while saving nothing. Throws instead, so
+    /// the Edit Access screen can say the field needs adding in CloudKit Dashboard.
+    func saveEditors(_ profileIDs: [String], recordType: String, recordName: String) async throws {
+        let record = CKRecord(recordType: recordType, recordID: CKRecord.ID(recordName: recordName))
+        record[PostEditAccess.field] = profileIDs as CKRecordValue
+        let (results, _) = try await database.modifyRecords(
+            saving: [record],
+            deleting: [],
+            savePolicy: .changedKeys,
+            atomically: false
+        )
+        if let result = results[record.recordID] {
+            _ = try result.get()
+        }
     }
 
     // MARK: - Film Operations

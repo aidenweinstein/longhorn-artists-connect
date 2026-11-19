@@ -257,9 +257,10 @@ struct ConversationRow: View {
     var body: some View {
         HStack(spacing: 12) {
             if conversation.isGroup {
-                // Groups: the members' photos (or a people symbol).
+                // Groups: the other members' photos (or a people symbol) — never your own.
                 GroupAvatarView(
-                    members: conversation.allMemberIDs.compactMap { UserProfileManager.shared.findUser(byID: $0) },
+                    members: (currentUserID.map { conversation.otherMemberIDs(for: $0) } ?? conversation.allMemberIDs)
+                        .compactMap { UserProfileManager.shared.findUser(byID: $0) },
                     size: 56
                 )
             } else {

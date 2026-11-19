@@ -162,14 +162,15 @@ final class StudentVerificationManager {
 
     /// Whether verification is enforced in this build.
     ///
-    /// Development builds (the CloudKit Development environment: Xcode runs
-    /// and the simulator) skip it entirely — onboarding doesn't show the step
-    /// and `VerificationGate` stays open — so test accounts don't need a real
-    /// school address. Verifying voluntarily from Edit Profile still works,
-    /// and the moderator's test-email button still exercises the real send.
+    /// Every build talks to the Production CloudKit environment now (see
+    /// `CloudKitEnvironmentDetector`), so this is always true: onboarding shows
+    /// the step and `VerificationGate` closes for everyone, Xcode runs and the
+    /// simulator included — a test account needs a real address at one of the
+    /// schools in `OnboardingSchool.all`. Only a build pointed back at
+    /// Development would skip it, so test accounts there don't need one.
     /// Keyed on the CloudKit environment rather than `#if DEBUG` for the same
-    /// reason `CloudKitEnvironmentDetector` exists: a Debug-configured archive
-    /// on TestFlight must still enforce.
+    /// reason `CloudKitEnvironmentDetector` exists: the environment, not the
+    /// build configuration, is what decides which data the account lives in.
     static var isRequired: Bool {
         !CloudKitEnvironmentDetector.isDevelopment
     }

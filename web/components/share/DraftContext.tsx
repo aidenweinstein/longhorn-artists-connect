@@ -22,8 +22,9 @@ import type { ShareTypeID } from "@/lib/sharePost";
  * form keeps its fields with useDraftField instead of useState: the field starts from the
  * draft being resumed, and its current value is what Save draft stores.
  *
- * /share/<type>?edit=<postID> opens one of your posts the same way, filled in from the
- * post; `kept` lists the form's file fields the post already has files for.
+ * /share/<type>?edit=<postID> opens one of your posts (or one shared with you to edit)
+ * the same way, filled in from the post; `kept` lists the form's file fields the post
+ * already has files for.
  */
 
 type Ctx = {
@@ -35,7 +36,8 @@ type Ctx = {
   snapshot: () => Record<string, unknown>;
   draftID: string | null;
   setDraftID: (id: string) => void;
-  editing: { postID: string; kept: Set<string> } | null;
+  /** Editing a post: `isMaker` is false for someone its maker shared edit access with. */
+  editing: { postID: string; kept: Set<string>; isMaker: boolean } | null;
 };
 
 const DraftCtx = createContext<Ctx | null>(null);
@@ -68,7 +70,7 @@ export function DraftProvider({ type, children }: { type: ShareTypeID; children:
           setEditError(res.ok ? "This post can't be edited here." : res.message);
           return;
         }
-        setEditing({ postID: editID, kept: new Set(res.kept) });
+        setEditing({ postID: editID, kept: new Set(res.kept), isMaker: res.isMaker });
         setLoaded(res.fields);
       })
       .catch(() => live && setEditError("Couldn't open this post. Try again in a moment."));
@@ -175,6 +177,11 @@ export function useDrafts() {
 /** Editing a post: its ID, else null. */
 export function useEditing(): string | null {
   return useContext(DraftCtx)?.editing?.postID ?? null;
+}
+
+/** Editing a post you made (not one shared with you): only then can it be deleted. */
+export function useIsMaker(): boolean {
+  return useContext(DraftCtx)?.editing?.isMaker ?? false;
 }
 
 const NONE: ReadonlySet<string> = new Set();

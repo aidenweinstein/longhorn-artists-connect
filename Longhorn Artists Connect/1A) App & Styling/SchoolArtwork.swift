@@ -197,22 +197,51 @@ enum SchoolArtwork {
 
 // MARK: - Home Screen Icon
 
-/// Switches the home screen icon to the current school's (`SchoolTheme.appIconName`).
+/// Switches the home screen icon: to whatever the user picked in More → App Icon,
+/// or, if they never picked, to their school's (`SchoolTheme.appIconName`).
 ///
 /// iOS can't recolor an icon at runtime, so each school's icon is a pre-rendered
 /// `.appiconset` in Assets.xcassets (made with `SchoolArtwork.recolor` from
-/// `AppIcon`'s Nexus.png). They ship because the target sets
+/// UT's orange icon, `AppIcon-UTAustin`'s Nexus-UTAustin.png). The default
+/// `AppIcon` is the graph on the launch page's three school glows, for anyone
+/// without a school icon. They ship because the target sets
 /// `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES`.
 ///
 /// iOS shows a brief "You have changed the icon" alert whenever this switches.
 enum SchoolAppIcon {
+    /// UserDefaults key for the icon picked in More → App Icon: an alternate
+    /// icon's asset name, or `defaultChoice` for the primary icon. Absent means
+    /// the user never picked, so the icon follows their school.
+    static let choiceKey = "selectedAppIcon"
+    /// The value stored when the user picks the primary (`AppIcon`) icon, since
+    /// `setAlternateIconName` wants `nil` for it and UserDefaults can't hold nil.
+    static let defaultChoice = "AppIcon"
+
+    /// The user's pick, or `nil` when they've never picked one.
+    static var choice: String? {
+        UserDefaults.standard.string(forKey: choiceKey)
+    }
+
+    /// The alternate icon that belongs on the home screen (nil for the primary):
+    /// the user's pick if they made one, otherwise `theme`'s.
+    static func iconName(for theme: SchoolTheme) -> String? {
+        if let choice { return choice == defaultChoice ? nil : choice }
+        return theme.appIconName
+    }
+
     static func apply(_ theme: SchoolTheme) async {
-        let app = UIApplication.shared
-        guard app.supportsAlternateIcons, app.alternateIconName != theme.appIconName else { return }
         do {
-            try await app.setAlternateIconName(theme.appIconName)
+            try await set(iconName: iconName(for: theme))
         } catch {
-            print("⚠️ Couldn't switch app icon to \(theme.appIconName ?? "AppIcon"): \(error.localizedDescription)")
+            print("⚠️ Couldn't switch app icon to \(iconName(for: theme) ?? defaultChoice): \(error.localizedDescription)")
         }
+    }
+
+    /// Sets the home screen icon to `iconName` (nil for the primary). Throws so
+    /// the picker can show why a switch failed; a no-op when it already matches.
+    static func set(iconName: String?) async throws {
+        let app = UIApplication.shared
+        guard app.supportsAlternateIcons, app.alternateIconName != iconName else { return }
+        try await app.setAlternateIconName(iconName)
     }
 }

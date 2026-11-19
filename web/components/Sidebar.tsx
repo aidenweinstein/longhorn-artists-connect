@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { PAGES } from "@/lib/pages";
 import { schoolForPath } from "@/lib/schools";
-import { Suspense, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { PageGlyph, RocketGlyph } from "./icons";
 
 /** Paths that belong to a main page without starting with its address. */
@@ -18,41 +18,26 @@ export const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opaci
 
 /**
  * `account` is the server-rendered Sign in button, or "Signed in as" once signed in.
+ * `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the
+ * main pages; `pages` is the main pages themselves (VisitorPages: all five, or only Home
+ * for a guest); `otherSchools` is the first four other schools (OtherSchools) with their
+ * heading ("Other Schools", or "Schools" for a guest, who sees every school), and
+ * `moreSchools` the rest, in the "More" dropdown. A guest has no school of their own, so
+ * `school` is empty for them and Home sits at the top. `account` stays
+ * pinned at the bottom while the rest scrolls.
  *
  * The current address is only known at request time, so reading it here would block
- * prerendering on dynamic routes. The sidebar renders right away with nothing
- * highlighted, and the highlight streams in a moment later.
+ * prerendering on dynamic routes. Only the main pages (SidebarPages) read it, inside
+ * their own <Suspense>: the highlight streams in a moment later.
  */
-export default function Sidebar({ account, school, otherSchools }: { account: ReactNode; school: ReactNode; otherSchools: ReactNode }) {
-  return (
-    <Suspense fallback={<SidebarView account={account} school={school} otherSchools={otherSchools} pathname={null} />}>
-      <CurrentSidebar account={account} school={school} otherSchools={otherSchools} />
-    </Suspense>
-  );
-}
-
-function CurrentSidebar({ account, school, otherSchools }: { account: ReactNode; school: ReactNode; otherSchools: ReactNode }) {
-  return <SidebarView account={account} school={school} otherSchools={otherSchools} pathname={usePathname()} />;
-}
-
-/**
- * `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the
- * main pages; `otherSchools` is every other school (OtherSchools), under "Other Schools".
- */
-function SidebarView({ account, school, otherSchools, pathname: current }: { account: ReactNode; school: ReactNode; otherSchools: ReactNode; pathname: string | null }) {
-  // `null` while the address is still streaming in: nothing is highlighted yet.
-  const known = current !== null;
-  const pathname = current ?? "";
-  const otherSchool = schoolForPath(pathname);
-  const underPage = (href: string) => [href, ...(ALSO_UNDER[href] ?? [])].some((p) => pathname === p || pathname.startsWith(`${p}/`));
-  // A post counts as Home; pages outside the sidebar, like Manage, light nothing up.
-  const onPage = (href: string) => (href === "/" ? pathname === "/" || pathname.startsWith("/post") : underPage(href));
-
+export default function Sidebar({ account, school, pages, otherSchools, moreSchools }: { account: ReactNode; school: ReactNode; pages: ReactNode; otherSchools: ReactNode; moreSchools: ReactNode }) {
   // The bar opens while the pointer is over it, and closes the moment something is
   // picked, staying closed until the pointer leaves and comes back.
   const [hovering, setHovering] = useState(false);
   const [picked, setPicked] = useState(false);
   const open = hovering && !picked;
+  // The "More" dropdown (the rest of the schools, College Artists Connect), closed to start.
+  const [moreOpen, setMoreOpen] = useState(false);
 
   return (
     // The slot keeps the page's layout at icon width; the bar grows over the page when open.
@@ -65,7 +50,9 @@ function SidebarView({ account, school, otherSchools, pathname: current }: { acc
           setHovering(false);
           setPicked(false);
         }}
-        onClickCapture={() => setPicked(true)}
+        onClickCapture={(e) => {
+          if (!(e.target as Element).closest("[data-keep-open]")) setPicked(true);
+        }}
         // Keyboard users: tabbing into the bar opens it.
         onFocus={(e) => {
           if (e.target.matches(":focus-visible")) setHovering(true);
@@ -76,46 +63,36 @@ function SidebarView({ account, school, otherSchools, pathname: current }: { acc
             setPicked(false);
           }
         }}
-        className="group/nav absolute inset-y-0 left-0 flex w-[68px] flex-col gap-1 overflow-y-auto overflow-x-hidden border-r border-border bg-background px-2 py-3 transition-[width,box-shadow] duration-200 [scrollbar-width:none] data-[open=true]:w-56 data-[open=true]:shadow-xl [&::-webkit-scrollbar]:hidden"
+        className="group/nav absolute inset-y-0 left-0 flex w-[68px] flex-col gap-1 overflow-hidden border-r border-border bg-background px-2 py-3 transition-[width,box-shadow] duration-200 data-[open=true]:w-56 data-[open=true]:shadow-xl"
       >
+        {/* Everything but the account scrolls; -mx-2/px-2 keeps the selected page's indicator (at -left-2) visible. */}
+        <div className="-mx-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {school}
 
-        {PAGES.map((page) => {
-          const selected = known && !otherSchool && onPage(page.href);
-          return (
-            <Link
-              key={page.href}
-              href={page.href}
-              aria-label={page.label}
-              aria-current={selected ? "page" : undefined}
-              className={`group relative flex items-center gap-4 rounded-xl px-2.5 py-3 text-base font-medium transition-colors ${
-                selected ? "bg-brand/15 text-brand" : "text-muted hover:bg-surface hover:text-foreground"
-              }`}
-            >
-              {/* Toggle indicator on the selected page */}
-              <span
-                aria-hidden
-                className={`absolute -left-2 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-brand transition-opacity ${
-                  selected ? "opacity-100" : "opacity-0"
-                }`}
-              />
-              <PageGlyph icon={page.icon} className="h-7 w-7 shrink-0" />
-              <span className={LABEL}>{page.label}</span>
-            </Link>
-          );
-        })}
+        {pages}
 
         <div className="mt-3 border-t border-border pt-3">
-          <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
-            Other Schools
-          </p>
           {otherSchools}
         </div>
 
         <div className="mt-3 border-t border-border pt-3">
-          <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
-            More
-          </p>
+          <button
+            type="button"
+            aria-expanded={moreOpen}
+            aria-controls="sidebar-more"
+            aria-label={moreOpen ? "Show less" : "More"}
+            // Opening or closing More leaves the bar open, unlike picking a page.
+            data-keep-open
+            onClick={() => setMoreOpen((v) => !v)}
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden className={`h-6 w-6 shrink-0 transition-transform duration-200 ${moreOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+            <span className={LABEL}>{moreOpen ? "Show less" : "More"}</span>
+          </button>
+          <div id="sidebar-more" hidden={!moreOpen} className="mt-0.5">
+          {moreSchools}
           <a
             href="https://collegeartistsconnect.org"
             target="_blank"
@@ -137,12 +114,68 @@ function SidebarView({ account, school, otherSchools, pathname: current }: { acc
               <span className={LABEL}>Launch page</span>
             </Link>
           )}
+          </div>
+        </div>
         </div>
 
-        <div className="mt-auto flex flex-col gap-1">
+        {/* The signed-in account (or Sign in), always in view. */}
+        <div className="flex shrink-0 flex-col gap-1 pt-1">
           {account}
         </div>
       </nav>
     </div>
+  );
+}
+
+/**
+ * The main pages in the sidebar, under the visitor's school. `only` limits them to those
+ * addresses: a guest gets just Home (see VisitorPages). Without `pathname` it reads the
+ * address itself, so render it inside <Suspense>; the fallback passes `pathname={null}`.
+ */
+export function SidebarPages({ only, pathname: given }: { only?: readonly string[]; pathname?: string | null }) {
+  return given === undefined ? <CurrentSidebarPages only={only} /> : <SidebarPagesView only={only} pathname={given} />;
+}
+
+function CurrentSidebarPages({ only }: { only?: readonly string[] }) {
+  return <SidebarPagesView only={only} pathname={usePathname()} />;
+}
+
+function SidebarPagesView({ only, pathname: current }: { only?: readonly string[]; pathname: string | null }) {
+  // `null` while the address is still streaming in: nothing is highlighted yet.
+  const known = current !== null;
+  const pathname = current ?? "";
+  const otherSchool = schoolForPath(pathname);
+  const underPage = (href: string) => [href, ...(ALSO_UNDER[href] ?? [])].some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  // A post counts as Home; pages outside the sidebar, like Manage, light nothing up.
+  const onPage = (href: string) => (href === "/" ? pathname === "/" || pathname.startsWith("/post") : underPage(href));
+  const shown = only ? PAGES.filter((p) => only.includes(p.href)) : PAGES;
+
+  return (
+    <>
+    {shown.map((page) => {
+      const selected = known && !otherSchool && onPage(page.href);
+      return (
+        <Link
+          key={page.href}
+          href={page.href}
+          aria-label={page.label}
+          aria-current={selected ? "page" : undefined}
+          className={`group relative flex items-center gap-4 rounded-xl px-2.5 py-3 text-base font-medium transition-colors ${
+            selected ? "bg-brand/15 text-brand" : "text-muted hover:bg-surface hover:text-foreground"
+          }`}
+        >
+          {/* Toggle indicator on the selected page */}
+          <span
+            aria-hidden
+            className={`absolute -left-2 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-brand transition-opacity ${
+              selected ? "opacity-100" : "opacity-0"
+            }`}
+          />
+          <PageGlyph icon={page.icon} className="h-7 w-7 shrink-0" />
+          <span className={LABEL}>{page.label}</span>
+        </Link>
+      );
+    })}
+    </>
   );
 }

@@ -4,7 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState, useTransition } from "react";
 import { startConversationAction } from "@/app/(app)/network/actions";
+import { preparePhoto } from "@/lib/preparePhoto";
 import Avatar from "./Avatar";
+import { CameraGlyph } from "./icons";
 
 export type Recipient = {
   profileID: string;
@@ -20,7 +22,7 @@ const MAX_RESULTS = 30;
 
 /**
  * Network → New message. A "To:" field that takes one or more people as chips: one
- * person opens a 1:1 chat, two or more make a group (with an optional name). Sending
+ * person opens a 1:1 chat, two or more make a group (with an optional name and photo). Sending
  * the first message creates the thread and opens it in the inbox.
  */
 export default function NewMessage({ people, preset = [] }: { people: Recipient[]; preset?: string[] }) {
@@ -30,6 +32,8 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
   const [focused, setFocused] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const [groupName, setGroupName] = useState("");
+  /** The group's picture, shrunk and ready to send, with a preview URL. */
+  const [photo, setPhoto] = useState<{ file: File; url: string } | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sending, startSend] = useTransition();
@@ -73,6 +77,17 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
     search.current?.focus();
   }
 
+  async function choosePhoto(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    try {
+      const ready = await preparePhoto(file, 800, "group.jpg");
+      setPhoto({ file: ready, url: URL.createObjectURL(ready) });
+    } catch {
+      setError("That photo couldn't be read. Try a JPEG or PNG.");
+    }
+  }
+
   function send() {
     const text = draft.trim();
     if (sending) return;
@@ -80,7 +95,12 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
     if (!text) return setError("Write a message first.");
     setError(null);
     startSend(async () => {
-      const res = await startConversationAction(picked, text, isGroup ? groupName : undefined);
+      let photoForm: FormData | undefined;
+      if (isGroup && photo) {
+        photoForm = new FormData();
+        photoForm.set("photo", photo.file);
+      }
+      const res = await startConversationAction(picked, text, isGroup ? groupName : undefined, photoForm);
       if (!res.ok) return setError(res.message);
       router.push(`/network?c=${encodeURIComponent(res.threadID)}`);
       router.refresh();
@@ -180,9 +200,29 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
         )}
       </div>
 
-      {/* Group name, once there are two or more people. */}
+      {/* Group photo and name, once there are two or more people. */}
       {isGroup && (
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+          <label title={photo ? "Change group photo" : "Add group photo"} className="group mr-1 shrink-0 cursor-pointer rounded-full">
+            {photo ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={photo.url} alt="" className="h-9 w-9 rounded-full object-cover" />
+            ) : (
+              <span className="flex h-9 w-9 items-center justify-center rounded-full border border-dashed border-border text-muted transition group-hover:border-brand group-hover:text-brand">
+                <CameraGlyph className="h-[18px] w-[18px]" />
+              </span>
+            )}
+            <span className="sr-only">{photo ? "Change group photo" : "Add group photo"}</span>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/heic,image/*"
+              className="sr-only"
+              onChange={(e) => {
+                choosePhoto(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+          </label>
           <span className="text-sm text-muted">Name:</span>
           <input
             value={groupName}
@@ -191,6 +231,11 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
             placeholder={`Optional (${chosen.length + 1} people)`}
             className="min-w-0 flex-1 bg-transparent py-1 text-sm outline-none"
           />
+          {photo && (
+            <button type="button" onClick={() => setPhoto(null)} className="shrink-0 text-xs text-muted hover:text-foreground">
+              Remove photo
+            </button>
+          )}
         </div>
       )}
 
@@ -200,6 +245,10 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
           <p className="max-w-xs text-sm text-muted">Add one person for a direct message, or a few people to start a group chat.</p>
         ) : (
           <>
+            {isGroup && photo ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={photo.url} alt="" className="h-20 w-20 rounded-full object-cover" />
+            ) : (
             <div className="flex -space-x-3">
               {chosen.slice(0, 5).map((p) => (
                 <span key={p.profileID} className="rounded-full ring-2 ring-background">
@@ -207,6 +256,7 @@ export default function NewMessage({ people, preset = [] }: { people: Recipient[
                 </span>
               ))}
             </div>
+            )}
             <p className="font-semibold">{isGroup ? groupName.trim() || chosen.map((p) => p.name.split(" ")[0]).join(", ") : chosen[0].name}</p>
             {isGroup && <p className="text-xs text-muted">You and {chosen.length} others</p>}
           </>

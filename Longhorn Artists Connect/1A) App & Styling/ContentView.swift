@@ -58,6 +58,33 @@ struct ContentView: View {
 
     // MARK: - Computed Properties
 
+    /// The tabs currently in the tab bar, in left-to-right order. Mirrors the
+    /// conditions in `body` so swiping lands on the real neighbour even when a tab is
+    /// hidden (guests, enthusiasts, industry pros, moderators).
+    private var visibleTabs: [String] {
+        var tabs = ["home"]
+        if !isEnthusiast { tabs.append("discover") }
+        if shouldShowModeratorMode {
+            tabs.append("moderate")
+        } else if !isGuestUser && !isIndustryPro {
+            tabs.append("share")
+        }
+        if !isGuestUser { tabs.append("network") }
+        tabs.append("portfolio")
+        return tabs
+    }
+
+    /// Moves one tab left or right from the current one, if there is one. Routes
+    /// through `tabSelection` so a swipe onto Discover gets the same scroll-to-top
+    /// treatment as a tap.
+    private func swipeToNeighbouringTab(_ direction: TabSwipeGesture.Direction) {
+        let tabs = visibleTabs
+        guard let current = tabs.firstIndex(of: selectedTab) else { return }
+        let target = direction == .forward ? current + 1 : current - 1
+        guard tabs.indices.contains(target) else { return }
+        tabSelection.wrappedValue = tabs[target]
+    }
+
     private var isEnthusiast: Bool {
         AccountKind(storedValue: accountKind) == .enthusiast
     }
@@ -147,6 +174,10 @@ struct ContentView: View {
                 .tag("portfolio")
                 .tabItem { Image(systemName: "person.crop.circle") }
         }
+        // Swipe sideways on any tab's content to page to the neighbouring tab. The
+        // gesture yields to scroll views, carousels and the back-swipe (see
+        // TabSwipeGesture), so it only fires on a swipe nothing else claimed.
+        .gesture(TabSwipeGesture(onSwipe: swipeToNeighbouringTab))
         .id(moderatorSchool)                            // Re-theme everything on a moderator school switch
         .onChange(of: moderatorSchool) {
             // Refetch so the feeds show the newly picked school's posts (once
@@ -154,6 +185,13 @@ struct ContentView: View {
             Task { await SubmissionStore_3_2.shared.syncWithCloudKit() }
         }
         .transaction { $0.animation = nil }             // Disable tab switch animation
+        // Switching tabs doesn't tear down the Home feed's cards, so a card that was
+        // autoplaying would keep playing (and sounding) behind the other tab. Suspend
+        // feed autoplay whenever Home isn't the visible tab; coming back re-picks the
+        // centered card so the preview resumes where the user left off.
+        .onChange(of: selectedTab) { _, tab in
+            FeedAutoplayCoordinator.shared.setSuspended(tab != "home", reason: .feedHidden)
+        }
         // No scrollbars anywhere in the app. This is an environment value, so it reaches
         // every ScrollView / List / TextEditor in all five tabs *and* in the sheets and
         // full-screen covers they present (post detail pages, submission forms, pickers).
@@ -216,8 +254,9 @@ struct ContentView: View {
         // store change — that re-render on each sync/like/upload tick made the whole app
         // feel sluggish.
         .background { EventReminderCoordinator() }
-        // Nudge unverified students (including accounts that predate verification)
-        // to verify their school email, which also links their website account.
+        // Prompt unverified students (including accounts that predate verification)
+        // to verify their school email on every open, which also links their
+        // website account.
         .verificationReminder(isEligible: !isGuestUser && !isIndustryPro && !isAlumni)
         .task {
             // Weekly "<show> is Live!" notifications — see LiveStreams.swift.

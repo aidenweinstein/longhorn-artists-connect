@@ -300,11 +300,6 @@ struct HomePostCard: View {
                             .animation(.easeInOut(duration: 0.25), value: isPreviewPlaying)
                     } else if post.type == .film, !post.festivalBound, filmConfirmedNoVideo {
                         durationBadge("Coming Soon")
-                    } else if hasGallery {
-                        // Gallery posts: show the position in the gallery ("2/5") in the
-                        // timecode slot — just the count until the extra images decode.
-                        // A single image needs no badge.
-                        photoCountBadge(galleryImages.isEmpty ? nil : galleryIndex + 1, of: galleryURLs.count)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -825,29 +820,6 @@ struct HomePostCard: View {
             .padding(8)
             // Nudge in from the trailing edge so the pill doesn't kiss the card border.
             .padding(.trailing, 4)
-    }
-
-    /// Gallery-post counterpart of `durationBadge`: the same pill in the same corner,
-    /// holding a stack icon and the position in the gallery ("2/5"), or just the count
-    /// when no position is known yet.
-    private func photoCountBadge(_ position: Int?, of count: Int) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "square.on.square")
-                .font(.caption2)
-            Text(position.map { "\($0)/\(count)" } ?? "\(count)")
-                .font(.caption)
-                .monospacedDigit()
-        }
-        .fontWeight(.semibold)
-        .foregroundStyle(.white)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(
-            Capsule()
-                .fill(.black.opacity(0.7))
-        )
-        .padding(8)
-        .padding(.trailing, 4)
     }
 }
 

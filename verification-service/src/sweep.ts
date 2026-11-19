@@ -220,6 +220,7 @@ export async function runSweep(env: Env): Promise<void> {
         env.DB.prepare(`DELETE FROM web_account_claims WHERE expires_at < ?`).bind(
             startedAt - 86_400,
         ),
+        env.DB.prepare(`DELETE FROM apple_tickets WHERE expires_at < ?`).bind(startedAt - 86_400),
         env.DB.prepare(`DELETE FROM rate_limits WHERE window_start < ?`).bind(startedAt - 86_400),
     ]);
 

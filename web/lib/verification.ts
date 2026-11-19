@@ -13,7 +13,23 @@ export type RequestResult =
   | { ok: false; message: string };
 
 export type ConfirmResult =
-  | { ok: true; email: string; schoolID: string; schoolName: string; domainKind: string; userRecordName?: string; accountToken?: string }
+  | {
+      ok: true;
+      email: string;
+      schoolID: string;
+      schoolName: string;
+      domainKind: string;
+      userRecordName?: string;
+      accountToken?: string;
+      /** Sign in with Apple came first: whether its Apple ID is now linked, and whether this email just verified the app account. */
+      apple?: { linked: boolean; verifiedApp: boolean };
+    }
+  | { ok: false; message: string; error?: string };
+
+/** Sign in with Apple (lib/apple.ts): straight in, or the school email step with a ticket. */
+export type AppleSessionResult =
+  | { ok: true; signedIn: { email: string; schoolID: string; schoolName: string; domainKind: string; userRecordName: string } }
+  | { ok: true; signedIn?: undefined; appleTicket: string; reason: "new" | "verify" | "confirm" }
   | { ok: false; message: string };
 
 /** `role: "educator"` makes a Professor account, which has no graduation year. */
@@ -54,10 +70,11 @@ export async function requestCode(email: string, clientIP: string, purpose?: "gu
   return { ok: true, pendingID: String(json.pendingID), schoolName: school?.name ?? "" };
 }
 
-export async function confirmCode(pendingID: string, code: string, clientIP: string): Promise<ConfirmResult> {
+export async function confirmCode(pendingID: string, code: string, clientIP: string, appleTicket?: string): Promise<ConfirmResult> {
   if (isDevStandIn()) return devConfirm(pendingID, code);
-  const { status, json } = await callWorker("/v1/web/session/confirm", { pendingID, code }, clientIP);
-  if (status !== 200) return { ok: false, message: String(json.message ?? "That code isn't valid.") };
+  const { status, json } = await callWorker("/v1/web/session/confirm", { pendingID, code, ...(appleTicket ? { appleTicket } : {}) }, clientIP);
+  if (status !== 200) return { ok: false, message: String(json.message ?? "That code isn't valid."), error: typeof json.error === "string" ? json.error : undefined };
+  const apple = json.apple as { linked?: boolean; verifiedApp?: boolean } | undefined;
   return {
     ok: true,
     email: String(json.email),
@@ -66,18 +83,42 @@ export async function confirmCode(pendingID: string, code: string, clientIP: str
     domainKind: String(json.domainKind ?? "student"),
     userRecordName: typeof json.userRecordName === "string" ? json.userRecordName : undefined,
     accountToken: typeof json.accountToken === "string" ? json.accountToken : undefined,
+    apple: apple ? { linked: !!apple.linked, verifiedApp: !!apple.verifiedApp } : undefined,
   };
+}
+
+/** Checks Apple's identity token with verification-service and says who it is. */
+export async function appleSession(idToken: string, nonce: string, clientIP: string): Promise<AppleSessionResult> {
+  if (isDevStandIn()) return { ok: false, message: "Sign in with Apple needs the verification service." };
+  const { status, json } = await callWorker("/v1/web/apple/session", { idToken, nonce }, clientIP);
+  if (status !== 200) return { ok: false, message: String(json.message ?? "Sign in with Apple didn't go through.") };
+  const signedIn = json.signedIn as Record<string, unknown> | undefined;
+  if (signedIn && typeof signedIn.userRecordName === "string" && typeof signedIn.email === "string") {
+    return {
+      ok: true,
+      signedIn: {
+        email: signedIn.email,
+        schoolID: String(signedIn.schoolID ?? ""),
+        schoolName: String(signedIn.schoolName ?? ""),
+        domainKind: String(signedIn.domainKind ?? "student"),
+        userRecordName: signedIn.userRecordName,
+      },
+    };
+  }
+  const reason = json.reason === "verify" || json.reason === "confirm" ? json.reason : "new";
+  if (typeof json.appleTicket !== "string") return { ok: false, message: "Sign in with Apple didn't go through." };
+  return { ok: true, appleTicket: json.appleTicket, reason };
 }
 
 /**
  * Creates the Nexus account for a signed-in email that has none: verification-service
  * writes its CloudKit UserProfile and links the email to it. Returns its userRecordName.
  */
-export async function createAccount(accountToken: string, details: AccountDetails, clientIP: string): Promise<CreateAccountResult> {
+export async function createAccount(accountToken: string, details: AccountDetails, clientIP: string, appleTicket?: string): Promise<CreateAccountResult> {
   if (isDevStandIn()) {
     return { ok: false, message: "Creating accounts needs the verification service. Set VERIFICATION_URL in .env.local." };
   }
-  const { status, json } = await callWorker("/v1/web/account/create", { accountToken, ...details }, clientIP);
+  const { status, json } = await callWorker("/v1/web/account/create", { accountToken, ...details, ...(appleTicket ? { appleTicket } : {}) }, clientIP);
   if (status === 200 && typeof json.userRecordName === "string") return { ok: true, userRecordName: json.userRecordName };
   return {
     ok: false,

@@ -64,8 +64,21 @@ function base(r: CKRecord, category: Post["category"], title: string, creator: s
     category,
     meta: when ? dateFmt.format(new Date(when)) : "",
     aspect: DEFAULT_ASPECT[category],
-    creatorProfileID: str(r, "userID") ? `UserProfile_${str(r, "userID")}` : undefined,
+    creatorProfileID: maker(r),
+    makerProfileID: maker(r),
+    editorIDs: editors(r),
   };
+}
+
+/** The account that posted it, as a profile ID. Unlike creatorProfileID, never moved to the main credit. */
+function maker(r: CKRecord): string | undefined {
+  return str(r, "userID") ? `UserProfile_${str(r, "userID")}` : undefined;
+}
+
+/** Who else the maker shared edit access with (profile IDs), when anyone. */
+function editors(r: CKRecord): string[] | undefined {
+  const ids = list(r, "editorIDs");
+  return ids.length ? ids : undefined;
 }
 
 function film(r: CKRecord): Post {
@@ -254,7 +267,8 @@ function project(r: CKRecord): Project {
     crewAssembled: credits(r, "projectCrewAssembled", "projectCrewAssembledIDs"),
     writers: str(r, "writers") || undefined,
     scriptPages: num(r, "scriptPageCount") || undefined,
-    postedByProfileID: str(r, "userID") ? `UserProfile_${str(r, "userID")}` : undefined,
+    postedByProfileID: maker(r),
+    editorIDs: editors(r),
     createdAt: created(r) || undefined,
     editedAt: num(r, "lastEditedDate"),
   };
@@ -290,7 +304,8 @@ function event(r: CKRecord): NexusEvent {
       .filter((pair): pair is [number, number] => pair.length === 2 && pair.every(Number.isFinite))
       .sort((a, b) => a[0] - b[0]),
     postedBy: str(r, "submittedBy") || undefined,
-    postedByProfileID: str(r, "userID") ? `UserProfile_${str(r, "userID")}` : undefined,
+    postedByProfileID: maker(r),
+    editorIDs: editors(r),
     createdAt: created(r) || undefined,
     editedAt: num(r, "lastEditedDate"),
   };
@@ -338,7 +353,8 @@ export const POSTS_TAG = "posts";
 
 /**
  * Fills in playlists made of existing posts: each one plays its own uploaded videos, then
- * the posts it lists, under those posts' titles. Returns the IDs of every post that sits
+ * the posts it lists, under those posts' titles, and takes on those posts' school feeds.
+ * Runs after attachAvatars, which sets each post's schoolSlugs. Returns the IDs of every post that sits
  * in a playlist; those stay off the feeds (still on portfolios and at their own address).
  */
 function resolvePlaylists(posts: Post[]): Set<string> {
@@ -353,6 +369,9 @@ function resolvePlaylists(posts: Post[]): Set<string> {
     });
     if (items.length === 0) continue;
     for (const q of items) inPlaylist.add(q.id);
+    // The playlist stands in for the posts it holds (they're off the feeds), so it's on the
+    // feed of every school they're on: an actor showcase with UT and USC actors shows at both.
+    p.schoolSlugs = [...new Set([...(p.schoolSlugs ?? []), ...items.flatMap((q) => q.schoolSlugs ?? [])])];
     const own = p.videos ?? (p.videoUrl ? [{ url: p.videoUrl, title: "" }] : []);
     p.videos = [...own, ...items.map((q) => ({ url: q.videoUrl!, title: q.title, postID: q.id }))];
     // A playlist with no upload of its own previews and opens on its first video.
@@ -546,6 +565,7 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     // so a UT and USC collaboration shows on both. An unknown creator counts as UT, like the app's early posts.
     const schools = new Set<string>();
     const creatorSchool = schoolSlugForName(creator?.school);
+    post.creatorSchoolSlug = creatorSchool;
     if (creatorSchool) schools.add(creatorSchool);
     for (const group of post.details?.creditGroups ?? []) {
       for (const c of group.credits) {
@@ -554,6 +574,7 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
         c.avatarKey = person?.imageKey;
         c.profileID = person?.id ?? c.profileID;
         const school = person ? schoolSlugForName(person.school) : undefined;
+        c.schoolSlug = school;
         if (school) schools.add(school);
       }
     }

@@ -31,8 +31,8 @@ struct VerificationGate<Content: View>: View {
                 || !StudentVerificationManager.isRequired
                 || !StudentVerificationManager.isConfigured
                 || verification.status.isVerified {
-                // Development build, or no service configured in this build —
-                // don't wall anything off.
+                // No service configured in this build (or a build pointed at
+                // Development) — don't wall anything off.
                 content()
             } else {
                 switch verification.status {
@@ -95,52 +95,50 @@ struct VerificationGate<Content: View>: View {
 
 // MARK: - Verification Reminder
 
-/// Periodically nudges unverified students to verify their school email.
+/// Prompts unverified students to verify their school email every time they
+/// open the app.
 ///
 /// Accounts created before verification existed never saw the onboarding step,
-/// and anyone can skip it there, so this is how they find out. It's a reminder,
-/// not a wall: "Not Now" snoozes it for `snoozeInterval`. Website sign-in is by
-/// school email, and the service only links that email to this app account once
-/// it's verified — hence the copy.
+/// so this is how they find out. It's a prompt, not a wall: "Not Now" dismisses
+/// it until the app is next opened — a cold launch or a return from the
+/// background — and it keeps coming back until they verify. The sheet pins the
+/// address to the school's own domain (see `SchoolEmailVerificationView.domains`),
+/// so a personal address can't be used. Website sign-in is by school email, and
+/// the service only links that email to this app account once it's verified —
+/// hence the copy.
 struct VerificationReminder: ViewModifier {
     /// False for guests and industry professionals, who have no school email.
     let isEligible: Bool
 
-    private static let lastShownKey = "verificationReminderLastShown"
-    private static let snoozeInterval: TimeInterval = 3 * 24 * 60 * 60
+    @Environment(\.scenePhase) private var scenePhase
 
     private var verification: StudentVerificationManager { .shared }
     @State private var showReminder = false
     @State private var showVerification = false
 
-    /// Starts the snooze window.
-    static func snooze() {
-        UserDefaults.standard.set(Date(), forKey: lastShownKey)
-    }
-
     func body(content: Content) -> some View {
         content
-            .task {
-                guard isEligible,
+            // Keyed on the scene phase so it re-runs on every return to the
+            // foreground, not just at launch.
+            .task(id: scenePhase) {
+                guard scenePhase == .active,
+                      isEligible,
                       StudentVerificationManager.isRequired,
-                      StudentVerificationManager.isConfigured else { return }
-
-                if let last = UserDefaults.standard.object(forKey: Self.lastShownKey) as? Date,
-                   Date().timeIntervalSince(last) < Self.snoozeInterval {
-                    return
-                }
+                      StudentVerificationManager.isConfigured,
+                      // Switching to Mail for the code and back shouldn't stack
+                      // a second prompt on top of the one already showing.
+                      !showReminder, !showVerification else { return }
 
                 await verification.refreshStatus()
                 guard verification.status == .unverified else { return }
 
-                Self.snooze()
                 showReminder = true
             }
             .alert("Verify your school email", isPresented: $showReminder) {
                 Button("Verify Now") { showVerification = true }
                 Button("Not Now", role: .cancel) {}
             } message: {
-                Text("Verifying lets you sign in to the Nexus website and keep it in sync with your account here. You'll also need it to post your work.")
+                Text("Confirm the email address your school issued you to post your work and sign in to the Nexus website. It takes about a minute.")
             }
             .sheet(isPresented: $showVerification) {
                 NavigationStack {

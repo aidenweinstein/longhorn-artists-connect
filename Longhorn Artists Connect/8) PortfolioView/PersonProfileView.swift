@@ -86,6 +86,21 @@ struct PersonProfileView: View {
         profileManager.findUser(byName: name)
     }
 
+    /// How many people this person is connected with, for the header's Connections tile.
+    @State private var connectionCount = 0
+
+    /// Reads how many people they're connected with. A failed lookup keeps the last
+    /// value rather than dropping the tile to zero.
+    private func loadConnectionCount() async {
+        guard let id = directoryUser?.id else {
+            connectionCount = 0
+            return
+        }
+        if let count = await ConnectionsManager.shared.connectionCount(for: id) {
+            connectionCount = count
+        }
+    }
+
     // Load profile image: prefer a locally-created profile's image, then fall
     // back to the synced directory photo (already cropped/baked).
     private var profileImage: UIImage? {
@@ -267,9 +282,12 @@ struct PersonProfileView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            // Long names shrink to fit rather than wrapping to a second line.
                             Text(name)
                                 .font(.title)
                                 .bold()
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
                             // School-colored seal once this person's email is verified.
                             UserVerifiedBadge(userID: directoryUser?.id)
                                 .font(.title3)
@@ -277,14 +295,16 @@ struct PersonProfileView: View {
                         academicInfoView
                     }
 
-                    // Experience from being on set: collaborations across every
-                    // credited post. Tapping Unique Collaborators lists everyone
-                    // they've worked with.
+                    // The same three numbers as the website: posts they're credited
+                    // on, their connections, and the Nexus members they've worked with.
+                    // Tapping Collabs lists those people.
                     CollaborationStatsView(
                         stats: collaborationStats,
                         postCount: personSubmissions.count,
+                        connectionCount: connectionCount,
                         personName: name
                     )
+                    .task(id: directoryUser?.id) { await loadConnectionCount() }
                 }
             }
 

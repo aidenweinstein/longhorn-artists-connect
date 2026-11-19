@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
-import { markReadAction, sendAction } from "@/app/(app)/network/actions";
+import { markReadAction, sendAction, setGroupPhotoAction } from "@/app/(app)/network/actions";
 import { personHref } from "@/lib/people";
+import { preparePhoto } from "@/lib/preparePhoto";
 import Avatar from "./Avatar";
-import { ComposeGlyph } from "./icons";
+import { CameraGlyph, ComposeGlyph } from "./icons";
 
 export type InboxThread = {
   id: string;
@@ -43,6 +44,111 @@ export type OpenThread = {
     post?: { title: string; imageUrl?: string; href: string };
   }[];
 };
+
+/**
+ * A group's picture in the thread header. Any member can click it to choose a new photo
+ * or remove the current one. The new picture shows right away while it saves.
+ */
+function GroupPhoto({ threadID, name, src, onError }: { threadID: string; name: string; src?: string; onError: (message: string | null) => void }) {
+  const router = useRouter();
+  const [menu, setMenu] = useState(false);
+  const [saving, startSave] = useTransition();
+  // What was just chosen (null = removed), until the page brings back the saved picture.
+  const [pending, setPending] = useState<{ from?: string; value: string | null } | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const shown = pending && pending.from === src ? pending.value : (src ?? null);
+
+  function save(form: FormData, local: string | null) {
+    setMenu(false);
+    onError(null);
+    setPending({ from: src, value: local });
+    startSave(async () => {
+      const res = await setGroupPhotoAction(threadID, form);
+      if (!res.ok) {
+        setPending(null);
+        return onError(res.message);
+      }
+      router.refresh();
+    });
+  }
+
+  async function choose(file: File | undefined) {
+    if (!file) return;
+    try {
+      const ready = await preparePhoto(file, 800, "group.jpg");
+      const form = new FormData();
+      form.set("photo", ready);
+      save(form, URL.createObjectURL(ready));
+    } catch {
+      setMenu(false);
+      onError("That photo couldn't be read. Try a JPEG or PNG.");
+    }
+  }
+
+  function remove() {
+    const form = new FormData();
+    form.set("remove", "1");
+    save(form, null);
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setMenu((m) => !m)}
+        disabled={saving}
+        aria-label="Change group photo"
+        aria-expanded={menu}
+        title="Change group photo"
+        className="group relative block rounded-full"
+      >
+        <Avatar name={name} src={shown ?? undefined} size="md" />
+        <span
+          className={`absolute inset-0 flex items-center justify-center rounded-full bg-black/45 text-white transition ${
+            saving ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+          }`}
+        >
+          {saving ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <CameraGlyph className="h-5 w-5" />}
+        </span>
+      </button>
+      <input
+        ref={input}
+        type="file"
+        accept="image/jpeg,image/png,image/heic,image/*"
+        tabIndex={-1}
+        className="sr-only"
+        onChange={(e) => {
+          choose(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      {menu && (
+        <>
+          {/* Clicking anywhere else closes the menu. */}
+          <button type="button" aria-label="Close menu" className="fixed inset-0 z-30 cursor-default" onClick={() => setMenu(false)} />
+          <div role="menu" className="absolute left-0 top-full z-40 mt-2 w-48 overflow-hidden rounded-xl border border-border bg-background py-1 shadow-lg">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenu(false);
+                input.current?.click();
+              }}
+              className="block w-full px-4 py-2 text-left text-sm hover:bg-surface"
+            >
+              {shown ? "Choose new photo" : "Add group photo"}
+            </button>
+            {shown && (
+              <button type="button" role="menuitem" onClick={remove} className="block w-full px-4 py-2 text-left text-sm text-red-500 hover:bg-surface">
+                Remove photo
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** How often an open inbox checks for new messages. */
 const REFRESH_MS = 15_000;
@@ -178,7 +284,11 @@ export default function NetworkInbox({
               <Link href="/network" className="text-sm font-semibold text-brand md:hidden">
                 ‹ Back
               </Link>
-              <Avatar name={open.name} src={open.imageUrl} size="md" />
+              {open.isGroup && canSend ? (
+                <GroupPhoto key={open.id} threadID={open.id} name={open.name} src={open.imageUrl} onError={setError} />
+              ) : (
+                <Avatar name={open.name} src={open.imageUrl} size="md" />
+              )}
               {open.profileID ? (
                 <Link href={personHref(open.name, open.profileID)} className="font-semibold hover:underline">
                   {open.name}

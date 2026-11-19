@@ -9,6 +9,7 @@
 ///   POST /v1/web/session/request website sign-in (and guest email check), see src/webSession.ts
 ///   POST /v1/web/session/confirm
 ///   POST /v1/web/account/create  create an account from the website, see src/webSession.ts
+///   POST /v1/web/apple/session   website Sign in with Apple, see src/apple.ts
 ///   GET  /v1/people/listed       who's on the website's People pages (public, read by the app)
 ///   POST /v1/web/people/*         People pages, see src/people.ts
 ///   POST /v1/admin/backfill-schools   one-off schoolID migration (ADMIN_TOKEN)
@@ -37,6 +38,7 @@ import { runSweep } from "./sweep";
 import { runBackfill, BackfillCursor } from "./backfill";
 import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreate, WEB_ACCOUNT_PREFIX } from "./webSession";
 import { mergeWebAccount } from "./accountMerge";
+import { handleWebAppleSession, moveAppleLink } from "./apple";
 import { handlePeople, handlePeopleListed } from "./people";
 
 const CODE_TTL_SECONDS = 600; // 10 minutes
@@ -70,6 +72,9 @@ export default {
             }
             if (url.pathname === "/v1/web/account/create" && request.method === "POST") {
                 return await handleWebAccountCreate(request, env);
+            }
+            if (url.pathname === "/v1/web/apple/session" && request.method === "POST") {
+                return await handleWebAppleSession(request, env);
             }
             if (url.pathname === "/v1/people/listed" && request.method === "GET") {
                 return await handlePeopleListed(env);
@@ -328,6 +333,8 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         try {
             const report = await mergeWebAccount(env, webAccount, pending.user_record_name);
             merged = { rewritten: report.rewritten, complete: report.profileDeleted };
+            // Its Apple ID (if one signed in on the website) now opens the app account.
+            await moveAppleLink(env, webAccount, pending.user_record_name);
             if (report.errors.length) console.error(`merge ${webAccount} -> ${pending.user_record_name}:`, report.errors.slice(0, 20));
             else console.log(`merged ${webAccount} -> ${pending.user_record_name} (${report.rewritten} records)`);
         } catch (error) {

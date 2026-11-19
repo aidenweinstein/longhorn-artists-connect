@@ -141,6 +141,9 @@ struct Film: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .film }
@@ -363,6 +366,7 @@ struct Film: MediaItem {
         film.createdDate = record.getDate("createdDate") ?? Date()
         film.lastEditedDate = record.getDate("lastEditedDate")
         film.schoolID = record.getString("schoolID")
+        film.editorIDs = record[PostEditAccess.field] as? [String]
         
         // Film-specific fields - using schema field names
         film.logline = record.getString("filmLogline") ?? ""
@@ -462,6 +466,9 @@ struct Music: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .music }
@@ -705,6 +712,7 @@ struct Music: MediaItem {
         music.createdDate = record.getDate("createdDate") ?? Date()
         music.lastEditedDate = record.getDate("lastEditedDate")
         music.schoolID = record.getString("schoolID")
+        music.editorIDs = record[PostEditAccess.field] as? [String]
         
         // Music-specific fields - using schema field names
         music.artist = record.getString("musicArtist") ?? ""
@@ -804,6 +812,9 @@ struct Reel: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .reel }
@@ -986,6 +997,7 @@ struct Reel: MediaItem {
         reel.createdDate = record.getDate("createdDate") ?? Date()
         reel.lastEditedDate = record.getDate("lastEditedDate")
         reel.schoolID = record.getString("schoolID")
+        reel.editorIDs = record[PostEditAccess.field] as? [String]
         
         reel.reelType = record.getString("reelType") ?? ""
         reel.reelDescription = record.getString("reelDescription") ?? ""
@@ -1063,6 +1075,9 @@ struct Photography: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?
 
     var mediaType: MediaType { .photography }
@@ -1182,6 +1197,7 @@ struct Photography: MediaItem {
         photo.createdDate = record.getDate("createdDate") ?? Date()
         photo.lastEditedDate = record.getDate("lastEditedDate")
         photo.schoolID = record.getString("schoolID")
+        photo.editorIDs = record[PostEditAccess.field] as? [String]
         photo.artist = record.getString("photographyArtist") ?? ""
         photo.releaseYear = record.getString("photographyReleaseYear") ?? ""
         if let entries = record["photographyGear"] as? [String] {
@@ -1252,6 +1268,9 @@ struct Design: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?
 
     var mediaType: MediaType { .design }
@@ -1409,6 +1428,7 @@ struct Design: MediaItem {
         design.createdDate = record.getDate("designCreatedDate") ?? Date()
         design.lastEditedDate = record.getDate("designLastEditedDate")
         design.schoolID = record.getString("schoolID")
+        design.editorIDs = record[PostEditAccess.field] as? [String]
         design.category = record.getString("designCategory") ?? ""
         design.releaseYear = record.getString("designReleaseYear") ?? ""
         design.videoCrop = record.getString("designVideoCrop").flatMap { $0.isEmpty ? nil : $0 }
@@ -1484,6 +1504,9 @@ struct Project: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .project }
@@ -1675,6 +1698,7 @@ struct Project: MediaItem {
         project.createdDate = record.getDate("createdDate") ?? Date()
         project.lastEditedDate = record.getDate("lastEditedDate")
         project.schoolID = record.getString("schoolID")
+        project.editorIDs = record[PostEditAccess.field] as? [String]
         
         // Project-specific fields - using schema field names
         // Prefer the verbatim text field (lossless for any format). Fall back to the
@@ -1806,6 +1830,9 @@ struct Event: MediaItem {
     var createdDate: Date = Date()
     var lastEditedDate: Date?
     var schoolID: String?  // Registry slug; nil on records that predate stamping
+    /// Profile IDs the creator shared edit access with (`PostEditAccess`). Read only:
+    /// `toCloudKitRecord` never writes it, so an edit can't change who has access.
+    var editorIDs: [String]?
     var thumbnailFileName: String?  // ✅ Changed from thumbnailData to thumbnailFileName
     
     var mediaType: MediaType { .event }
@@ -1964,6 +1991,7 @@ struct Event: MediaItem {
         event.createdDate = record.getDate("createdDate") ?? Date()
         event.lastEditedDate = record.getDate("lastEditedDate")
         event.schoolID = record.getString("schoolID")
+        event.editorIDs = record[PostEditAccess.field] as? [String]
         
         // Event-specific fields - using schema field names
         event.eventStartDate = record.getDate("eventStartTime")

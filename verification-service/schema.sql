@@ -228,3 +228,29 @@ CREATE TABLE IF NOT EXISTS featured_collection_items (
 
 CREATE INDEX IF NOT EXISTS idx_featured_collections_position ON featured_collections(position);
 CREATE INDEX IF NOT EXISTS idx_featured_items_collection ON featured_collection_items(collection_id, position);
+
+-- ---------------------------------------------------------------------------
+-- Sign in with Apple on the website (added 2026-11-19, src/apple.ts). The first
+-- Apple sign-in proves a school email too, which finds the account (app or
+-- website); the Apple ID is linked to it here, so later sign-ins need only Apple.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS apple_accounts (
+    apple_hash        TEXT PRIMARY KEY,     -- HMAC-SHA256("apple:<sub>", CODE_PEPPER)
+    user_record_name  TEXT NOT NULL UNIQUE, -- one Apple ID per account, one account per Apple ID
+    email_cipher      TEXT,                 -- the account's school email, AES-GCM (key from CODE_PEPPER);
+                                            -- lets a website Apple sign-in start a session without a code
+    linked_via        TEXT NOT NULL,        -- web (the only way today)
+    linked_at         INTEGER NOT NULL
+);
+
+-- Website: Apple confirmed, school email code still to come. Pruned by the cron.
+CREATE TABLE IF NOT EXISTS apple_tickets (
+    ticket_hash   TEXT PRIMARY KEY,         -- HMAC-SHA256("appleticket:<ticket>", CODE_PEPPER)
+    apple_hash    TEXT NOT NULL,
+    email_cipher  TEXT,                     -- set once the email is proven, for a not-yet-created account
+    created_at    INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
+    used_at       INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_apple_tickets_expiry ON apple_tickets(expires_at);

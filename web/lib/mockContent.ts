@@ -31,8 +31,14 @@ export type Post = {
   creatorAvatarKey?: string;
   /** Feed cards carry only how many gallery pictures there are, not the pictures. */
   imageCount?: number;
+  /** The main credit's school (lib/schools.ts slug); school pages credit someone else when it isn't theirs. */
+  creatorSchoolSlug?: string;
   /** The main credit's app profile, when it's linked to one (used for portfolio links). */
   creatorProfileID?: string;
+  /** The account that posted it ("UserProfile_<id>"): it may edit the post and share edit access. */
+  makerProfileID?: string;
+  /** Everyone else its maker shared edit access with (profile IDs). */
+  editorIDs?: string[];
   /** Everyone sharing the lead credit (co-directors, say), when there's more than one. */
   mainCredits?: { name: string; avatarUrl?: string; avatarKey?: string; profileID?: string }[];
   /** Words before the main credit in the feed, e.g. "Directed by". */

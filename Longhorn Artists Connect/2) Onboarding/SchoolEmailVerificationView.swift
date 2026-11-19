@@ -46,6 +46,12 @@ struct SchoolEmailVerificationView: View {
     @State private var selectedDomain: String?
 
     /// The domains this address may use; empty means any address.
+    ///
+    /// For school verification the address is required to be at the member's
+    /// own school: the field only takes the part before "@" and the domain is
+    /// fixed to the school's (student or faculty, by role). The only way to
+    /// reach "any address" here is a stored school name that isn't registered
+    /// at all, and even then the service refuses domains outside its registry.
     private var domains: [String] {
         if let allowedDomains { return allowedDomains }
         let name = school ?? UserDefaults.standard.string(forKey: "userSchool") ?? ""
@@ -66,7 +72,7 @@ struct SchoolEmailVerificationView: View {
     }
 
     private var idPlaceholder: String {
-        OnboardingSchool.all.first { $0.allDomains.contains(fixedDomain ?? "") }?.idPlaceholder ?? "username"
+        OnboardingSchool.verifiable.first { $0.allDomains.contains(fixedDomain ?? "") }?.idPlaceholder ?? "username"
     }
 
     /// The address the code is sent to: the typed prefix plus the fixed domain

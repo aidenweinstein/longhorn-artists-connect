@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { GUEST_COOKIE, SESSION_COOKIE, decodeSession, hasGuestPass } from "@/lib/session";
+import { SESSION_COOKIE, decodeSession } from "@/lib/session";
 import { isCloudKitConfigured, profileDirectory } from "@/lib/cloudkit/content";
 import { fold } from "@/lib/search";
 import type { PersonMatch } from "@/lib/sharePost";
@@ -11,9 +11,9 @@ const MAX = 6;
 // and credit name boxes. Names only: best match first (the name starts with it, then a
 // word in the name does). API routes skip the sign-in proxy, so this checks the session.
 export async function GET(request: NextRequest) {
+  // Only for the Share forms, which guests can't open: guests get nothing.
   const signedIn = decodeSession(request.cookies.get(SESSION_COOKIE)?.value) !== null;
-  const guest = hasGuestPass(request.cookies.get(GUEST_COOKIE)?.value);
-  if (!signedIn && !guest) return NextResponse.json({ people: [] }, { status: 401 });
+  if (!signedIn) return NextResponse.json({ people: [] }, { status: 401 });
 
   const q = fold(request.nextUrl.searchParams.get("q")?.trim());
   if (q.length < 2 || !isCloudKitConfigured()) return NextResponse.json({ people: [] });

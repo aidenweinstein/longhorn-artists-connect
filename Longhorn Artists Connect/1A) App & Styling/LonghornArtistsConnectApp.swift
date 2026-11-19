@@ -154,10 +154,12 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 struct AppView: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
-    // Observed so the home screen icon follows the user's school (see `SchoolAppIcon`).
+    // Observed so the home screen icon follows the user's school, or the icon they
+    // picked in More → App Icon (see `SchoolAppIcon`).
     @AppStorage("userSchool") private var userSchool = ""
     @AppStorage("isGuestUser") private var isGuestUser = false
     @AppStorage(SchoolScope.moderatorSchoolKey) private var moderatorSchool = ""
+    @AppStorage(SchoolAppIcon.choiceKey) private var appIconChoice: String?
 
     init() {
         // Moderator mode is a per-session privilege: it always starts OFF and stays
@@ -222,9 +224,10 @@ struct AppView: App {
     var body: some Scene {
         WindowGroup {
             LaunchScreenView()
-                // Runs at launch and again whenever the school, guest status or a
-                // moderator's school pick changes; a no-op when the icon already matches.
-                .task(id: "\(userSchool)|\(isGuestUser)|\(moderatorSchool)") {
+                // Runs at launch and again whenever the school, guest status, a
+                // moderator's school pick or the App Icon choice changes; a no-op when
+                // the icon already matches.
+                .task(id: "\(userSchool)|\(isGuestUser)|\(moderatorSchool)|\(appIconChoice ?? "")") {
                     await SchoolAppIcon.apply(AppTheme.theme(school: userSchool, isGuest: isGuestUser))
                 }
         }

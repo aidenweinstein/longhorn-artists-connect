@@ -34,6 +34,15 @@ struct LiveShow: Identifiable {
         return "\(name) is Live!"
     }
 
+    /// Notification body shown under the show's name, e.g.
+    /// "Live now @ HSM Studio. Tap to stream."
+    var notificationBody: String {
+        if let location, !location.isEmpty {
+            return "Live now @\u{00A0}\(location). Tap to stream."
+        }
+        return "Live now. Tap to stream."
+    }
+
     /// True if `date` falls inside this week's (or last week's) airing window.
     /// Checking the most recent start before `date` handles shows that run past
     /// midnight into the next day.
@@ -95,6 +104,10 @@ enum LiveStreams {
 /// firing at the show's start each week. Local notifications need no server — each
 /// device knows the schedule — and a repeating trigger keeps firing every week even
 /// if the app isn't opened.
+///
+/// Each banner is styled as a communication notification from the organization, so
+/// the show's profile picture (`iconAsset`) is the big icon with the Nexus app icon
+/// in its corner — the same look as a "connection posted" banner.
 enum LiveStreamNotifications {
     /// Every go-live notification's identifier starts with this, so a reschedule can
     /// clear exactly the ones it owns without touching other pending notifications.
@@ -124,19 +137,34 @@ enum LiveStreamNotifications {
 
         for show in LiveStreams.shows {
             do {
-                try await center.add(request(for: show))
+                try await center.add(await request(for: show))
             } catch {
                 print("⚠️ Failed to schedule live stream notification: \(error.localizedDescription)")
             }
         }
     }
 
-    private static func request(for show: LiveShow) -> UNNotificationRequest {
+    private static func request(for show: LiveShow) async -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
-        content.title = show.bannerText
-        content.body = "Tap to stream now."
+        // The communication style replaces the title with the sender's name, so the
+        // show name lives there and the body carries the live call-out.
+        content.title = show.name
+        content.body = show.notificationBody
         content.sound = .default
         content.userInfo = [streamURLKey: show.streamURL.absoluteString]
+
+        // Organization's profile picture as the notification avatar. Falls back to
+        // the plain banner if the asset is missing or the system rejects the intent.
+        let avatarData = show.iconAsset
+            .flatMap { UIImage(named: $0) }
+            .flatMap { $0.jpegData(compressionQuality: 0.9) }
+        let styled = await CommunicationNotifications.styled(
+            content,
+            senderID: "live-show-\(show.id)",
+            senderName: show.name,
+            senderImageData: avatarData,
+            conversationID: "live-show-\(show.id)"
+        )
 
         // Weekday + time in the show's own time zone, so it fires at 11 PM Central
         // wherever the user is, and follows CST/CDT.
@@ -152,7 +180,7 @@ enum LiveStreamNotifications {
 
         return UNNotificationRequest(
             identifier: "\(identifierPrefix)\(show.id)",
-            content: content,
+            content: styled,
             trigger: trigger
         )
     }

@@ -6,7 +6,7 @@ import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { deletePost } from "@/app/(app)/share/editActions";
 import { earlyStatus, earlyVersion, publish, subscribeEarly, timeLeftLabel, type PostDraft, type Progress } from "@/lib/shareUpload";
 import type { ShareTypeID } from "@/lib/sharePost";
-import { useDrafts, useEditing } from "./DraftContext";
+import { useDrafts, useEditing, useIsMaker } from "./DraftContext";
 
 const STAGE_LABEL: Record<Progress["stage"], string> = {
   preparing: "Preparing files…",
@@ -41,6 +41,7 @@ export default function SubmissionShell({
   const [note, setNote] = useState<string | null>(null);
   const drafts = useDrafts();
   const editPostID = useEditing();
+  const isMaker = useIsMaker();
   const [savingDraft, setSavingDraft] = useState(false);
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const ready = missing.length === 0;
@@ -199,7 +200,8 @@ export default function SubmissionShell({
         {error && <p className="rounded-2xl border border-red-500/40 p-4 text-red-500">{error}</p>}
         {note && <p className="rounded-2xl border border-border p-4 text-muted">{note}</p>}
         {draftNote && <p className="rounded-2xl border border-border p-4 text-muted">{draftNote}</p>}
-        {editPostID && (
+        {/* Only the person who posted it can delete it, not people it was shared with. */}
+        {editPostID && isMaker && (
           <div className="flex justify-end pt-6">
             <button
               type="button"

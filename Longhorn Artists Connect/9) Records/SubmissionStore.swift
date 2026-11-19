@@ -389,6 +389,11 @@ struct Submission: Identifiable, Equatable, Codable {
     /// decodes (see `eventShowings`).
     var schoolID: String?
 
+    /// Profile IDs ("UserProfile_<id>") the creator shared edit access with — they can
+    /// edit the post but not delete it (see `PostEditAccess`). Optional so the on-disk
+    /// cache written before this field still decodes.
+    var editorIDs: [String]?
+
     // Parsed fields for display
     var logline: String = ""
     var ageRating: String = ""
@@ -2043,13 +2048,38 @@ class SubmissionStore_3_2: ObservableObject {
         // in the CloudKit schema's security roles. Under the public database's default
         // (creator-only write) a moderator's save is rejected, which surfaces as an
         // upload-error banner with Retry rather than a silent revert.
+        //
+        // Someone the creator shared edit access with (`PostEditAccess`) saves the same
+        // way a moderator does: their edit is written to the post, and the post keeps
+        // its owner and school.
         Task {
             if isCurrentUserOwner(of: updated) {
                 await saveSubmissionToCloudKit(updated)
-            } else if ModeratorAccess.isModerator {
+            } else if ModeratorAccess.isModerator || PostEditAccess.isEditor(of: updated) {
                 await saveSubmissionToCloudKit(updated, preservingOwner: true)
             }
         }
+    }
+
+    /// Replaces who else can edit a post (`PostEditAccess`): saved to CloudKit first, then
+    /// to the local copy. Only that one field is written, so the post's content, owner and
+    /// school stay as they are. Throws when CloudKit refuses, leaving the local copy as it was.
+    func setEditors(_ profileIDs: [String], for submission: Submission) async throws {
+        var seen = Set<String>()
+        let ids = profileIDs
+            .map(PostEditAccess.profileID(for:))
+            .filter { seen.insert($0).inserted }
+        try await CloudKitManager.shared.saveEditors(
+            ids,
+            recordType: PostEditAccess.recordType(for: submission.type),
+            recordName: submission.id.uuidString
+        )
+        if let index = approvedSubmissions.firstIndex(where: { $0.id == submission.id }) {
+            approvedSubmissions[index].editorIDs = ids
+        } else if let index = submissions.firstIndex(where: { $0.id == submission.id }) {
+            submissions[index].editorIDs = ids
+        }
+        saveSubmissions()
     }
 
     /// Whether the signed-in user created this post, matching the ownership check the

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { asset, createRecord, list, lookup, modify, num, queryWhere, str, updateFields, type CKField, type CKRecord } from "./client";
+import { asset, assetChecksum, createRecord, list, lookup, modify, num, queryWhere, str, updateFields, uploadAsset, type CKField, type CKRecord } from "./client";
 import { profileDirectory } from "./content";
 
 /*
@@ -12,6 +12,7 @@ import { profileDirectory } from "./content";
  *     lastMessageTimestamp, lastMessagePreview, unreadCount
  *     groups: isGroup = 1, participantUserIDs (everyone, creator included), groupName,
  *             createdByUserID; participant2UserID is "" on a group
+ *             groupPhoto (ASSET): the group's picture, which any member can change
  *   Message       record name = UUID
  *     conversationID, content, timestamp, senderUserID, recipientUserID, isRead,
  *     senderName, messagePreview, attachmentType, attachment (asset), attachmentFileString
@@ -35,6 +36,7 @@ const CONVERSATION_KEYS = [
   "participantUserIDs",
   "groupName",
   "createdByUserID",
+  "groupPhoto",
 ];
 const MESSAGE_KEYS = [
   "conversationID",
@@ -62,6 +64,10 @@ export type ThreadSummary = {
   groupName?: string;
   /** Group chats: every member (the visitor included), raw user record names. */
   memberIDs: string[];
+  /** Group chats: the group's picture, if a member chose one. */
+  groupPhotoUrl?: string;
+  /** Changes whenever the picture does (the download URL alone may not stay the same). */
+  groupPhotoKey?: string;
 };
 
 export type ThreadMessage = {
@@ -97,6 +103,13 @@ export function groupAutoName(names: string[]): string {
   if (n.length === 0) return "Group";
   if (n.length === 1) return n[0];
   return `${n.slice(0, -1).join(", ")} & ${n[n.length - 1]}`;
+}
+
+/** A group's picture. Only groups have one: a 1:1 chat shows the other person's photo. */
+function groupPhoto(r: CKRecord): { groupPhotoUrl?: string; groupPhotoKey?: string } {
+  if (!isGroupRecord(r)) return {};
+  const url = asset(r, "groupPhoto", "group.jpg");
+  return url ? { groupPhotoUrl: url, groupPhotoKey: assetChecksum(r, "groupPhoto") ?? url } : {};
 }
 
 /** Every conversation the visitor is in, newest first, with their unread counts. */
@@ -137,7 +150,7 @@ export async function threadsFor(me: string): Promise<ThreadSummary[]> {
       const members = memberIDs(r);
       // A group the visitor has left (or been removed from) is theirs no more.
       if (!members.includes(user)) continue;
-      out.push({ ...base, otherUserID: "", isGroup: true, groupName: str(r, "groupName") || undefined, memberIDs: members });
+      out.push({ ...base, otherUserID: "", isGroup: true, groupName: str(r, "groupName") || undefined, memberIDs: members, ...groupPhoto(r) });
       continue;
     }
     const [a, b] = participants(r);
@@ -171,7 +184,15 @@ async function ownedThread(me: string, threadID: string): Promise<OwnedThread | 
 export async function messagesIn(
   me: string,
   threadID: string,
-): Promise<{ other: string; isGroup: boolean; groupName?: string; members: string[]; messages: ThreadMessage[] } | null> {
+): Promise<{
+  other: string;
+  isGroup: boolean;
+  groupName?: string;
+  members: string[];
+  groupPhotoUrl?: string;
+  groupPhotoKey?: string;
+  messages: ThreadMessage[];
+} | null> {
   const thread = await ownedThread(me, threadID);
   if (!thread) return null;
   const user = raw(me);
@@ -194,7 +215,14 @@ export async function messagesIn(
       };
     })
     .sort((a, b) => a.at - b.at);
-  return { other: thread.other, isGroup: thread.isGroup, groupName: str(thread.record, "groupName") || undefined, members: thread.members, messages };
+  return {
+    other: thread.other,
+    isGroup: thread.isGroup,
+    groupName: str(thread.record, "groupName") || undefined,
+    members: thread.members,
+    ...groupPhoto(thread.record),
+    messages,
+  };
 }
 
 /**
@@ -325,9 +353,10 @@ export async function threadWith(me: string, other: string): Promise<string> {
  * Starts a group chat the way the app's createGroupConversation does: a random-UUID
  * Conversation with isGroup = 1, everyone in participantUserIDs (creator first), the
  * creator as participant1 and "" as participant2. Needs at least two other people;
- * with one, use threadWith. Returns the thread ID to open on the Network page.
+ * with one, use threadWith. An optional picture is uploaded first and saved with it.
+ * Returns the thread ID to open on the Network page.
  */
-export async function createGroupThread(me: string, others: string[], name?: string): Promise<string> {
+export async function createGroupThread(me: string, others: string[], name?: string, photo?: GroupPhotoUpload): Promise<string> {
   const user = raw(me);
   const seen = new Set([user]);
   const members = others.map(raw).filter((id) => id && !seen.has(id) && seen.add(id));
@@ -335,6 +364,15 @@ export async function createGroupThread(me: string, others: string[], name?: str
   if (members.length < 2) throw new Error("A group needs at least two other people.");
   const id = crypto.randomUUID().toUpperCase();
   const groupName = name?.trim().slice(0, 100);
+  // A picture that can't be saved (say, before the schema has groupPhoto) mustn't stop
+  // the group itself: it's left off, and can be added later from the thread.
+  let photoField: CKField | undefined;
+  if (photo) {
+    photoField = await uploadAsset("Conversation", id, "groupPhoto", photo.bytes, photo.contentType).catch((error) => {
+      console.warn("[messages] group photo:", error instanceof Error ? error.message : error);
+      return undefined;
+    });
+  }
   await createRecord(
     "Conversation",
     id,
@@ -346,9 +384,32 @@ export async function createGroupThread(me: string, others: string[], name?: str
       participantUserIDs: { value: [user, ...members], type: "STRING_LIST" },
       createdByUserID: { value: user, type: "STRING" },
       ...(groupName ? { groupName: { value: groupName, type: "STRING" } } : {}),
+      ...(photoField ? { groupPhoto: photoField } : {}),
     },
     // Without these the record wouldn't be a group anyone could find.
     ["participant1UserID", "isGroup", "participantUserIDs"],
   );
   return id;
+}
+
+export type GroupPhotoUpload = { bytes: Uint8Array; contentType: string };
+
+/** What to tell someone when Production doesn't have the groupPhoto field yet. */
+export const GROUP_PHOTO_SCHEMA_MESSAGE = "Group photos need the groupPhoto field added to Conversation in CloudKit first.";
+
+/**
+ * Sets a group chat's picture, or removes it when `photo` is null. Any member can change
+ * it, like the group's name in the app. Returns an error message, or null once saved.
+ */
+export async function setGroupPhoto(me: string, threadID: string, photo: GroupPhotoUpload | null): Promise<string | null> {
+  const thread = await ownedThread(me, threadID);
+  if (!thread) return "That conversation isn't yours.";
+  if (!thread.isGroup) return "Only group chats have their own photo.";
+  const value: CKField = photo
+    ? await uploadAsset("Conversation", thread.record.recordName, "groupPhoto", photo.bytes, photo.contentType)
+    : { value: null };
+  const error = await updateFields("Conversation", thread.record.recordName, { groupPhoto: value });
+  if (!error) return null;
+  console.error("[messages] group photo:", error.code, error.reason);
+  return /groupPhoto/i.test(`${error.code} ${error.reason}`) ? GROUP_PHOTO_SCHEMA_MESSAGE : "Couldn't save the group photo. Try again.";
 }

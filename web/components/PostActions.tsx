@@ -176,7 +176,7 @@ function FlagForm({ postID, onDone }: { postID: string; onDone: (message: string
       />
       {error && <p className="text-sm text-red-500">{error}</p>}
       <div className="flex gap-2">
-        <button type="submit" disabled={pending || !why.trim()} className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-60">
+        <button type="submit" disabled={pending || !why.trim()} className="rounded-full bg-brand px-5 py-2 text-sm font-semibold text-brand-foreground hover:brightness-110 disabled:opacity-60">
           {pending ? "Sending…" : "Send report"}
         </button>
       </div>

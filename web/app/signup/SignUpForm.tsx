@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition, type FormEvent } from "react";
 import Link from "next/link";
 import { createAccountAction, requestCodeAction } from "@/app/auth/actions";
 import { ROLE_TAGS } from "@/lib/profileFields";
+import { preparePhoto } from "@/lib/preparePhoto";
 import { emailDomains, exampleName, isSchoolEmail, signupSchool, type SignupRole, type SignupSchool } from "@/lib/signupSchools";
 import { field, labelCls, primaryBtn } from "@/components/AuthShell";
 import { useAuthSchool } from "@/components/AuthTheme";
@@ -24,8 +25,8 @@ const STEPS: Step[] = ["school", "role", "profile", "details", "code"];
 
 /**
  * Sign-up. The school comes first, on a black and white screen with each school in its
- * own colors; picking one turns the rest of sign-up that school's colors. Name, major,
- * class and tags come next, and the email and code come last: the right code creates the
+ * own colors; picking one turns the rest of sign-up that school's colors. A profile
+ * picture (required), name, major, class and tags come next, and the email and code come last: the right code creates the
  * account in that same request, so there's no gap for the sign-in to go missing in.
  * `finish` picks up after the email code for someone who signed in with an email that
  * has no account yet (`schoolID` is the school they signed in at), so it asks student or
@@ -56,6 +57,13 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
   const [classOf, setClassOf] = useState("");
   const [pendingID, setPendingID] = useState("");
   const [tags, setTags] = useState<string[]>([]);
+  // Required: no account is made without a profile picture. Resized to a JPEG here.
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  useEffect(() => () => {
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+  }, [photoPreview]);
   const [error, setError] = useState<string | null>(null);
   const [signInAgain, setSignInAgain] = useState(false);
   // The code was right but creating the account failed: Create account retries it.
@@ -96,6 +104,18 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
     setStep("profile");
   }
 
+  async function choosePhoto(file: File | undefined) {
+    if (!file) return;
+    setPhotoError(null);
+    try {
+      const ready = await preparePhoto(file, 1024, "profile.jpg");
+      setPhoto(ready);
+      setPhotoPreview(URL.createObjectURL(ready));
+    } catch {
+      setPhotoError("That photo couldn't be read. Try a JPEG or PNG.");
+    }
+  }
+
   const toggleTag = (tag: string) => setTags((on) => (on.includes(tag) ? on.filter((t) => t !== tag) : [...on, tag]));
 
   function submitDetails(e: FormEvent) {
@@ -132,7 +152,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
     }
     if (practice) return setStep("done");
     startTransition(async () => {
-      const result = await createAccountAction({ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" });
+      const result = await createAccountAction({ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student", photo: photo ?? undefined });
       if (result.ok) setStep("done");
       else {
         setError(result.message);
@@ -141,7 +161,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
     });
   }
 
-  const profileOk = !!firstName && !!lastName && !!major.trim() && (!student || /^\d{4}$/.test(classOf));
+  const profileOk = !!photo && !!firstName && !!lastName && !!major.trim() && (!student || /^\d{4}$/.test(classOf));
 
   const progress = step === "done" ? STEPS.length : STEPS.indexOf(step) + 1;
 
@@ -219,12 +239,33 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
           pendingID={pendingID}
           onBack={() => setStep(recheckEmail ? "profile" : "details")}
           onVerified={verified}
-          account={{ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student" }}
+          account={{ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student", photo: photo ?? undefined }}
         />
       )}
 
       {step === "profile" && (
         <form onSubmit={submitProfile} className="space-y-4">
+          <div>
+            <p className={labelCls}>Profile Picture</p>
+            <div className="flex items-center gap-4">
+              {photoPreview ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={photoPreview} alt="Your profile picture" className="h-20 w-20 shrink-0 rounded-full object-cover" />
+              ) : (
+                <span aria-hidden className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-white/30 text-3xl text-white/40">
+                  +
+                </span>
+              )}
+              <div className="space-y-1">
+                <label className="inline-block cursor-pointer rounded-full border border-white/25 px-4 py-2 text-sm font-semibold transition hover:bg-white/10 focus-within:ring-2 focus-within:ring-[var(--auth-line)]">
+                  {photo ? "Change photo" : "Add photo"}
+                  <input type="file" accept="image/jpeg,image/png,image/heic,image/*" className="sr-only" onChange={(e) => choosePhoto(e.target.files?.[0])} />
+                </label>
+                <p className="text-xs text-white/55">{photo ? "Looking good." : "Required. This is how people will recognize you on Nexus."}</p>
+              </div>
+            </div>
+            {photoError && <p role="alert" className="mt-2 text-sm text-red-400">{photoError}</p>}
+          </div>
           <div>
             <label htmlFor="name" className={labelCls}>First &amp; Last Name</label>
             <input id="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder={nameExample} autoFocus />

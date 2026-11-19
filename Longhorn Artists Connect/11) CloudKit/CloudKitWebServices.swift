@@ -82,11 +82,10 @@ enum CloudKitWebServices {
 
     /// Which CloudKit environment the **web-services (streaming) layer** talks to.
     ///
-    /// Always the same environment as the native `CKContainer` (which follows the build's
-    /// provisioning: run from Xcode → development; TestFlight/App Store → production), so
-    /// a post is streamed from the environment it was uploaded to and fetched from. The
-    /// two environments are kept fully separate — a Debug build never sees production
-    /// posts, and a release build never sees development ones.
+    /// Always the same environment as the native `CKContainer` — production in every
+    /// build, pinned by the container-environment entitlement (see
+    /// `CloudKitEnvironmentDetector`) — so a post is streamed from the environment it
+    /// was uploaded to and fetched from.
     static var environment: String {
         CloudKitEnvironmentDetector.isDevelopment ? "development" : "production"
     }

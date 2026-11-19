@@ -17,6 +17,9 @@ struct MoreView: View {
     @Binding var appearanceMode: String
     @Binding var isModeratorMode: Bool
     @AppStorage("isGuestUser") private var isGuestUser: Bool = false
+    // Read so the App Icon row's label updates when the pick or school changes.
+    @AppStorage(SchoolAppIcon.choiceKey) private var appIconChoice: String?
+    @AppStorage("userSchool") private var userSchool = ""
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var systemColorScheme
     @Namespace private var namespace
@@ -29,6 +32,13 @@ struct MoreView: View {
     /// section is shown at all).
     private var isModerator: Bool {
         ModeratorAccess.isModerator
+    }
+
+    /// Label of the icon currently on the home screen, for the App Icon row.
+    private var currentAppIconTitle: String {
+        let _ = appIconChoice
+        let theme = AppTheme.theme(school: userSchool, isGuest: isGuestUser)
+        return AppIconOption.matching(iconName: SchoolAppIcon.iconName(for: theme)).title
     }
 
     /// Maps the appearance preference to a SwiftUI color scheme so the sheet re-tints
@@ -144,6 +154,19 @@ struct MoreView: View {
                             // ==============================
                     )
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+
+                    NavigationLink {
+                        AppIconPickerView()
+                    } label: {
+                        HStack {
+                            Image(systemName: "app.badge")
+                                .foregroundStyle(Color.utBrandOrange)
+                            Text("App Icon")
+                            Spacer()
+                            Text(currentAppIconTitle)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } header: {
                     Text("Display")
                 }
@@ -289,13 +312,10 @@ struct MoreView: View {
                 }
             }
             .listSectionSpacing(.compact)
-            // A normal account's sections fit the medium detent, so keep it fixed. Only
-            // the moderator's profile adds the extra Moderation section that needs to scroll.
-            .scrollDisabled(!isModerator)
             .navigationTitle("More")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.hidden)
         .presentationBackground(Color(uiColor: .systemBackground)) // opaque sheet, no transparency
         // Native confirmation alerts, matching the rest of the app.
