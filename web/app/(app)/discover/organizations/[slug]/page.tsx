@@ -76,6 +76,12 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 const Empty = () => <p className="text-sm opacity-60">Nothing here yet.</p>;
 
+/** Sort key for newest-first ordering: the start time, with undated events (start = Infinity) pushed to the end. */
+function newestFirstKey(e: NexusEvent) {
+  const start = eventStart(e);
+  return Number.isFinite(start) ? start : Number.MIN_SAFE_INTEGER;
+}
+
 function EventRow({ e }: { e: NexusEvent }) {
   return (
     <Link href={`/discover/${e.id}`} className="block">
@@ -97,7 +103,8 @@ export default async function OrganizationPage(props: PageProps<"/discover/organ
 
   const events = items
     .filter((i): i is NexusEvent => i.kind === "event" && i.host.trim().toLowerCase() === org.name.toLowerCase())
-    .sort((a, b) => eventStart(a) - eventStart(b));
+    // Newest first (latest start date at the top); undated events last.
+    .sort((a, b) => newestFirstKey(b) - newestFirstKey(a));
 
   /** A catalog title as a row: a link once it's been posted, a dimmed "Not posted yet" until then. */
   const catalogRow = (title: string, label = title) => {

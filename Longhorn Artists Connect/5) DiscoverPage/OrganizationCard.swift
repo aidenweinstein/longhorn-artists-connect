@@ -640,12 +640,12 @@ struct OrganizationPageView: View {
 
     /// Events that credit this org as their host. Auto-derived from the submission store
     /// (matched on the host name), so crediting an org on an event surfaces it here with
-    /// no manual linking. Sorted soonest-first.
+    /// no manual linking. Sorted newest-first (latest start date at the top); undated events last.
     private var creditedEvents: [Submission] {
         submissionStore.visibleApprovedSubmissions
             .filter { $0.type == .event
                 && $0.eventHost.caseInsensitiveCompare(organization.name) == .orderedSame }
-            .sorted { ($0.eventStartDate ?? .distantFuture) < ($1.eventStartDate ?? .distantFuture) }
+            .sorted { ($0.eventStartDate ?? .distantPast) > ($1.eventStartDate ?? .distantPast) }
     }
 
     var body: some View {
