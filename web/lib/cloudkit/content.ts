@@ -468,7 +468,7 @@ type Profile = {
   school?: string;
 };
 
-async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile> }> {
+async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile>; duplicates: Set<string> }> {
   // Only the fields used here: profiles also hold bios, links and more that no list needs.
   const records = await safeQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes", "school"]);
   const byID = new Map<string, Profile>();
@@ -486,16 +486,24 @@ async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<str
       school: str(r, "school"),
     };
     byID.set(r.recordName, profile);
-    const key = name.toLowerCase();
-    if (key) {
-      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
-      byName.set(key, profile);
-    }
+  }
+  // Someone with an app account who also made one on the website shows once, as the
+  // app account, until verifying that email in the app merges the two.
+  const appNames = new Set([...byID.values()].filter((p) => !isWebProfile(p.id)).map((p) => p.name.toLowerCase()).filter(Boolean));
+  const duplicates = new Set([...byID.values()].filter((p) => isWebProfile(p.id) && appNames.has(p.name.toLowerCase())).map((p) => p.id));
+  for (const profile of byID.values()) {
+    const key = profile.name.toLowerCase();
+    if (!key || duplicates.has(profile.id)) continue;
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+    byName.set(key, profile);
   }
   // A name shared by two people can't pick a photo, so only unique names match.
   for (const [key, count] of nameCounts) if (count > 1) byName.delete(key);
-  return { byID, byName };
+  return { byID, byName, duplicates };
 }
+
+/** A profile made on the website (UserProfile_web_<id>), not in the app. */
+const isWebProfile = (profileID: string) => profileID.startsWith("UserProfile_web_");
 
 /** Cache tag for the list of every profile, so a new account shows up right away. */
 export const PROFILES_TAG = "profiles";
@@ -505,9 +513,9 @@ export async function profileDirectory(): Promise<Profile[]> {
   "use cache: remote";
   cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(PROFILES_TAG);
-  const { byID } = await profiles();
+  const { byID, duplicates } = await profiles();
   return [...byID.values()]
-    .filter((p) => p.name)
+    .filter((p) => p.name && !duplicates.has(p.id))
     .sort((a, b) => a.name.localeCompare(b.name))
     // Lists and cards show a small copy; the upload itself stays available as fullImageUrl.
     .map((p) => ({ ...p, fullImageUrl: p.imageUrl, imageUrl: profileImage(p.id, p.imageKey, p.imageUrl) }));
@@ -656,6 +664,19 @@ export const accountTag = (userRecordName: string) => `account:${userRecordName}
  * The app profile for a signed-in account. The website writes nothing here except
  * the owner's own portfolio layout (see app/(app)/portfolio/actions.ts).
  */
+/**
+ * Whether a website account (`web_<id>`) still exists. It's deleted once its owner
+ * verifies the same email in the app, which merges it into their app account
+ * (verification-service/src/accountMerge.ts). Throws when CloudKit can't say, so a
+ * hiccup is never cached as "gone".
+ */
+export async function webAccountExists(userRecordName: string): Promise<boolean> {
+  "use cache: remote";
+  cacheLife({ stale: 60, revalidate: 120, expire: 600 });
+  cacheTag(accountTag(userRecordName));
+  return (await lookup(`UserProfile_${userRecordName}`)) !== null;
+}
+
 export async function getAccount(userRecordName: string): Promise<Account | null> {
   // Shared by every server instance (like the post lists): it's on every signed-in page.
   "use cache: remote";

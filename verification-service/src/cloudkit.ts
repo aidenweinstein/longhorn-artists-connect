@@ -312,3 +312,19 @@ export async function deleteRecord(env: Env, recordName: string): Promise<void> 
         body: { operations: [{ operationType: "forceDelete", record: { recordName } }] },
     });
 }
+
+/// Runs raw `records/modify` operations and reports per-record failures (the
+/// public database is non-atomic, so one bad record doesn't fail the rest).
+export async function modifyRecords(env: Env, operations: unknown[]): Promise<ModifyOutcome> {
+    if (operations.length === 0) return { saved: 0, errors: [] };
+    const result = await ckFetch(env, { path: databasePath(env, "records/modify"), body: { operations } });
+    const outcome: ModifyOutcome = { saved: 0, errors: [] };
+    for (const record of result.records ?? []) {
+        if (record.serverErrorCode) {
+            outcome.errors.push({ recordName: record.recordName ?? "unknown", reason: `${record.serverErrorCode}: ${record.reason ?? ""}`.trim() });
+        } else {
+            outcome.saved++;
+        }
+    }
+    return outcome;
+}

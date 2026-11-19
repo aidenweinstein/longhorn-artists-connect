@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { connection } from "next/server";
-import { getAccount, getAllPosts, isCloudKitConfigured, profileDirectory, type Account } from "./cloudkit/content";
+import { getAccount, getAllPosts, isCloudKitConfigured, profileDirectory, webAccountExists, type Account } from "./cloudkit/content";
 import { detailsFor } from "./postDetails";
 import { POSTS, type Post } from "./mockContent";
 import { SESSION_COOKIE, decodeSession, type Session } from "./session";
@@ -11,7 +11,14 @@ export async function currentSession(): Promise<Session | null> {
   // decodeSession checks the session's age with Date.now(), so it must run at
   // request time, not while Next prerenders the shell or a runtime prefetch.
   await connection();
-  return decodeSession(value);
+  const session = decodeSession(value);
+  // A website account merged into its owner's app account is deleted: that old sign-in
+  // no longer names anyone, so sign in again (the same email now opens the app account).
+  if (session?.userRecordName?.startsWith("web_") && isCloudKitConfigured()) {
+    const exists = await webAccountExists(session.userRecordName).catch(() => true);
+    if (!exists) return null;
+  }
+  return session;
 }
 
 /** The signed-in visitor's app profile, when their email is linked to an app account. */

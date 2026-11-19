@@ -36,6 +36,7 @@ import { fetchUserProfile, writeVerificationRecord, clearProfileNonce } from "./
 import { runSweep } from "./sweep";
 import { runBackfill, BackfillCursor } from "./backfill";
 import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreate, WEB_ACCOUNT_PREFIX } from "./webSession";
+import { mergeWebAccount } from "./accountMerge";
 import { handlePeople, handlePeopleListed } from "./people";
 
 const CODE_TTL_SECONDS = 600; // 10 minutes
@@ -173,16 +174,9 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
     )
         .bind(emailHash)
         .first<{ user_record_name: string }>();
-    if (existing && existing.user_record_name.startsWith(WEB_ACCOUNT_PREFIX)) {
-        // Moving a website account into the app isn't built yet. Say so plainly
-        // rather than "another account", which would read like someone stole it.
-        return errorResponse(
-            "email_on_web",
-            "That email already has a Nexus account made on the website. Sign in at the website for now — moving a website account into the app is coming soon.",
-            409,
-        );
-    }
-    if (existing && existing.user_record_name !== userRecordName) {
+    // An email on a website account is allowed: confirming the code in the app
+    // merges that website account into this app account (src/accountMerge.ts).
+    if (existing && existing.user_record_name !== userRecordName && !existing.user_record_name.startsWith(WEB_ACCOUNT_PREFIX)) {
         return errorResponse("email_taken", "That email is already linked to another account.", 409);
     }
 
@@ -284,6 +278,17 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
     const domainKind: string = pending.domain_kind ?? "student";
     const now = nowSeconds();
 
+    // The website account this email belongs to, if any: merged into this app account below.
+    const onWeb = await env.DB.prepare(
+        `SELECT user_record_name FROM verified_emails WHERE email_hash = ? AND revoked_at IS NULL`,
+    )
+        .bind(pending.email_hash)
+        .first<{ user_record_name: string }>();
+    const webAccount =
+        onWeb && onWeb.user_record_name.startsWith(WEB_ACCOUNT_PREFIX) && onWeb.user_record_name !== pending.user_record_name
+            ? onWeb.user_record_name
+            : null;
+
     await writeVerificationRecord(env, {
         userRecordName: pending.user_record_name,
         emailHash: pending.email_hash,
@@ -316,11 +321,27 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         console.error("nonce clear failed", error);
     });
 
+    // The email now opens this app account on the website too; move the website
+    // account's posts, credits and connections here. Never fails the verification.
+    let merged: { rewritten: number; complete: boolean } | undefined;
+    if (webAccount) {
+        try {
+            const report = await mergeWebAccount(env, webAccount, pending.user_record_name);
+            merged = { rewritten: report.rewritten, complete: report.profileDeleted };
+            if (report.errors.length) console.error(`merge ${webAccount} -> ${pending.user_record_name}:`, report.errors.slice(0, 20));
+            else console.log(`merged ${webAccount} -> ${pending.user_record_name} (${report.rewritten} records)`);
+        } catch (error) {
+            console.error(`merge ${webAccount} -> ${pending.user_record_name} failed`, error);
+            merged = { rewritten: 0, complete: false };
+        }
+    }
+
     return json({
         verified: true,
         school: { id: pending.school_id, name: school?.name ?? "" },
         domainKind,
         verifiedAt: now,
+        ...(merged ? { mergedWebAccount: merged } : {}),
     });
 }
 
