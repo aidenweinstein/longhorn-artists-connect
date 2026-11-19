@@ -48,7 +48,7 @@ export default function ProfileView({
   canEditGrid?: boolean;
 }) {
   const stats: [string, number][] = [
-    ["Credits", posts.length],
+    ["Projects", posts.length],
     // Connects are requested and accepted in the app; none exist yet to count.
     ["Connects", 0],
   ];
@@ -64,7 +64,7 @@ export default function ProfileView({
         <Avatar name={account.name} src={account.imageUrl} size="xl" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            {/* Name with Credits / Connects / Collabs to its right */}
+            {/* Name with Projects / Connects / Collabs to its right */}
             <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
               <h1 className="text-3xl font-bold leading-tight">{account.name || displayName}</h1>
               <dl className="flex gap-6">

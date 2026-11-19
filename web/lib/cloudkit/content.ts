@@ -711,7 +711,7 @@ export async function getAccount(userRecordName: string): Promise<Account | null
     website: str(r, "websiteURL") || undefined,
     workStatus: str(r, "workStatus") || undefined,
     portfolioOrder: list(r, "portfolioOrder"),
-    portfolioLayout: parseTileSizes(str(r, "portfolioLayout")),
+    portfolioLayout: parseTileSizes(str(r, "portfolioLayoutWebsite")),
   };
 }
 

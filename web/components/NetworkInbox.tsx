@@ -125,14 +125,13 @@ export default function NetworkInbox({
       {/* Conversation list */}
       <ul className={`min-h-0 overflow-y-auto border-border md:block md:border-r ${openOnPhone ? "hidden" : "block"}`}>
         <li className="p-3">
-          {/* Starting a conversation from the website isn't connected yet; the tile holds its place. */}
-          <button
-            type="button"
+          <Link
+            href="/network/new"
             className="flex h-11 w-full items-center justify-center gap-2 rounded-full bg-brand text-[15px] font-semibold text-white transition hover:brightness-110 active:scale-[0.99]"
           >
             <ComposeGlyph className="h-5 w-5" />
             New message
-          </button>
+          </Link>
         </li>
 {threads.length === 0 && (
           <li className="px-4 py-6 text-sm text-muted">

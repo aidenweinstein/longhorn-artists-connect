@@ -117,16 +117,17 @@ function Columns({ items, count, className }: { items: DiscoverItem[]; count: nu
   );
 }
 
-/** Projects or events as a poster feed: large posters in three columns with a few details underneath, like the home feed. */
+/** Projects or events as a poster feed: posters in six columns on wide screens with a few details underneath, like the home feed. */
 export default function DiscoverGrid({ items }: { items: DiscoverItem[] }) {
   if (items.length === 0) {
     return <p className="py-20 text-center text-muted">Nothing here yet.</p>;
   }
   return (
     <>
-      <Columns items={items} count={1} className="flex sm:hidden" />
-      <Columns items={items} count={2} className="hidden sm:flex lg:hidden" />
-      <Columns items={items} count={3} className="hidden lg:flex" />
+      <Columns items={items} count={2} className="flex sm:hidden" />
+      <Columns items={items} count={3} className="hidden sm:flex md:hidden" />
+      <Columns items={items} count={4} className="hidden md:flex lg:hidden" />
+      <Columns items={items} count={6} className="hidden lg:flex" />
     </>
   );
 }

@@ -320,3 +320,35 @@ export async function threadWith(me: string, other: string): Promise<string> {
   });
   return id;
 }
+
+/**
+ * Starts a group chat the way the app's createGroupConversation does: a random-UUID
+ * Conversation with isGroup = 1, everyone in participantUserIDs (creator first), the
+ * creator as participant1 and "" as participant2. Needs at least two other people;
+ * with one, use threadWith. Returns the thread ID to open on the Network page.
+ */
+export async function createGroupThread(me: string, others: string[], name?: string): Promise<string> {
+  const user = raw(me);
+  const seen = new Set([user]);
+  const members = others.map(raw).filter((id) => id && !seen.has(id) && seen.add(id));
+  if (!user) throw new Error("Not signed in.");
+  if (members.length < 2) throw new Error("A group needs at least two other people.");
+  const id = crypto.randomUUID().toUpperCase();
+  const groupName = name?.trim().slice(0, 100);
+  await createRecord(
+    "Conversation",
+    id,
+    {
+      participant1UserID: { value: user, type: "STRING" },
+      participant2UserID: { value: "", type: "STRING" },
+      unreadCount: { value: 0, type: "INT64" },
+      isGroup: { value: 1, type: "INT64" },
+      participantUserIDs: { value: [user, ...members], type: "STRING_LIST" },
+      createdByUserID: { value: user, type: "STRING" },
+      ...(groupName ? { groupName: { value: groupName, type: "STRING" } } : {}),
+    },
+    // Without these the record wouldn't be a group anyone could find.
+    ["participant1UserID", "isGroup", "participantUserIDs"],
+  );
+  return id;
+}

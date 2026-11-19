@@ -2,7 +2,7 @@ import type { Post } from "./mockContent";
 
 /**
  * A portfolio's custom grid. The ORDER lives in UserProfile.portfolioOrder, the same
- * field the app reads and writes. Tile SIZES live in UserProfile.portfolioLayout as
+ * field the app reads and writes. Tile SIZES live in UserProfile.portfolioLayoutWebsite as
  * JSON ({"<postID>": "medium"}); posts not listed there are small.
  */
 export const TILE_SIZES = ["small", "medium", "large"] as const;

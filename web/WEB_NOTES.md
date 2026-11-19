@@ -423,3 +423,9 @@ npm run dev        # http://localhost:3000
   deleted after the save. Playlists' linked posts aren't changed from the website.
 - A new post can take a few seconds to show in CloudKit's queries: `publishPost` waits for it before
   refreshing the feeds, and `findPost` falls back to looking a post up by ID (`postByID`).
+
+## Portfolio tile sizes field renamed (2026-11-19)
+- Tile sizes are now saved in `UserProfile.portfolioLayoutWebsite` (String), added to the schema by Aiden,
+  replacing `portfolioLayout` in the notes above. `portfolioLayoutMobile` (String) also exists for the
+  app's own grid sizes; nothing reads or writes it yet. The website's phone layout (one post per row)
+  doesn't use it.

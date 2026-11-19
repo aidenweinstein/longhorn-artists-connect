@@ -10,7 +10,7 @@ export type SaveLayoutResult = { ok: true; warning?: string } | { ok: false; mes
 
 /**
  * Saves the signed-in visitor's portfolio grid. The order goes to portfolioOrder,
- * the same field the app uses, so both show the same order; sizes go to portfolioLayout.
+ * the same field the app uses, so both show the same order; sizes go to portfolioLayoutWebsite.
  *
  * This is the one thing a web session may write: only the session's own linked
  * account, only these two fields, and only posts that account is credited on.
@@ -43,13 +43,13 @@ export async function savePortfolioLayout(order: unknown, sizes: unknown): Promi
   try {
     let error = await updateFields("UserProfile", recordName, {
       ...orderField,
-      portfolioLayout: { value: serializeTileSizes(cleanSizes), type: "STRING" },
+      portfolioLayoutWebsite: { value: serializeTileSizes(cleanSizes), type: "STRING" },
     });
     let warning: string | undefined;
-    // Until portfolioLayout is added to the production schema, still save the order.
-    if (error && /portfolioLayout/i.test(error.reason) && ids.length) {
+    // Until portfolioLayoutWebsite is added to the production schema, still save the order.
+    if (error && /portfolioLayoutWebsite/i.test(error.reason) && ids.length) {
       error = await updateFields("UserProfile", recordName, orderField);
-      warning = "Your order was saved, but tile sizes can't be saved until the portfolioLayout field is added in CloudKit.";
+      warning = "Your order was saved, but tile sizes can't be saved until the portfolioLayoutWebsite field is added in CloudKit.";
     }
     if (error) {
       console.error("[portfolio] save failed:", error.code, error.reason);

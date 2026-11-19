@@ -363,7 +363,7 @@ struct CollaborationStats: Equatable {
 // MARK: - Portfolio Stats View
 
 /// Instagram-style stats row for a portfolio header, shown beside the profile photo:
-/// credits, then unique collaborators ("Collaborators"), then total collaborations
+/// projects, then unique collaborators ("Collaborators"), then total collaborations
 /// ("Collabs") — each a bold number over a small label, in three equal columns.
 /// Tapping Collaborators opens the searchable list of people this person has worked
 /// with; tapping Collabs opens the searchable list of posts they shared credits on.
@@ -381,10 +381,10 @@ struct CollaborationStatsView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            stat(value: postCount, title: "Credits")
+            stat(value: postCount, title: "Projects")
 
             // Both tappable tiles stay enabled even when empty so their labels keep
-            // the same color as Credits (a disabled plain button dims to grey); the
+            // the same color as Projects (a disabled plain button dims to grey); the
             // page they open simply shows an empty state.
             Button {
                 showCollaborators = true

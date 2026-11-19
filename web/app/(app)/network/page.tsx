@@ -164,6 +164,6 @@ export default async function Network(props: PageProps<"/network">) {
   }
 
   if (failed) return <Notice title="Couldn't load messages" body="Your messages couldn't be loaded right now. Try again in a moment." />;
-  if (threads.length === 0) return <Notice title="No messages yet" body="Start a conversation from someone's profile in the Nexus app and it shows up here." />;
+  if (threads.length === 0) return <Notice title="No messages yet" body="Tap New message to start a conversation or a group chat." />;
   return <NetworkInbox threads={threads} open={open} openOnPhone={!!wanted} canSend />;
 }
