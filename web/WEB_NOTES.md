@@ -52,6 +52,9 @@ npm run dev        # http://localhost:3000
 - Boston University (2026-11-19): `bu` in `lib/schools.ts` and `lib/signupSchools.ts`
   (@bu.edu, scarlet #CC0000, Terriers), logo `public/schools/bu.png` (the Terrier on
   scarlet). Already in the app and the verification seed.
+- Sidebar (2026-11-19): every other school is listed under "Other Schools" (no "More" dropdown);
+  only that list scrolls. Your school and the pages stay at the top, College Artists Connect and
+  your account at the bottom.
 - Northwestern (2026-11-19): `northwestern` in `lib/schools.ts` and `lib/signupSchools.ts`
   (students @u.northwestern.edu, educators @northwestern.edu; purple #4E2A84, Wildcats), logo
   `public/schools/northwestern.png` (the N and Wildcat on purple). Also in the app (OnboardingSchool.all,

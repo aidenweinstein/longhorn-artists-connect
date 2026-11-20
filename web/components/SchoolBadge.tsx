@@ -37,11 +37,11 @@ export default async function SchoolBadge() {
 
 /**
  * The sidebar's other schools: all but the visitor's own (the home school when signed out).
- * `part` "first" is the ones under "Other Schools", "rest" the ones under "More".
+ * Every one is listed, under "Other Schools".
  */
-export async function VisitorOtherSchools({ part }: { part: "first" | "rest" }) {
+export async function VisitorOtherSchools() {
   const session = await currentSession();
   // Guests have no school of their own, so every school is listed, under "Schools".
-  if (!session) return <OtherSchools mine={null} part={part} heading={part === "first" ? "Schools" : undefined} />;
-  return <OtherSchools mine={schoolForID(session.schoolID).slug} part={part} heading={part === "first" ? "Other Schools" : undefined} />;
+  if (!session) return <OtherSchools mine={null} heading="Schools" />;
+  return <OtherSchools mine={schoolForID(session.schoolID).slug} heading="Other Schools" />;
 }

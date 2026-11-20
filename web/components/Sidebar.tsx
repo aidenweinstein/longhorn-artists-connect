@@ -20,9 +20,8 @@ export const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opaci
  * `account` is the server-rendered Sign in button, or "Signed in as" once signed in.
  * `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the
  * main pages; `pages` is the main pages themselves (VisitorPages: all five, or only Home
- * for a guest); `otherSchools` is the first four other schools (OtherSchools) with their
- * heading ("Other Schools", or "Schools" for a guest, who sees every school), and
- * `moreSchools` the rest, in the "More" dropdown. A guest has no school of their own, so
+ * for a guest); `otherSchools` is every other school (OtherSchools) with its heading
+ * ("Other Schools", or "Schools" for a guest, who sees every school). A guest has no school of their own, so
  * `school` is empty for them and Home sits at the top. Only the schools scroll: the
  * pages stay at the top, and College Artists Connect and `account` at the bottom. `account` stays
  * pinned at the bottom while the rest scrolls.
@@ -31,14 +30,12 @@ export const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opaci
  * prerendering on dynamic routes. Only the main pages (SidebarPages) read it, inside
  * their own <Suspense>: the highlight streams in a moment later.
  */
-export default function Sidebar({ account, school, pages, otherSchools, moreSchools }: { account: ReactNode; school: ReactNode; pages: ReactNode; otherSchools: ReactNode; moreSchools: ReactNode }) {
+export default function Sidebar({ account, school, pages, otherSchools }: { account: ReactNode; school: ReactNode; pages: ReactNode; otherSchools: ReactNode }) {
   // The bar opens while the pointer is over it, and closes the moment something is
   // picked, staying closed until the pointer leaves and comes back.
   const [hovering, setHovering] = useState(false);
   const [picked, setPicked] = useState(false);
   const open = hovering && !picked;
-  // The "More" dropdown (the rest of the schools), closed to start.
-  const [moreOpen, setMoreOpen] = useState(false);
 
   return (
     // The slot keeps the page's layout at icon width; the bar grows over the page when open.
@@ -75,25 +72,6 @@ export default function Sidebar({ account, school, pages, otherSchools, moreScho
         {/* The schools: the only part that scrolls, between the pages and the bottom rows. */}
         <div className="-mx-2 mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden border-t border-border px-2 pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {otherSchools}
-
-          <button
-            type="button"
-            aria-expanded={moreOpen}
-            aria-controls="sidebar-more"
-            aria-label={moreOpen ? "Show less" : "More"}
-            // Opening or closing More leaves the bar open, unlike picking a page.
-            data-keep-open
-            onClick={() => setMoreOpen((v) => !v)}
-            className="flex w-full shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden className={`h-6 w-6 shrink-0 transition-transform duration-200 ${moreOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-            <span className={LABEL}>{moreOpen ? "Show less" : "More"}</span>
-          </button>
-          <div id="sidebar-more" hidden={!moreOpen} className="shrink-0">
-            {moreSchools}
-          </div>
         </div>
 
         {/* College Artists Connect and the signed-in account (or Sign in), always in view. */}

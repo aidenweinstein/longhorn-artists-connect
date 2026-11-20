@@ -5,18 +5,14 @@ import { usePathname } from "next/navigation";
 import { SCHOOLS, schoolForPath } from "@/lib/schools";
 import { LABEL } from "./Sidebar";
 
-/** How many other schools are listed under "Other Schools"; the rest are under "More". */
-const SHOWN = 4;
-
 /**
  * The sidebar's other schools: every school but yours (`mine`), which sits on its own
  * at the top of the sidebar. A guest has no school (`mine` null) and sees them all. A Berkeley student sees UT Austin here, not Berkeley.
- * `part` "first" is the first four, under "Other Schools"; "rest" is the others, under "More".
+ * All of them are listed; there's no "More" dropdown.
  */
-export default function OtherSchools({ mine, part, heading }: { mine: string | null; part: "first" | "rest"; heading?: string }) {
+export default function OtherSchools({ mine, heading }: { mine: string | null; heading?: string }) {
   const viewing = schoolForPath(usePathname());
-  const others = SCHOOLS.filter((s) => s.slug !== mine);
-  const schools = part === "first" ? others.slice(0, SHOWN) : others.slice(SHOWN);
+  const schools = SCHOOLS.filter((s) => s.slug !== mine);
   if (!schools.length) return null;
   return (
     <div className="flex flex-col gap-0.5">

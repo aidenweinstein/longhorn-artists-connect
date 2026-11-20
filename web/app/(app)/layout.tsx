@@ -41,12 +41,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           }
           otherSchools={
             <Suspense>
-              <VisitorOtherSchools part="first" />
-            </Suspense>
-          }
-          moreSchools={
-            <Suspense>
-              <VisitorOtherSchools part="rest" />
+              <VisitorOtherSchools />
             </Suspense>
           }
           account={
