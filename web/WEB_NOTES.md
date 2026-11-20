@@ -55,6 +55,13 @@ npm run dev        # http://localhost:3000
 - Sidebar (2026-11-19): every other school is listed under "Other Schools" (no "More" dropdown);
   only that list scrolls. Your school and the pages stay at the top, College Artists Connect and
   your account at the bottom.
+- Alumni (2026-11-20): sign-up's "I'm an Alumni" takes any email plus the school they graduated
+  from and a class year; sign-in has "I'm an Alumni: sign in with the email I signed up with". The
+  account is "alumni_pending" (session `domainKind`, D1 and its `Verification` record) and can only
+  look around until an admin approves it on `/admin/alumni` (linked from Manage): `lib/alumni.ts`
+  blocks posting (share actions), Connect/Message and sending messages, and Share shows a "Waiting
+  for approval" note. Approval flips the Verification record to "alumni", read fresh on each try.
+  NEEDS DEPLOY: verification-service (`npm run db:init` for `alumni_reviews`, then `npm run deploy`).
 - Northwestern (2026-11-19): `northwestern` in `lib/schools.ts` and `lib/signupSchools.ts`
   (students @u.northwestern.edu, educators @northwestern.edu; purple #4E2A84, Wildcats), logo
   `public/schools/northwestern.png` (the N and Wildcat on purple). Also in the app (OnboardingSchool.all,

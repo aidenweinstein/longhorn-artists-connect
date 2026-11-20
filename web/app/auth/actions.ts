@@ -18,7 +18,8 @@ import {
   encodeSession,
   type Session,
 } from "@/lib/session";
-import { domainList, isSchoolEmail, isSignupRole, signupSchool, type SignupRole } from "@/lib/signupSchools";
+import { domainList, isAnyEmail, isSchoolEmail, isSignupRole, signupSchool, type AccountRole, type SignupRole } from "@/lib/signupSchools";
+import { isAlumniKind } from "@/lib/alumni";
 import { confirmCode, createAccount, requestCode, type RequestResult } from "@/lib/verification";
 import { APPLE_TICKET_COOKIE, decodeAppleTicket } from "@/lib/apple";
 
@@ -47,9 +48,15 @@ async function startSession(session: Omit<Session, "issuedAt">) {
 /**
  * Sends the email code. Sign-up passes the school the person picked and whether they're
  * a student or an educator, and the email must then be at that school's domain for them
- * (UT Austin students: @my.utexas.edu).
+ * (UT Austin students: @my.utexas.edu). Alumni use any address they control, with the
+ * school they graduated from.
  */
-export async function requestCodeAction(email: string, schoolID?: string, role?: SignupRole): Promise<RequestResult> {
+export async function requestCodeAction(email: string, schoolID?: string, role?: AccountRole): Promise<RequestResult> {
+  if (role === "alumni") {
+    if (!signupSchool(schoolID)) return { ok: false, message: "Pick the school you graduated from." };
+    if (!isAnyEmail(email)) return { ok: false, message: "That doesn't look like an email address." };
+    return requestCode(email, await clientIP(), "alumni", schoolID);
+  }
   if (schoolID !== undefined) {
     const school = signupSchool(schoolID);
     // Sign-in passes the school with no role: any of that school's domains will do.
@@ -140,8 +147,8 @@ export type NewAccount = {
   tags?: string[];
   /** Sign-up no longer asks for a profile style; one passed here is still saved. */
   style?: string;
-  /** Educators give a department as `major` and have no class year. */
-  role?: SignupRole;
+  /** Educators give a department as `major` and have no class year; alumni give the year they graduated. */
+  role?: AccountRole;
   /**
    * The profile picture, already resized to a JPEG by the browser. Required for a new
    * account: sign-up won't create one without it.
@@ -207,12 +214,18 @@ async function createFromSession(
     return { ok: false, message: "Your sign-in expired. Sign in again to finish.", signInAgain: true };
   }
 
+  // Alumni signed in with any address for the school they graduated from (purpose
+  // "alumni"); everyone else with a school address.
+  const alumni = isAlumniKind(session.domainKind);
+  if (input.role === "alumni" && !alumni) {
+    return { ok: false, message: "To join as an alum, start sign-up again and pick \"I'm an Alumni\".", signInAgain: true };
+  }
   // Same rule as sign-up's email step, for someone who got here through Sign in:
   // at a sign-up school, a student needs its student address and an educator one of
   // its educator addresses.
   const role: SignupRole = input.role === "educator" ? "educator" : "student";
   const school = signupSchool(session.schoolID);
-  if (school && !isSchoolEmail(session.email, school, role)) {
+  if (!alumni && school && !isSchoolEmail(session.email, school, role)) {
     return {
       ok: false,
       message: `New ${school.name} ${role} accounts need an ${domainList(school, role)} email. Sign in again with that address.`,
@@ -223,7 +236,7 @@ async function createFromSession(
   const firstName = input.firstName.trim();
   const lastName = input.lastName.trim();
   if (!firstName || !lastName) return { ok: false, message: "Enter your first and last name." };
-  if (role === "student" && !/^\d{4}$/.test(input.classOf)) return { ok: false, message: "Enter your graduation year as four digits, like 2028." };
+  if ((alumni || role === "student") && !/^\d{4}$/.test(input.classOf)) return { ok: false, message: "Enter your graduation year as four digits, like 2028." };
   // Every new account needs a profile picture.
   const photoError = photoProblem(input.photo);
   if (photoError) return { ok: false, message: photoError };
@@ -235,9 +248,11 @@ async function createFromSession(
   const appleTicket = await pendingAppleTicket();
   const result = await createAccount(
     session.accountToken,
-    role === "educator"
-      ? { firstName, lastName, major: input.major.trim(), graduationYear: "", userTypes, role }
-      : { firstName, lastName, major: input.major.trim(), graduationYear: input.classOf, userTypes },
+    alumni
+      ? { firstName, lastName, major: input.major.trim(), graduationYear: input.classOf, userTypes, role: "alumni", email: session.email }
+      : role === "educator"
+        ? { firstName, lastName, major: input.major.trim(), graduationYear: "", userTypes, role }
+        : { firstName, lastName, major: input.major.trim(), graduationYear: input.classOf, userTypes },
     await clientIP(),
     appleTicket,
   );

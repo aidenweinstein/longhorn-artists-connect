@@ -1,5 +1,6 @@
 "use server";
 
+import { alumniHold } from "@/lib/alumni";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { updateTag } from "next/cache";
 import { currentAccount } from "@/lib/account";
@@ -173,6 +174,9 @@ export async function startEarlyUpload(
   if (!isCloudKitConfigured() || !isR2Configured()) return { ok: false, message: "File uploads aren't set up on this server yet." };
   const who = await poster();
   if (!who) return { ok: false, message: NOT_LINKED };
+  // Alumni can't post until a moderator approves them.
+  const held = await alumniHold(who.session);
+  if (held) return { ok: false, message: held };
   const size = Number(spec?.size);
   if (!Number.isSafeInteger(size) || size <= 0) return { ok: false, message: "This file is empty." };
   if (size > MAX_LARGE_FILE_BYTES) return { ok: false, message: "Files can be up to 10 GB. Try a smaller export." };
@@ -225,6 +229,9 @@ export async function startPost(
   if (!isCloudKitConfigured()) return { ok: false, message: "Posting isn't set up on this server yet." };
   const who = await poster();
   if (!who) return { ok: false, message: NOT_LINKED };
+  // Alumni can't post until a moderator approves them.
+  const held = await alumniHold(who.session);
+  if (held) return { ok: false, message: held };
 
   const allowed = ASSET_FIELDS[type];
   let recordName = randomUUID().toUpperCase();
@@ -626,6 +633,9 @@ export async function publishPost(input: PostInput, editPostID?: string): Promis
   if (!input || !isShareType(input.type)) return { ok: false, message: "Unknown post type." };
   const who = await poster();
   if (!who) return { ok: false, message: NOT_LINKED };
+  // Alumni can't post until a moderator approves them.
+  const held = await alumniHold(who.session);
+  if (held) return { ok: false, message: held };
 
   // The record name must be one startPost issued to this same account.
   const recordName = typeof input.recordName === "string" ? input.recordName : "";

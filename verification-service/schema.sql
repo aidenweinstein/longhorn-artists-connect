@@ -272,3 +272,23 @@ CREATE TABLE IF NOT EXISTS apple_tickets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_apple_tickets_expiry ON apple_tickets(expires_at);
+
+-- ---------------------------------------------------------------------------
+-- Alumni waiting for a moderator (src/alumni.ts). Alumni verify any email and
+-- name their school; they're browse-only ("alumni_pending" in verified_emails
+-- and on their Verification record) until approved on the website's admin
+-- pages, which sets approved_at and makes them "alumni". `email` is the address
+-- they gave, kept only until a decision so moderators can tell who they are.
+-- Added 2026-11-20.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alumni_reviews (
+    user_record_name  TEXT PRIMARY KEY,
+    school_id         TEXT NOT NULL,
+    email             TEXT NOT NULL DEFAULT '',
+    requested_at      INTEGER NOT NULL,
+    approved_at       INTEGER,
+    approved_by       TEXT,
+    denied_at         INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_alumni_reviews_open ON alumni_reviews(approved_at, denied_at);

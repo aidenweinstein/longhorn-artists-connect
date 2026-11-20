@@ -240,4 +240,10 @@ enum SchoolScope {
 
     private static let slugsByDisplayName: [String: String] =
         Dictionary(uniqueKeysWithValues: registeredSchools.map { ($0.name, $0.slug) })
+
+    /// The registry slug for a school's display name ("Cal Poly SLO" → "calpoly-slo"),
+    /// e.g. to tell the verification service which school an alum graduated from.
+    static func slug(forDisplayName name: String) -> String? {
+        slugsByDisplayName[name]
+    }
 }

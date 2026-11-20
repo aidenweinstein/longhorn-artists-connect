@@ -3,6 +3,7 @@
 import { currentAccount } from "@/lib/account";
 import { connect, disconnect, rawUserID, type ConnectionState } from "@/lib/cloudkit/connections";
 import { threadWith } from "@/lib/cloudkit/messages";
+import { alumniHold } from "@/lib/alumni";
 
 /*
  * The Connect and Message buttons on someone else's portfolio. Both act as the
@@ -15,7 +16,7 @@ async function visitor() {
   const current = await currentAccount();
   const me = current?.session.userRecordName;
   if (!me || !current?.account) return null;
-  return { me: rawUserID(me), name: current.account.name };
+  return { me: rawUserID(me), name: current.account.name, session: current.session };
 }
 
 /** Only real Nexus profiles can be connected with or messaged. */
@@ -25,6 +26,9 @@ export async function connectAction(profileID: string): Promise<{ ok: true; stat
   if (!isProfileID(profileID)) return { ok: false, message: "That person isn't on Nexus." };
   const who = await visitor();
   if (!who) return { ok: false, message: NOT_LINKED };
+  // Alumni can't connect until a moderator approves them.
+  const held = await alumniHold(who.session);
+  if (held) return { ok: false, message: held };
   try {
     return { ok: true, state: await connect(who.me, who.name, profileID) };
   } catch (error) {
@@ -50,6 +54,9 @@ export async function messageAction(profileID: string): Promise<{ ok: true; thre
   if (!isProfileID(profileID)) return { ok: false, message: "That person isn't on Nexus." };
   const who = await visitor();
   if (!who) return { ok: false, message: NOT_LINKED };
+  // Alumni can't message until a moderator approves them.
+  const held = await alumniHold(who.session);
+  if (held) return { ok: false, message: held };
   try {
     return { ok: true, threadID: await threadWith(who.me, profileID) };
   } catch (error) {

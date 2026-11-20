@@ -101,7 +101,8 @@ export default function AdminPeople({
         <h1 className="text-3xl font-bold">Manage</h1>
         <p className="mt-1 text-muted">
           People pages and Featured. Only admins can see this page, and changes show on the site right away.{" "}
-          <a href="/admin/checks" className="text-brand hover:underline">System check</a>
+          <a href="/admin/checks" className="text-brand hover:underline">System check</a> ·{" "}
+          <a href="/admin/alumni" className="text-brand hover:underline">Alumni approvals</a>
         </p>
         {error && <p className="mt-3 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
         {notice && <p className="mt-3 rounded-xl bg-brand/10 p-3 text-sm text-brand">{notice}</p>}

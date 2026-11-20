@@ -244,9 +244,9 @@ async function creatorVerification(env: Env, userRecordName: string): Promise<Cr
         .bind(userRecordName)
         .first<{ school_id: string; domain_kind: string }>();
 
-    // Enthusiasts confirm an email but have no school and may not post, so for
-    // the sweep they count as unverified.
-    const verification: CreatorVerification = row && row.domain_kind !== "enthusiast"
+    // Enthusiasts confirm an email but have no school and may not post, and alumni
+    // may not post until a moderator approves them, so for the sweep both count as unverified.
+    const verification: CreatorVerification = row && row.domain_kind !== "enthusiast" && row.domain_kind !== "alumni_pending"
         ? { verified: true, schoolID: row.school_id }
         : { verified: false, schoolID: null };
     verifiedCache.set(userRecordName, verification);

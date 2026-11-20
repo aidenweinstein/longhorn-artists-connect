@@ -14,6 +14,7 @@
 ///   POST /v1/web/apple/session   website Sign in with Apple, see src/apple.ts
 ///   GET  /v1/people/listed       who's on the website's People pages (public, read by the app)
 ///   POST /v1/web/people/*         People pages, see src/people.ts
+///   POST /v1/web/alumni/*         alumni waiting for a moderator, see src/alumni.ts
 ///   POST /v1/admin/backfill-schools   one-off schoolID migration (ADMIN_TOKEN)
 ///
 /// Codes are generated and compared here and nowhere else. The client never
@@ -42,6 +43,7 @@ import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreat
 import { mergeWebAccount, pendingMergeFor, isPendingMerge, finishMerge, finishPendingMerges } from "./accountMerge";
 import { handleWebAppleSession, moveAppleLink } from "./apple";
 import { handlePeople, handlePeopleListed } from "./people";
+import { ALUMNI_PENDING_KIND, alumniKindFor, alumniSchool, handleAlumni, moveAlumniReview, queueAlumniReview } from "./alumni";
 
 const CODE_TTL_SECONDS = 600; // 10 minutes
 const MAX_CODE_ATTEMPTS = 5;
@@ -86,6 +88,9 @@ export default {
             }
             if (url.pathname.startsWith("/v1/web/people/") && request.method === "POST") {
                 return await handlePeople(request, env, url.pathname);
+            }
+            if (url.pathname.startsWith("/v1/web/alumni/") && request.method === "POST") {
+                return await handleAlumni(request, env, url.pathname);
             }
             if (url.pathname === "/v1/admin/backfill-schools" && request.method === "POST") {
                 return await handleSchoolBackfill(request, env);
@@ -141,6 +146,9 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
     // Enthusiast accounts confirm any address they control, not a school one.
     // They get no school and can't post, so the registry check doesn't apply.
     const isEnthusiast = body.purpose === "enthusiast";
+    // Alumni also confirm any address, and name the school they graduated from.
+    // They're browse-only until a moderator approves them (src/alumni.ts).
+    const isAlumni = body.purpose === "alumni";
 
     if (!email) return errorResponse("invalid_email", "That doesn't look like an email address.", 400);
     if (!userRecordName) return errorResponse("bad_request", "Missing userRecordName.", 400);
@@ -160,10 +168,15 @@ async function handleVerifyRequest(request: Request, env: Env): Promise<Response
         return errorResponse("rate_limited", "Too many attempts. Try again later.", 429);
     }
 
-    // Domain must resolve to a school in the registry (except for enthusiasts).
+    // Domain must resolve to a school in the registry (except for enthusiasts and alumni).
     const match: DomainMatch | null = isEnthusiast
         ? { schoolID: "", schoolName: "Nexus", kind: "enthusiast" }
-        : await lookupDomain(env, domain);
+        : isAlumni
+            ? await alumniSchool(env, String(body.schoolID ?? ""))
+            : await lookupDomain(env, domain);
+    if (!match && isAlumni) {
+        return errorResponse("unknown_school", "Pick the school you graduated from.", 422);
+    }
     if (!match) {
         return errorResponse(
             "unsupported_domain",
@@ -286,7 +299,10 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
             .bind(pending.school_id)
             .first<{ id: string; name: string }>()
         : null;
-    const domainKind: string = pending.domain_kind ?? "student";
+    // An alum approved before (verifying again) stays approved.
+    const domainKind: string = pending.domain_kind === ALUMNI_PENDING_KIND
+        ? await alumniKindFor(env, pending.user_record_name)
+        : (pending.domain_kind ?? "student");
     const now = nowSeconds();
 
     // The website account this email belongs to, if any: merged into this app account below.
@@ -327,6 +343,11 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         ).bind(now, pendingID),
     ]);
 
+    // A new alum waits for a moderator; the address they gave helps them decide.
+    if (domainKind === ALUMNI_PENDING_KIND) {
+        await queueAlumniReview(env, pending.user_record_name, pending.school_id, pending.email_normalized ?? "");
+    }
+
     await clearProfileNonce(env, pending.user_record_name, profile).catch((error) => {
         // Non-fatal: the nonce is single-use in D1 regardless.
         console.error("nonce clear failed", error);
@@ -344,6 +365,8 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
             merged = { userRecordName: webAccount, rewritten: report.rewritten, complete: report.profileDeleted };
             // Its Apple ID (if one signed in on the website) now opens the app account.
             await moveAppleLink(env, webAccount, pending.user_record_name);
+            // And an alum's approval (or place in the queue) comes along.
+            await moveAlumniReview(env, webAccount, pending.user_record_name);
             if (report.errors.length) console.error(`merge ${webAccount} -> ${pending.user_record_name}:`, report.errors.slice(0, 20));
             else console.log(`merged ${webAccount} -> ${pending.user_record_name} (${report.rewritten} records)`);
         } catch (error) {
@@ -411,16 +434,18 @@ async function handleStatus(url: URL, env: Env): Promise<Response> {
     if (!userRecordName) return errorResponse("bad_request", "Missing user.", 400);
 
     const row = await env.DB.prepare(
-        `SELECT school_id, verified_at, enrollment_verified_at FROM verified_emails
+        `SELECT school_id, domain_kind, verified_at, enrollment_verified_at FROM verified_emails
          WHERE user_record_name = ? AND revoked_at IS NULL`,
     )
         .bind(userRecordName)
-        .first<{ school_id: string; verified_at: number; enrollment_verified_at: number | null }>();
+        .first<{ school_id: string; domain_kind: string; verified_at: number; enrollment_verified_at: number | null }>();
 
     if (!row) return json({ verified: false });
     return json({
         verified: true,
         schoolID: row.school_id,
+        // "alumni_pending" until a moderator approves an alum (src/alumni.ts).
+        domainKind: row.domain_kind,
         verifiedAt: row.verified_at,
         enrollmentVerified: row.enrollment_verified_at != null,
     });

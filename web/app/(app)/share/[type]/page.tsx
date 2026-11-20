@@ -10,6 +10,7 @@ import ProjectForm from "@/components/share/forms/ProjectForm";
 import { DraftProvider } from "@/components/share/DraftContext";
 import type { ShareTypeID } from "@/lib/sharePost";
 import { SHARE_TYPES } from "@/lib/shareTypes";
+import AlumniHoldNotice from "@/components/AlumniHoldNotice";
 
 const FORMS = {
   film: FilmForm,
@@ -32,6 +33,8 @@ export default async function ShareSubmission(props: PageProps<"/share/[type]">)
   // The forms read today's date (release-year menus), so render them per visit, not at build time.
   return (
     <Suspense fallback={null}>
+      {/* An alum waiting for approval sees why Post won't work yet. */}
+      <AlumniHoldNotice className="mx-auto mb-4 mt-4 max-w-3xl" />
       {/* ?draft=<id> resumes a saved draft (Share → Drafts). */}
       <DraftProvider type={type as ShareTypeID}>
         <Form />

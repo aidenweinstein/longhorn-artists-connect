@@ -387,3 +387,16 @@ safe to re-run), check `APPLE_WEB_CLIENT_ID` in `wrangler.toml`, then
   the sweep's date-based grandfathering is authoritative.
 - Housekeeping (pruning expired codes and rate-limit rows) is skipped when the
   sweep hits its safety abort, since it runs after the flagging stage.
+
+## Alumni (added 2026-11-20)
+
+Alumni verify **any** address they control and name the school they graduated
+from: `purpose: "alumni"` plus `schoolID` on `/v1/verify/request` (app) or
+`/v1/web/session/request` (website). Their `domain_kind` is `alumni_pending`
+(in `verified_emails` and on the `Verification` record) until an admin approves
+them on the website's `/admin/alumni`, which calls `/v1/web/alumni/decide` and
+makes them `alumni`. Pending alumni are browse-only in the app and on the website,
+and the nightly sweep treats them like enthusiasts. The queue is `alumni_reviews`
+(run `npm run db:init` once); it keeps the address they gave only until a
+decision. Later website sign-ins with that address need no school: an address
+already linked to an alum's account signs in to it. See `src/alumni.ts`.

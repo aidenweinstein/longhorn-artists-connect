@@ -13,8 +13,10 @@
 //    ├─ Create Account → school → role
 //    │     ├─ student   → verify student email   → details → tags
 //    │     ├─ professor → verify faculty email   → details
-//    │     └─ alumni    → name + phone           → details
+//    │     └─ alumni    → verify any email       → details
+//    │           (browse-only until a moderator approves them on the website)
 //    ├─ Sign In → school → verify school email → restore this Apple ID's profile
+//    │     ("I'm an alumni" → verify the email they signed up with instead)
 //    │     (no profile yet → offered Create Account)
 //    │     (email belongs to an account made on the website → that account is
 //    │      merged onto this Apple ID first, see StudentVerificationManager)
@@ -48,6 +50,8 @@ struct OnboardingView: View {
         case role
         case verifySchoolEmail
         case alumniContact
+        case alumniVerify
+        case alumniSignInVerify
         case details
         case tags
         case signInVerify
@@ -210,7 +214,9 @@ struct OnboardingView: View {
                     case .student, .professor:
                         go(to: isVerificationEnabled && !hasVerifiedSchoolEmail ? .verifySchoolEmail : .details)
                     case .alumni:
-                        go(to: .alumniContact)
+                        // Alumni verify any address they use; a moderator then
+                        // approves them before they can post, connect or message.
+                        go(to: isVerificationEnabled ? .alumniVerify : .alumniContact)
                     }
                 }
             }
@@ -234,6 +240,42 @@ struct OnboardingView: View {
                 subtitle: role == .professor
                     ? "Enter your faculty email address. We'll send a six-digit code to confirm it's yours."
                     : "Enter your student email address. We'll send a six-digit code to confirm it's yours."
+            )
+
+        case .alumniVerify:
+            // Required to move on: no skip button.
+            SchoolEmailVerificationView(
+                onFinished: {
+                    // A website account with this email is now on this Apple ID.
+                    if StudentVerificationManager.shared.adoptedWebsiteProfile {
+                        restoreProfile()
+                    } else {
+                        go(to: .details)
+                    }
+                },
+                dismissTitle: nil,
+                school: school?.name,
+                allowedDomains: [],
+                purpose: .alumni,
+                schoolID: school.flatMap { SchoolScope.slug(forDisplayName: $0.name) },
+                title: "Verify Your Email",
+                subtitle: "Enter any email address you use. A moderator approves alumni before they can post, connect or message."
+            )
+
+        case .alumniSignInVerify:
+            // Alumni sign in with the address they signed up with, not a school one.
+            SchoolEmailVerificationView(
+                onFinished: {
+                    hasVerifiedSchoolEmail = StudentVerificationManager.shared.status.isVerified
+                    restoreProfile()
+                },
+                dismissTitle: nil,
+                school: school?.name,
+                allowedDomains: [],
+                purpose: .alumni,
+                schoolID: school.flatMap { SchoolScope.slug(forDisplayName: $0.name) },
+                title: "Sign In",
+                subtitle: "Verify the email you signed up with to sign in to your Nexus account."
             )
 
         case .alumniContact:
@@ -263,14 +305,15 @@ struct OnboardingView: View {
             )
 
         case .signInVerify:
-            // Either verifying or "I'm an alumni" leads to the restore: the
-            // account itself is keyed by Apple ID, and alumni have no school email.
+            // Verifying leads to the restore (the account itself is keyed by Apple
+            // ID). "I'm an alumni" switches to the alumni sign-in, any email.
             SchoolEmailVerificationView(
                 onFinished: {
                     hasVerifiedSchoolEmail = StudentVerificationManager.shared.status.isVerified
                     restoreProfile()
                 },
                 dismissTitle: "I'm an alumni",
+                onDismiss: { go(to: .alumniSignInVerify) },
                 school: school?.name,
                 allowedDomains: school?.allDomains,
                 title: "Sign In",

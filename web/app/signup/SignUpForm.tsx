@@ -5,7 +5,7 @@ import Link from "next/link";
 import { createAccountAction, requestCodeAction } from "@/app/auth/actions";
 import { ROLE_TAGS } from "@/lib/profileFields";
 import { preparePhoto } from "@/lib/preparePhoto";
-import { emailDomains, exampleName, isSchoolEmail, signupSchool, type SignupRole, type SignupSchool } from "@/lib/signupSchools";
+import { emailDomains, exampleName, isAnyEmail, isSchoolEmail, signupSchool, type AccountRole, type SignupSchool } from "@/lib/signupSchools";
 import { field, labelCls, primaryBtn } from "@/components/AuthShell";
 import { useAuthSchool } from "@/components/AuthTheme";
 import CodeStep from "@/components/CodeStep";
@@ -13,12 +13,14 @@ import SchoolEmailBox from "@/components/SchoolEmailBox";
 import SchoolPicker from "@/components/SchoolPicker";
 import SignedIn from "@/components/SignedIn";
 
-type Role = SignupRole;
+type Role = AccountRole;
 type Step = "school" | "role" | "details" | "code" | "profile" | "done";
 
-const ROLES: { id: Role; title: string }[] = [
+const ROLES: { id: Role; title: string; note?: string }[] = [
   { id: "student", title: "I'm a Student" },
   { id: "educator", title: "I'm an Educator" },
+  // Alumni sign up with any email; a moderator approves them before they can post.
+  { id: "alumni", title: "I'm an Alumni", note: "Use any email. A moderator approves alumni before they can post." },
 ];
 
 const STEPS: Step[] = ["school", "role", "profile", "details", "code"];
@@ -77,12 +79,15 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
   const practice = mock || skipped;
 
   const student = role === "student";
-  // Everyone verifies with an address at the school they picked: students its student
-  // domain, educators one of its educator domains.
-  const domains = school && role ? emailDomains(school, role) : [];
+  const alumni = role === "alumni";
+  // Students and alumni give a class year (alumni: the year they graduated).
+  const hasClass = student || alumni;
+  // Students and educators verify with an address at the school they picked: students its
+  // student domain, educators one of its educator domains. Alumni type any whole address.
+  const domains = school && role && !alumni ? emailDomains(school, role) : [];
   const domain = domains.includes(pickedDomain) ? pickedDomain : domains[0] ?? "";
-  const email = recheckEmail ?? (emailID && domain ? `${emailID}@${domain}` : "");
-  const emailOk = !!school && !!role && isSchoolEmail(email, school, role);
+  const email = recheckEmail ?? (alumni ? emailID.trim() : emailID && domain ? `${emailID}@${domain}` : "");
+  const emailOk = !!school && !!role && (alumni ? isAnyEmail(email) : isSchoolEmail(email, school, role));
   const [firstName, ...rest] = name.trim().split(/\s+/);
   const lastName = rest.join(" ");
 
@@ -152,7 +157,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
     }
     if (practice) return setStep("done");
     startTransition(async () => {
-      const result = await createAccountAction({ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student", photo: photo ?? undefined });
+      const result = await createAccountAction({ firstName, lastName, major, classOf: hasClass ? classOf : "", tags, role: role ?? "student", photo: photo ?? undefined });
       if (result.ok) setStep("done");
       else {
         setError(result.message);
@@ -161,7 +166,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
     });
   }
 
-  const profileOk = !!photo && !!firstName && !!lastName && !!major.trim() && (!student || /^\d{4}$/.test(classOf));
+  const profileOk = !!photo && !!firstName && !!lastName && !!major.trim() && (!hasClass || /^\d{4}$/.test(classOf));
 
   const progress = step === "done" ? STEPS.length : STEPS.indexOf(step) + 1;
 
@@ -175,7 +180,8 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
 
       {step === "role" && (
         <div className="space-y-3">
-          {ROLES.map((r) => (
+          {/* Finishing a school sign-in: that email is a school one, so not an alum's. */}
+          {ROLES.filter((r) => !finish || r.id !== "alumni").map((r) => (
             <button
               key={r.id}
               type="button"
@@ -186,6 +192,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
               }`}
             >
               <p className="font-semibold">{r.title}</p>
+              {r.note && <p className="mt-0.5 text-sm text-white/60">{r.note}</p>}
             </button>
           ))}
           <button type="button" disabled={!role} onClick={startProfile} className={`${primaryBtn} mt-3`}>
@@ -209,7 +216,29 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
 
       {step === "details" && role && school && (
         <form onSubmit={submitDetails} className="space-y-4">
-          <SchoolEmailBox school={school} domains={domains} id={emailID} onID={setEmailID} domain={domain} onDomain={setPickedDomain} />
+          {alumni ? (
+            // Alumni: any address they control, typed in full.
+            <div>
+              <label htmlFor="email" className={labelCls}>Email</label>
+              <input
+                id="email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoFocus
+                value={emailID}
+                onChange={(e) => setEmailID(e.target.value.replace(/\s/g, ""))}
+                className={field}
+                placeholder="you@example.com"
+              />
+              <p className="mt-1.5 text-xs text-white/55">You&rsquo;ll sign in with this address. It doesn&rsquo;t have to be a school one.</p>
+            </div>
+          ) : (
+            <SchoolEmailBox school={school} domains={domains} id={emailID} onID={setEmailID} domain={domain} onDomain={setPickedDomain} />
+          )}
           {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
           <button type="submit" disabled={!emailOk || busy} className={primaryBtn}>
             {busy ? "Sending…" : "Send code"}
@@ -239,7 +268,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
           pendingID={pendingID}
           onBack={() => setStep(recheckEmail ? "profile" : "details")}
           onVerified={verified}
-          account={{ firstName, lastName, major, classOf: student ? classOf : "", tags, role: role ?? "student", photo: photo ?? undefined }}
+          account={{ firstName, lastName, major, classOf: hasClass ? classOf : "", tags, role: role ?? "student", photo: photo ?? undefined }}
         />
       )}
 
@@ -271,10 +300,10 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
             <input id="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder={nameExample} autoFocus />
           </div>
           <div>
-            <label htmlFor="major" className={labelCls}>{student ? "Major" : "Department"}</label>
+            <label htmlFor="major" className={labelCls}>{role === "educator" ? "Department" : "Major"}</label>
             <input id="major" value={major} onChange={(e) => setMajor(e.target.value)} className={field} placeholder="Radio-Television-Film" />
           </div>
-          {student && (
+          {hasClass && (
             <div>
               <label htmlFor="classOf" className={labelCls}>Class of</label>
               {/* Typed, not picked from a list: four digits, like Edit profile's graduation year. */}
@@ -286,7 +315,7 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
                 inputMode="numeric"
                 autoComplete="off"
                 maxLength={4}
-                placeholder="2028"
+                placeholder={alumni ? "2018" : "2028"}
               />
             </div>
           )}
@@ -350,7 +379,9 @@ export default function SignUpForm({ finish = false, mock = false, schoolID, rec
           note={
             existing
               ? "This email already has a Nexus account, so you're signed in to it."
-              : "Your Nexus account is ready. People on Nexus, including in the iPhone app, can now find your profile."
+              : alumni
+                ? "Your Nexus account is ready. A moderator will approve it soon; until then you can look around, and once you're approved you can post, connect and message."
+                : "Your Nexus account is ready. People on Nexus, including in the iPhone app, can now find your profile."
           }
         />
       )}

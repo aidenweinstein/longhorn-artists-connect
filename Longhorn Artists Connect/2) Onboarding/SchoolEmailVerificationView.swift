@@ -18,6 +18,8 @@ struct SchoolEmailVerificationView: View {
     /// Label for the secondary action, or nil to hide it — onboarding requires
     /// verification to move on, so it passes nil.
     var dismissTitle: String? = "Skip for now"
+    /// What the secondary action does; nil makes it the same as finishing.
+    var onDismiss: (() -> Void)? = nil
     /// The school being verified. Onboarding passes the school picked a few
     /// pages earlier (it isn't saved to `userSchool` until the profile is);
     /// everywhere else falls back to the stored school.
@@ -26,6 +28,8 @@ struct SchoolEmailVerificationView: View {
     /// stored role; an empty list accepts any address (enthusiasts).
     var allowedDomains: [String]? = nil
     var purpose: StudentVerificationManager.Purpose = .school
+    /// Alumni only: the registry slug of the school they graduated from.
+    var schoolID: String? = nil
     var title: String = "Verify Your School"
     var subtitle: String = "Enter your school email address. We'll send a six-digit code to confirm it's yours."
 
@@ -152,7 +156,7 @@ struct SchoolEmailVerificationView: View {
             // `axis: .vertical` keeps iOS from drawing its autofill box behind
             // single-line fields (same workaround as the other forms).
             HStack(spacing: 0) {
-                TextField(fixedDomain == nil ? (purpose == .enthusiast ? "you@example.com" : "you@school.edu") : idPlaceholder,
+                TextField(fixedDomain == nil ? (purpose == .school ? "you@school.edu" : "you@example.com") : idPlaceholder,
                           text: $email, axis: .vertical)
                     .lineLimit(1)
                     .textInputAutocapitalization(.never)
@@ -201,6 +205,10 @@ struct SchoolEmailVerificationView: View {
 
             if purpose == .school {
                 Text("Use the address your school issued you. Alumni addresses aren't eligible.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if purpose == .alumni {
+                Text("Any address you use works; it doesn't have to be a school one. You'll sign in with it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -286,7 +294,7 @@ struct SchoolEmailVerificationView: View {
             // the user can back out; posting stays locked until they verify.
             if let dismissTitle {
                 Button(dismissTitle) {
-                    onFinished()
+                    (onDismiss ?? onFinished)()
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -301,7 +309,7 @@ struct SchoolEmailVerificationView: View {
     private func sendCode() async {
         errorMessage = nil
         do {
-            pending = try await verification.requestCode(email: fullEmail, purpose: purpose)
+            pending = try await verification.requestCode(email: fullEmail, purpose: purpose, schoolID: schoolID)
             code = ""
         } catch {
             errorMessage = error.localizedDescription

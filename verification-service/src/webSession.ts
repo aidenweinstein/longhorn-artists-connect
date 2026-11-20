@@ -27,6 +27,12 @@
 /// `accountToken`: a guest can browse the website and nothing else, so proving a
 /// personal address must never lead to a school account.
 ///
+/// Alumni (added 2026-11-20): `purpose: "alumni"` with a `schoolID` confirms any
+/// address too, for someone who graduated from that school. It works like a
+/// school sign-in, but the account it creates is "alumni_pending" until a
+/// moderator approves it (src/alumni.ts). Later sign-ins with that address need
+/// no purpose: an address already linked to an account always signs in to it.
+///
 /// Both routes require `Authorization: Bearer <WEB_CLIENT_TOKEN>` and 404 when
 /// the token is unset, so the Worker can't be used as an open mail relay. The
 /// website forwards the end user's IP in `x-nexus-client-ip`, which is trusted
@@ -49,6 +55,7 @@ import {
 import { sendVerificationCode } from "./email";
 import { createUserProfile, writeVerificationRecord } from "./cloudkit";
 import { applyPlan, defaultAppleDeps, linkNewWebAccount, planForEmail, readTicket, type AppleDeps } from "./apple";
+import { ALUMNI_PENDING_KIND, alumniKindFor, alumniSchool, isAlumniKind, queueAlumniReview } from "./alumni";
 
 export const WEB_CODE_TTL_SECONDS = 600;
 export const WEB_MAX_CODE_ATTEMPTS = 5;
@@ -111,11 +118,22 @@ export async function handleWebSessionRequest(
         return errorResponse("rate_limited", "Too many attempts. Try again later.", 429);
     }
 
-    // Guests confirm any address they control, so the school registry doesn't apply.
+    // Guests confirm any address they control, so the school registry doesn't apply,
+    // and so do alumni, who name their school instead (src/alumni.ts).
     const isGuest = body.purpose === WEB_GUEST_KIND;
-    const match: DomainMatch | null = isGuest
+    const isAlumni = body.purpose === "alumni";
+    let match: DomainMatch | null = isGuest
         ? { schoolID: "", schoolName: "", kind: WEB_GUEST_KIND }
-        : await lookupDomain(env, domain);
+        : isAlumni
+            ? await alumniSchool(env, String(body.schoolID ?? ""))
+            : await lookupDomain(env, domain);
+    if (!match && isAlumni) {
+        return errorResponse("unknown_school", "Pick the school you graduated from.", 422);
+    }
+    // Not a school address, but it already belongs to an alum's account (their
+    // personal email): signing in with it opens that account.
+    const alumAccount = !match && !isGuest ? await alumniSignIn(env, emailHash) : null;
+    if (alumAccount) match = alumAccount;
     if (!match) {
         return errorResponse(
             "unsupported_domain",
@@ -123,7 +141,9 @@ export async function handleWebSessionRequest(
             422,
         );
     }
-    if (match.kind === "alumni") {
+    // A school's alumni address (e.g. @alumni.utexas.edu) isn't a student one. Alumni
+    // sign up with purpose "alumni" instead, and then sign in with that address.
+    if (match.kind === "alumni" && !alumAccount) {
         return errorResponse(
             "alumni_domain",
             "Alumni addresses aren't eligible. Use your student email.",
@@ -333,6 +353,7 @@ export async function handleWebAccountCreate(
     if (!firstName || !lastName) return errorResponse("bad_request", "Enter your first and last name.", 400);
     // Educators (chosen at sign-up) have no graduation year and are made Professors.
     const educator = body.role === "educator";
+    // Alumni (an "alumni" sign-in, see src/alumni.ts) give the year they graduated.
     if (!educator && !/^\d{4}$/.test(graduationYear)) return errorResponse("bad_request", "Pick your graduation year.", 400);
 
     if (await checkAllRateLimits(env, [
@@ -377,6 +398,7 @@ export async function handleWebAccountCreate(
         .first<{ name: string }>();
     const schoolName = school?.name ?? "";
     const domainKind: string = claim.domain_kind ?? "student";
+    const alumni = isAlumniKind(domainKind);
     const userRecordName = `${WEB_ACCOUNT_PREFIX}${crypto.randomUUID().replace(/-/g, "")}`;
     const now = nowSeconds();
 
@@ -413,7 +435,7 @@ export async function handleWebAccountCreate(
             companyRole: { value: "" },
             isIndustryProfessional: { value: 0 },
             accountKind: { value: "Artist" },
-            schoolRole: { value: educator || domainKind === "staff" ? "Professor" : "Student" },
+            schoolRole: { value: alumni ? "Alumni" : educator || domainKind === "staff" ? "Professor" : "Student" },
         }, OPTIONAL_PROFILE_FIELDS);
         await writer.writeVerification(env, {
             userRecordName,
@@ -435,6 +457,14 @@ export async function handleWebAccountCreate(
         return errorResponse("create_failed", "Couldn't create your account. Try again in a moment.", 502);
     }
 
+    // A new alum waits for a moderator. The website passes the address they signed in
+    // with (this service only keeps its hash) so moderators can tell who they are.
+    if (domainKind === ALUMNI_PENDING_KIND) {
+        await queueAlumniReview(env, userRecordName, claim.school_id, cleanText(body.email, 254)).catch((error) => {
+            console.error("alumni review queue failed", error);
+        });
+    }
+
     const appleLinked = appleTicket
         ? await linkNewWebAccount(env, appleTicket, userRecordName).catch((error) => {
             console.error("apple link after create failed", error);
@@ -452,4 +482,18 @@ async function readJSON(request: Request): Promise<Record<string, unknown> | nul
     } catch {
         return null;
     }
+}
+
+/// An address that isn't a school one but belongs to an alum's account: signing in
+/// with it opens that account, as the alum's school (and approval) on file.
+async function alumniSignIn(env: Env, emailHash: string): Promise<DomainMatch | null> {
+    const row = await env.DB.prepare(
+        `SELECT v.user_record_name, v.school_id, v.domain_kind, s.name AS school_name
+         FROM verified_emails v LEFT JOIN schools s ON s.id = v.school_id
+         WHERE v.email_hash = ? AND v.revoked_at IS NULL`,
+    )
+        .bind(emailHash)
+        .first<{ user_record_name: string; school_id: string; domain_kind: string; school_name: string | null }>();
+    if (!row || !isAlumniKind(row.domain_kind)) return null;
+    return { schoolID: row.school_id, schoolName: row.school_name ?? "", kind: await alumniKindFor(env, row.user_record_name) };
 }

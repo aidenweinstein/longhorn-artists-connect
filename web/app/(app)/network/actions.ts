@@ -1,6 +1,7 @@
 "use server";
 
 import { currentAccount } from "@/lib/account";
+import { alumniHold } from "@/lib/alumni";
 import {
   createGroupThread,
   GROUP_PHOTO_SCHEMA_MESSAGE,
@@ -18,6 +19,9 @@ export async function sendAction(threadID: string, text: string): Promise<Result
   const current = await currentAccount();
   const me = current?.session.userRecordName;
   if (!me || !current?.account) return { ok: false, message: "Finish creating your Nexus account to send messages." };
+  // Alumni can't message until a moderator approves them.
+  const held = await alumniHold(current.session);
+  if (held) return { ok: false, message: held };
   try {
     const error = await sendMessage(me, current.account.name, threadID, text);
     return error ? { ok: false, message: error } : { ok: true };
@@ -64,6 +68,9 @@ export async function startConversationAction(
   const current = await currentAccount();
   const me = current?.session.userRecordName;
   if (!me || !current?.account) return { ok: false, message: "Finish creating your Nexus account to send messages." };
+  // Alumni can't message until a moderator approves them.
+  const held = await alumniHold(current.session);
+  if (held) return { ok: false, message: held };
   const ids = [...new Set(profileIDs.filter(isProfileID))];
   if (ids.length === 0) return { ok: false, message: "Add someone to message." };
   if (ids.length > 50) return { ok: false, message: "Groups can have up to 50 people." };

@@ -16,6 +16,8 @@ enum ProfileInteraction {
     @MainActor
     static func canInteract(with user: DirectoryUser) -> Bool {
         guard !UserDefaults.standard.bool(forKey: "isGuestUser") else { return false }
+        // Alumni can't connect or message until a moderator approves them.
+        guard !UserDefaults.standard.bool(forKey: StudentVerificationManager.pendingAlumKey) else { return false }
         if let me = MessageStore.shared.currentUserID, me == user.messagingUserID { return false }
         if let myProfileID = UserProfileManager.shared.getCurrentUser()?.id, myProfileID == user.id { return false }
         return !BlockedUsersManager.shared.isBlocked(user.messagingUserID)

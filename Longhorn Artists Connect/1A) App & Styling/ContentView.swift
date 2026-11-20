@@ -22,6 +22,9 @@ struct ContentView: View {
     // Alumni have no school email to verify, so they're exempt from the
     // verification gate and reminder.
     @AppStorage(SchoolRole.storageKey) private var schoolRole: String = ""
+    // An alum a moderator hasn't approved yet: they can look around, but Share waits
+    // for approval and there's no Network tab (no messaging) until then.
+    @AppStorage(StudentVerificationManager.pendingAlumKey) private var isPendingAlum: Bool = false
     // The school a moderator is viewing/posting as (Moderate → Schools). Changing it
     // rebuilds the tabs so every header, pill and asset picks up that school's theme.
     @AppStorage(SchoolScope.moderatorSchoolKey) private var moderatorSchool: String = ""
@@ -69,7 +72,7 @@ struct ContentView: View {
         } else if !isGuestUser && !isIndustryPro {
             tabs.append("share")
         }
-        if !isGuestUser { tabs.append("network") }
+        if !isGuestUser && !isPendingAlum { tabs.append("network") }
         tabs.append("portfolio")
         return tabs
     }
@@ -152,8 +155,9 @@ struct ContentView: View {
             } else if !isGuestUser && !isIndustryPro {
                 // Every student and professor verifies a school email before
                 // posting, including accounts created before verification
-                // existed. Alumni have no school email, so they're exempt.
-                VerificationGate(action: "post your work", bypass: isAlumni) {
+                // existed. Alumni verify any email instead, and then wait for a
+                // moderator's approval before they can post.
+                VerificationGate(action: "post your work", alumni: isAlumni) {
                     ShareView_3()
                 }
                 .id("share")
@@ -161,8 +165,9 @@ struct ContentView: View {
                 .tabItem { Image(systemName: "plus") }
             }
 
-            if !isGuestUser {
-                // Messaging is deliberately ungated for now.
+            if !isGuestUser && !isPendingAlum {
+                // Messaging isn't gated on verification, but an alum waiting for
+                // approval can't message yet.
                 NetworkView()
                     .id("network")
                     .tag("network")
@@ -258,6 +263,12 @@ struct ContentView: View {
         // to verify their school email on every open, which also links their
         // website account.
         .verificationReminder(isEligible: !isGuestUser && !isIndustryPro && !isAlumni)
+        // An alum waiting for approval: check again each time the app comes forward,
+        // so Share and Network open up soon after a moderator approves them.
+        .task(id: scenePhase) {
+            guard scenePhase == .active, isAlumni, StudentVerificationManager.isConfigured else { return }
+            await StudentVerificationManager.shared.refreshStatus()
+        }
         .task {
             // Weekly "<show> is Live!" notifications — see LiveStreams.swift.
             await LiveStreamNotifications.schedule()

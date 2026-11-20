@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { Suspense } from "react";
+import AlumniHoldNotice from "@/components/AlumniHoldNotice";
 import MaskImage from "@/components/MaskImage";
 import { SHARE_TYPES } from "@/lib/shareTypes";
 
@@ -31,6 +33,10 @@ export default function Share() {
     <div className="mx-auto w-full max-w-4xl py-6 lg:max-w-none">
       <h1 className="text-3xl font-bold">What are you sharing?</h1>
       <p className="mt-1 text-muted">Pick a type to start a new submission.</p>
+      {/* An alum waiting for approval sees why they can't post yet. */}
+      <Suspense>
+        <AlumniHoldNotice className="mt-4" />
+      </Suspense>
       {/* Row 1: Film, Music, Performance, Design, Photography — five across on a full-size window. */}
       <ul className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
         {WORK_TYPES.map((t) => (

@@ -32,8 +32,12 @@ export type AppleSessionResult =
   | { ok: true; signedIn?: undefined; appleTicket: string; reason: "new" | "verify" | "confirm" }
   | { ok: false; message: string };
 
-/** `role: "educator"` makes a Professor account, which has no graduation year. */
-export type AccountDetails = { firstName: string; lastName: string; major: string; graduationYear: string; userTypes?: string; role?: "educator" };
+/**
+ * `role: "educator"` makes a Professor account, which has no graduation year. An alum's
+ * account (signed in with purpose "alumni") passes `email`, the address they signed in
+ * with, so moderators can tell who they are while approving them.
+ */
+export type AccountDetails = { firstName: string; lastName: string; major: string; graduationYear: string; userTypes?: string; role?: "educator" | "alumni"; email?: string };
 
 export type CreateAccountResult =
   | { ok: true; userRecordName: string }
@@ -61,10 +65,18 @@ async function callWorker(path: string, body: unknown, clientIP: string) {
   return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> };
 }
 
-/** `purpose: "guest"` confirms any email address, not a school one, and can never lead to an account. */
-export async function requestCode(email: string, clientIP: string, purpose?: "guest"): Promise<RequestResult> {
+/**
+ * `purpose: "guest"` confirms any email address, not a school one, and can never lead to an account.
+ * `purpose: "alumni"` confirms any address too, for someone who graduated from `schoolID`: it leads
+ * to an alum's account, browse-only until a moderator approves it.
+ */
+export async function requestCode(email: string, clientIP: string, purpose?: "guest" | "alumni", schoolID?: string): Promise<RequestResult> {
   if (isDevStandIn()) return devRequest(email, purpose);
-  const { status, json } = await callWorker("/v1/web/session/request", { email, ...(purpose ? { purpose } : {}) }, clientIP);
+  const { status, json } = await callWorker(
+    "/v1/web/session/request",
+    { email, ...(purpose ? { purpose } : {}), ...(purpose === "alumni" ? { schoolID } : {}) },
+    clientIP,
+  );
   if (status !== 200) return { ok: false, message: String(json.message ?? "Couldn't send a code. Try again.") };
   const school = json.school as { name?: string } | undefined;
   return { ok: true, pendingID: String(json.pendingID), schoolName: school?.name ?? "" };
@@ -129,21 +141,22 @@ export async function createAccount(accountToken: string, details: AccountDetail
 
 // MARK: - Development stand-in
 
-type DevPending = { email: string; code: string; expiresAt: number; attempts: number; guest: boolean };
+type DevPending = { email: string; code: string; expiresAt: number; attempts: number; guest: boolean; alumni?: boolean };
 const devStore = ((globalThis as { __nexusDevCodes?: Map<string, DevPending> }).__nexusDevCodes ??= new Map());
 
-function devRequest(email: string, purpose?: "guest"): RequestResult {
+function devRequest(email: string, purpose?: "guest" | "alumni"): RequestResult {
   const normalized = email.trim().toLowerCase();
   const guest = purpose === "guest";
-  if (guest && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+  const alumni = purpose === "alumni";
+  if ((guest || alumni) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
     return { ok: false, message: "That doesn't look like an email address." };
   }
-  if (!guest && !/^[^\s@]+@[^\s@]+\.edu$/.test(normalized)) {
+  if (!guest && !alumni && !/^[^\s@]+@[^\s@]+\.edu$/.test(normalized)) {
     return { ok: false, message: "Use your school (.edu) email address." };
   }
   const pendingID = randomUUID();
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  devStore.set(pendingID, { email: normalized, code, expiresAt: Date.now() + 600_000, attempts: 0, guest });
+  devStore.set(pendingID, { email: normalized, code, expiresAt: Date.now() + 600_000, attempts: 0, guest, alumni });
   console.log(`\n[nexus dev] ${guest ? "Guest" : "Sign-in"} code for ${normalized}: ${code}\n`);
   return { ok: true, pendingID, schoolName: "your school" };
 }
@@ -155,5 +168,5 @@ function devConfirm(pendingID: string, code: string): ConfirmResult {
   if (pending.code !== code) return { ok: false, message: "That code isn't valid." };
   devStore.delete(pendingID);
   if (pending.guest) return { ok: true, email: pending.email, schoolID: "", schoolName: "", domainKind: "guest" };
-  return { ok: true, email: pending.email, schoolID: "dev", schoolName: "Development", domainKind: "student", accountToken: "dev" };
+  return { ok: true, email: pending.email, schoolID: "dev", schoolName: "Development", domainKind: pending.alumni ? "alumni_pending" : "student", accountToken: "dev" };
 }

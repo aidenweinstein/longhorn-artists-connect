@@ -20,6 +20,9 @@ struct VerificationGate<Content: View>: View {
     /// email and therefore could never pass it — industry professionals would
     /// otherwise be locked out of messaging permanently.
     var bypass: Bool = false
+    /// Alumni verify any email (not a school one) and then wait for a moderator's
+    /// approval; until then they see a "waiting for approval" note instead.
+    var alumni: Bool = false
     @ViewBuilder var content: () -> Content
 
     private var verification: StudentVerificationManager { .shared }
@@ -27,7 +30,10 @@ struct VerificationGate<Content: View>: View {
 
     var body: some View {
         Group {
-            if bypass
+            if verification.isPendingAlum && StudentVerificationManager.isConfigured {
+                // Verified, but a moderator hasn't approved this alum yet.
+                waitingForApproval
+            } else if bypass
                 || !StudentVerificationManager.isRequired
                 || !StudentVerificationManager.isConfigured
                 || verification.status.isVerified {
@@ -51,11 +57,44 @@ struct VerificationGate<Content: View>: View {
         }
         .sheet(isPresented: $showVerification) {
             NavigationStack {
-                SchoolEmailVerificationView {
-                    showVerification = false
+                if alumni {
+                    // Any address they use, for the school they graduated from.
+                    SchoolEmailVerificationView(
+                        onFinished: { showVerification = false },
+                        allowedDomains: [],
+                        purpose: .alumni,
+                        schoolID: SchoolScope.slug(forDisplayName: UserDefaults.standard.string(forKey: "userSchool") ?? ""),
+                        title: "Verify Your Email",
+                        subtitle: "Enter any email address you use. A moderator approves alumni before they can post, connect or message."
+                    )
+                } else {
+                    SchoolEmailVerificationView {
+                        showVerification = false
+                    }
                 }
             }
         }
+    }
+
+    private var waitingForApproval: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "hourglass")
+                .font(.system(size: 52))
+                .foregroundStyle(Color.brandOrange)
+
+            Text("Waiting for approval")
+                .font(.title2)
+                .fontWeight(.bold)
+                .multilineTextAlignment(.center)
+
+            Text("A moderator approves alumni before they can \(action), connect or message. Until then you can look around Nexus.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var prompt: some View {
@@ -64,12 +103,14 @@ struct VerificationGate<Content: View>: View {
                 .font(.system(size: 52))
                 .foregroundStyle(Color.brandOrange)
 
-            Text("Verify your school email")
+            Text(alumni ? "Verify your email" : "Verify your school email")
                 .font(.title2)
                 .fontWeight(.bold)
                 .multilineTextAlignment(.center)
 
-            Text("Confirm a school email address to \(action). It takes about a minute.")
+            Text(alumni
+                 ? "Confirm an email address you use to \(action). After that, a moderator approves alumni accounts."
+                 : "Confirm a school email address to \(action). It takes about a minute.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

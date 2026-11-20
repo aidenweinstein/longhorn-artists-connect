@@ -5,6 +5,17 @@
  */
 export type SignupRole = "student" | "educator";
 
+/**
+ * Who someone is signing up as. Alumni use any email they control (not a school one) and
+ * the school they graduated from; a moderator approves them before they can post (lib/alumni.ts).
+ */
+export type AccountRole = SignupRole | "alumni";
+
+/** True for a well-formed address at any domain: an alum's email. */
+export function isAnyEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
 export type SignupSchool = {
   id: string;
   name: string;

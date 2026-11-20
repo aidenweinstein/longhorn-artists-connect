@@ -3,17 +3,18 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { requestCodeAction } from "@/app/auth/actions";
-import { primaryBtn } from "@/components/AuthShell";
+import { field, labelCls, primaryBtn } from "@/components/AuthShell";
 import { useAuthSchool } from "@/components/AuthTheme";
 import CodeStep from "@/components/CodeStep";
 import SignedIn from "@/components/SignedIn";
 import SchoolEmailBox from "@/components/SchoolEmailBox";
 import SchoolPicker from "@/components/SchoolPicker";
-import { emailDomains, isSchoolEmail, type SignupSchool } from "@/lib/signupSchools";
+import { emailDomains, isAnyEmail, isSchoolEmail, type SignupSchool } from "@/lib/signupSchools";
 
 /**
  * Sign-in: pick your school (black and white screen, each school in its own colors),
- * then your email at that school and the 6-digit code, in the school's colors.
+ * then your email at that school and the 6-digit code, in the school's colors. Alumni,
+ * who signed up with any email, switch to typing that whole address instead.
  * `mock` is the Mock launch walkthrough: no email is sent, any 6-digit code passes, and
  * nobody is signed in.
  */
@@ -24,6 +25,9 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
   const [emailID, setEmailID] = useState("");
   const [pickedDomain, setPickedDomain] = useState("");
   const [pendingID, setPendingID] = useState<string | null>(null);
+  // "I'm an Alumni": signing in with the (any) address they signed up with.
+  const [alumni, setAlumni] = useState(false);
+  const [alumniEmail, setAlumniEmail] = useState("");
   const [mockDone, setMockDone] = useState(false);
   // After Sign in with Apple: this email also verified the person's app account.
   const [verifiedApp, setVerifiedApp] = useState(false);
@@ -35,8 +39,8 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
   // Students and educators both sign in here, so every domain of the school is offered.
   const domains = school ? emailDomains(school) : [];
   const domain = domains.includes(pickedDomain) ? pickedDomain : domains[0] ?? "";
-  const email = emailID && domain ? `${emailID}@${domain}` : "";
-  const valid = !!school && isSchoolEmail(email, school) && !busy;
+  const email = alumni ? alumniEmail.trim() : emailID && domain ? `${emailID}@${domain}` : "";
+  const valid = !!school && (alumni ? isAnyEmail(email) : isSchoolEmail(email, school)) && !busy;
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -44,7 +48,8 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
     setError(null);
     if (mock) return setPendingID("mock");
     startTransition(async () => {
-      const result = await requestCodeAction(email, school.id);
+      // An alum's address isn't a school one: the service recognizes it as their account's.
+      const result = alumni ? await requestCodeAction(email) : await requestCodeAction(email, school.id);
       if (result.ok) setPendingID(result.pendingID);
       else setError(result.message);
     });
@@ -79,7 +84,37 @@ export default function SignInForm({ mock = false }: { mock?: boolean }) {
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <SchoolEmailBox school={school} domains={domains} id={emailID} onID={setEmailID} domain={domain} onDomain={setPickedDomain} />
+      {alumni ? (
+        <div>
+          <label htmlFor="email" className={labelCls}>Email</label>
+          <input
+            id="email"
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            autoFocus
+            value={alumniEmail}
+            onChange={(e) => setAlumniEmail(e.target.value.replace(/\s/g, ""))}
+            className={field}
+            placeholder="you@example.com"
+          />
+        </div>
+      ) : (
+        <SchoolEmailBox school={school} domains={domains} id={emailID} onID={setEmailID} domain={domain} onDomain={setPickedDomain} />
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          setAlumni((on) => !on);
+          setError(null);
+        }}
+        className="text-sm text-white/70 underline underline-offset-4 hover:text-white"
+      >
+        {alumni ? "Use my school email instead" : "I'm an Alumni: sign in with the email I signed up with"}
+      </button>
       {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
       <button type="submit" disabled={!valid} className={primaryBtn}>
         {busy ? "Sending…" : "Send code"}

@@ -52,6 +52,10 @@ final class StudentVerificationManager {
         case school
         /// Enthusiast sign-up: any address the user controls.
         case enthusiast
+        /// Alumni: any address the user controls, plus the school they graduated
+        /// from (`schoolID`). They're browse-only until a moderator approves them on
+        /// the website (verification-service/src/alumni.ts); see `isPendingAlum`.
+        case alumni
     }
 
     /// Handle for a code that's been emailed but not yet confirmed.
@@ -102,6 +106,18 @@ final class StudentVerificationManager {
     /// website: that account's profile is now on this Apple ID, so onboarding
     /// signs the person in rather than asking them to build a profile again.
     private(set) var adoptedWebsiteProfile = false
+
+    /// True for an alum a moderator hasn't approved yet: they can look around but
+    /// not post, connect or message. Read from the `Verification` record's
+    /// `domainKind` ("alumni_pending" until approved, then "alumni") and mirrored to
+    /// UserDefaults under `pendingAlumKey`, which views gate on with @AppStorage.
+    private(set) var isPendingAlum = UserDefaults.standard.bool(forKey: StudentVerificationManager.pendingAlumKey)
+    static let pendingAlumKey = "isPendingAlum"
+
+    private func setPendingAlum(_ value: Bool) {
+        isPendingAlum = value
+        UserDefaults.standard.set(value, forKey: Self.pendingAlumKey)
+    }
 
     /// Cached so the UI isn't gated behind a network round trip at launch.
     /// Advisory only — `refreshStatus()` re-reads the authoritative record.
@@ -195,6 +211,8 @@ final class StudentVerificationManager {
             let record = try await CKContainer.default().publicCloudDatabase.record(for: recordID)
             let schoolName = (record["schoolName"] as? String) ?? "your school"
             status = .verified(schoolName: schoolName)
+            // An alum stays browse-only until a moderator approves them.
+            setPendingAlum((record["domainKind"] as? String) == "alumni_pending")
             UserDefaults.standard.set(schoolName, forKey: cacheKey)
 
             if let schoolID = (record["schoolID"] as? String), !schoolID.isEmpty {
@@ -207,6 +225,7 @@ final class StudentVerificationManager {
             // transient failure.
             if let ckError = error as? CKError, ckError.code == .unknownItem {
                 status = .unverified
+                setPendingAlum(false)
                 verifiedSchoolID = nil
                 verifiedEmail = nil
                 UserDefaults.standard.removeObject(forKey: cacheKey)
@@ -237,8 +256,9 @@ final class StudentVerificationManager {
     /// this user's own `UserProfile` record — only the account owner can do
     /// that, which is how the service proves the caller owns the account it
     /// claims at confirm time.
-    func requestCode(email: String, purpose: Purpose = .school) async throws -> PendingVerification {
-        let (pending, nonce, userRecordName) = try await sendCodeRequest(email: email, purpose: purpose)
+    /// `schoolID` is the registry slug of the school an alum graduated from (`.alumni` only).
+    func requestCode(email: String, purpose: Purpose = .school, schoolID: String? = nil) async throws -> PendingVerification {
+        let (pending, nonce, userRecordName) = try await sendCodeRequest(email: email, purpose: purpose, schoolID: schoolID)
         try await writeNonce(nonce, userRecordName: userRecordName)
         return pending
     }
@@ -256,7 +276,8 @@ final class StudentVerificationManager {
     /// moderator's test send.
     private func sendCodeRequest(
         email: String,
-        purpose: Purpose = .school
+        purpose: Purpose = .school,
+        schoolID: String? = nil
     ) async throws -> (pending: PendingVerification, nonce: String, userRecordName: String) {
         guard let baseURL = Self.baseURL else { throw VerificationError.notConfigured }
         guard let userRecordName = try? await CKContainer.default().userRecordID().recordName else {
@@ -270,6 +291,8 @@ final class StudentVerificationManager {
             let email: String
             let userRecordName: String
             let purpose: String
+            /// Alumni only: the school they graduated from.
+            let schoolID: String?
         }
         struct SchoolStub: Decodable { let id: String; let name: String }
         struct Response: Decodable {
@@ -281,7 +304,8 @@ final class StudentVerificationManager {
 
         let response: Response = try await post(
             baseURL.appendingPathComponent("v1/verify/request"),
-            body: Request(email: email, userRecordName: userRecordName, purpose: purpose.rawValue)
+            body: Request(email: email, userRecordName: userRecordName, purpose: purpose.rawValue,
+                          schoolID: purpose == .alumni ? schoolID : nil)
         )
 
         let pending = PendingVerification(
