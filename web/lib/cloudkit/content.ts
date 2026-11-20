@@ -159,7 +159,23 @@ function reel(r: CKRecord): Post {
   // A showcase's videos after the first (website posts), with one title per video in reelVideoTitles.
   const extra = fileURLs(r, "reelVideos", "media.mp4");
   const titles = list(r, "reelVideoTitles");
-  const videos = videoUrl && extra.length ? [videoUrl, ...extra].map((url, i) => ({ url, title: titles[i] ?? "" })) : undefined;
+  const playlistIDs = list(r, "reelPlaylistPostIDs");
+  // Per uploaded video: its own thumbnail and who's in it, when saved for every video.
+  const own = videoUrl ? [videoUrl, ...extra] : [];
+  const thumbs = assets(r, "reelVideoThumbnails", "media.jpg");
+  const castNames = list(r, "reelVideoCast");
+  const castIDs = list(r, "reelVideoCastIDs");
+  const aligned = (l: string[]) => l.length === own.length;
+  // A playlist of existing posts lists its own upload too (resolvePlaylists adds the rest).
+  const videos =
+    videoUrl && (extra.length || playlistIDs.length)
+      ? own.map((url, i) => ({
+          url,
+          title: titles[i] ?? "",
+          thumb: aligned(thumbs) ? thumbs[i] : undefined,
+          actor: aligned(castNames) && castNames[i] ? { name: castNames[i], profileID: castIDs[i] || undefined } : undefined,
+        }))
+      : undefined;
   return {
     ...p,
     thumbnailUrl: asset(r, "reelThumbnail", "media.jpg"),
@@ -167,13 +183,13 @@ function reel(r: CKRecord): Post {
     videoUrl,
     videoCrop: str(r, "reelVideoCrop") || undefined,
     videos,
-    playlistPostIDs: list(r, "reelPlaylistPostIDs").length ? list(r, "reelPlaylistPostIDs") : undefined,
+    playlistPostIDs: playlistIDs.length ? playlistIDs : undefined,
     details: {
       byline: artist || undefined,
       genres: [],
       kindLabel: str(r, "reelType") || undefined,
       description: str(r, "reelDescription"),
-      creditGroups: groups(["Crew", credits(r, "orderedCrew", "orderedCrewIDs")]),
+      creditGroups: groups(["Cast", credits(r, "orderedCast", "orderedCastIDs")], ["Crew", credits(r, "orderedCrew", "orderedCrewIDs")]),
       featuredWork: featured.length ? featured : undefined,
       submittedBy: str(r, "submittedBy"),
     },
@@ -383,13 +399,27 @@ function resolvePlaylists(posts: Post[]): Set<string> {
       // Never another playlist, so two can't hide each other.
       return q && q.id !== p.id && q.videoUrl && !q.playlistPostIDs?.length ? [q] : [];
     });
-    if (items.length === 0) continue;
+    if (items.length === 0) {
+      // None of its posts are left: a lone upload plays as an ordinary video.
+      if (p.videos?.length === 1) p.videos = undefined;
+      continue;
+    }
     for (const q of items) inPlaylist.add(q.id);
     // The playlist stands in for the posts it holds (they're off the feeds), so it's on the
     // feed of every school they're on: an actor showcase with UT and USC actors shows at both.
     p.schoolSlugs = [...new Set([...(p.schoolSlugs ?? []), ...items.flatMap((q) => q.schoolSlugs ?? [])])];
     const own = p.videos ?? (p.videoUrl ? [{ url: p.videoUrl, title: "" }] : []);
-    p.videos = [...own, ...items.map((q) => ({ url: q.videoUrl!, title: q.title, postID: q.id }))];
+    // An added post brings its own thumbnail, and its main credit is who's in it.
+    p.videos = [
+      ...own,
+      ...items.map((q) => ({
+        url: q.videoUrl!,
+        title: q.title,
+        postID: q.id,
+        thumb: q.thumbnailUrl,
+        actor: { name: q.creator, profileID: q.creatorProfileID, avatarUrl: q.creatorAvatarUrl, avatarKey: q.creatorAvatarKey },
+      })),
+    ];
     // A playlist with no upload of its own previews and opens on its first video.
     if (!p.videoUrl) {
       p.videoUrl = p.videos[0].url;
@@ -592,11 +622,21 @@ export async function profileImageSource(profileID: string): Promise<{ url?: str
  * unambiguous name, so a credit typed by name still reaches that person's portfolio.
  */
 function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles>>) {
-  const find = (id: string | undefined, name: string) =>
-    (id ? people.byID.get(id) : undefined) ?? people.byName.get(nameKey(name));
-  // The school of a credited person: their profile's, or the one school everyone with that name is at.
-  const schoolOf = (person: Profile | undefined, name: string) =>
-    person ? schoolSlugForName(person.school) : people.schoolByName.has(nameKey(name)) ? schoolSlugForName(people.schoolByName.get(nameKey(name))) : undefined;
+  // A linked profile with no name is a blank one (e.g. an app account that never filled in
+  // its profile while the person set up a full one on the website): the name decides then.
+  const find = (id: string | undefined, name: string) => {
+    const linked = id ? people.byID.get(id) : undefined;
+    return (linked?.name ? linked : undefined) ?? people.byName.get(nameKey(name)) ?? linked;
+  };
+  // The school of a credited person: their profile's, or else the one school everyone with
+  // that name is at. A blank profile counts as UT (like the app's early accounts) only when
+  // nothing else says where the person is.
+  const schoolOf = (person: Profile | undefined, name: string) => {
+    if (person?.name && person.school) return schoolSlugForName(person.school);
+    const key = nameKey(name);
+    if (people.schoolByName.has(key)) return schoolSlugForName(people.schoolByName.get(key));
+    return person ? schoolSlugForName(person.school) : undefined;
+  };
   for (const post of posts) {
     const creator = find(post.creatorProfileID, post.creator);
     post.creatorAvatarUrl = creator?.imageUrl;
@@ -608,8 +648,9 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     // whose director has no profile, still shows at the poster's school. Only when neither
     // the poster nor the main credit has a profile does it count as UT, like the app's early posts.
     const schools = new Set<string>();
-    const poster = post.makerProfileID ? people.byID.get(post.makerProfileID) : undefined;
-    const posterSchool = poster ? schoolSlugForName(poster.school) : undefined;
+    const posterName = post.details?.submittedBy ?? "";
+    const poster = post.makerProfileID || posterName ? find(post.makerProfileID, posterName) : undefined;
+    const posterSchool = poster || posterName ? schoolOf(poster, posterName) : undefined;
     if (posterSchool) schools.add(posterSchool);
     const creatorSchool = schoolOf(creator, post.creator) ?? posterSchool ?? schoolSlugForName(undefined);
     post.creatorSchoolSlug = creatorSchool;
