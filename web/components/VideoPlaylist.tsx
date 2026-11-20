@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import type { PlaylistVideo } from "@/lib/mockContent";
 import Player from "./Player";
+import { usePlaylist } from "./PlaylistContext";
 
 /**
  * A performance post with several videos (an actor showcase, say): the player plus a
@@ -20,19 +22,24 @@ export default function VideoPlaylist({
   /** The post's own first video's playback crop. */
   crop?: string;
   /** `postID` is set for a video that is an existing post added to the playlist. */
-  videos: { url: string; title: string; postID?: string }[];
+  videos: PlaylistVideo[];
   postID: string;
   poster?: string;
   aspect: number;
   autoStart?: boolean;
 }) {
-  const [index, setIndex] = useState(0);
+  // Inside a PlaylistProvider (the post page) the playing video is shared with the Cast list.
+  const shared = usePlaylist();
+  const [ownIndex, setIndex] = useState(0);
   // Picking a video always plays it, even when the post didn't autostart.
-  const [started, setStarted] = useState(autoStart);
+  const [ownStarted, setStarted] = useState(autoStart);
   const count = videos.length;
+  const index = shared ? shared.index : ownIndex;
+  const started = shared ? shared.started : ownStarted;
   const at = Math.min(index, count - 1);
 
   const go = (i: number) => {
+    if (shared) return shared.go(i);
     setStarted(true);
     setIndex(Math.max(0, Math.min(count - 1, i)));
   };
@@ -43,8 +50,9 @@ export default function VideoPlaylist({
         postID={postID}
         src={videos[at].url}
         trackKey={at}
-        // The post's thumbnail is the first video's picture; later videos show their own first frame.
-        poster={at === 0 ? poster : undefined}
+        // Each video shows its own thumbnail; without one, the first falls back to the post's
+        // main thumbnail and later ones to their own first frame.
+        poster={videos[at].thumb ?? (at === 0 ? poster : undefined)}
         aspect={aspect}
         crop={at === 0 && !videos[0].postID ? crop : undefined}
         autoStart={started}
@@ -66,7 +74,12 @@ export default function VideoPlaylist({
                 }`}
               >
                 <span className="w-5 text-right tabular-nums text-muted">{i + 1}</span>
-                <span className="flex-1">{v.title || `Video ${i + 1}`}</span>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {v.thumb ? <img src={v.thumb} alt="" loading="lazy" className="h-10 w-16 shrink-0 rounded-md bg-black object-cover" /> : null}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{v.title || `Video ${i + 1}`}</span>
+                  {v.actor && <span className={`block truncate text-xs ${current ? "text-brand/80" : "text-muted"} font-normal`}>{v.actor.name}</span>}
+                </span>
                 {current && <span className="text-xs font-medium uppercase tracking-wide">Playing</span>}
               </button>
               {/* The video's own post: its credits, description and likes. */}

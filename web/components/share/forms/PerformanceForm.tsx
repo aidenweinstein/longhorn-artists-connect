@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PERFORMANCE_CATEGORIES } from "@/lib/shareOptions";
 import { image, mediaDuration, raw, videoFrame } from "@/lib/shareUpload";
 import { containStyle, croppedAspect, cropStyle, encodeCrop, type VideoCrop } from "@/lib/videoCrop";
 import VideoCropEditor from "../VideoCropEditor";
 import { canBuildPlaylists, searchPlaylistPosts, type PlaylistCandidate } from "@/app/(app)/share/playlistActions";
-import { useReleaseYears, CreditsRow, CropIcon, DropZone, FileRow, FilesRow, ListRow, Section, SelectRow, TextArea, TextInput, VideoIcon, type Credit } from "../FormKit";
+import { useReleaseYears, CreditLine, CreditsRow, CropIcon, DropZone, FileRow, FilesRow, ListRow, Section, SelectRow, TextArea, TextInput, VideoIcon, type Credit } from "../FormKit";
 import { useDraftField, useKeptFiles } from "../DraftContext";
 import SubmissionShell from "../SubmissionShell";
 
@@ -39,13 +39,15 @@ export default function PerformanceForm() {
   const [cast, setCast] = useDraftField<Credit[]>("cast", [{ role: "", name: "" }]);
 
   const isTheatreShow = category === "Theatre Show";
+  // A showcase: several videos, or videos from existing posts. It has a main thumbnail (its cover
+  // in the feeds), a thumbnail for each video, and who performs in each video.
+  const showcase = videos.length > 1 || existing.length > 0;
 
   // Editing: files the post already has count as there.
   const kept = useKeptFiles();
   const missing = [
     !video && !existing.length && !kept.has("videos") && "video",
-    // A playlist made only of existing posts has no video of its own to take a thumbnail from.
-    !video && existing.length > 0 && !thumbnail && !kept.has("thumbnail") && "thumbnail",
+    showcase && !thumbnail && !kept.has("thumbnail") && "main thumbnail",
     !title.trim() && "title",
   ].filter(Boolean) as string[];
 
@@ -56,10 +58,20 @@ export default function PerformanceForm() {
       missing={missing}
       draft={async () => {
         const poster = thumbnail ?? (video ? await videoFrame(video, videoCrop) : undefined);
+        // Every uploaded video of a showcase gets a thumbnail: the one picked for it, else a
+        // frame from the video, else the main one. All or none, so they stay lined up.
+        const clipThumbs = showcase
+          ? await Promise.all(videos.map(async (v, i) => v.thumb ?? (await videoFrame(v.file, i === 0 ? v.crop : null)) ?? poster))
+          : [];
+        const thumbsReady = clipThumbs.length > 0 && clipThumbs.every((f): f is File => !!f);
         return {
           type: "performance",
           text: { title, description, category, releaseYear: year, videoCrop: encodeCrop(videoCrop) },
-          credits: { cast: isTheatreShow ? cast.filter((c) => c.name.trim()) : [] },
+          credits: {
+            cast: isTheatreShow ? cast.filter((c) => c.name.trim()) : [],
+            // Who's in each uploaded video, lined up with them ("" for nobody named).
+            videoCast: showcase ? videos.map((v) => ({ role: "Actor", name: v.actor?.name.trim() ?? "", profileID: v.actor?.profileID })) : [],
+          },
           lists: { featured, playlistPostIDs: existing.map((p) => p.id), videoTitles: videos.length > 1 ? videos.map((v, i) => v.title.trim() || `Video ${i + 1}`) : [] },
           numbers: { videoDuration: (video && (await mediaDuration(video))) || 0 },
           flags: {},
@@ -67,6 +79,7 @@ export default function PerformanceForm() {
             reelVideo: video ? [raw(video)] : [],
             reelVideos: videos.slice(1).map((v) => raw(v.file)),
             reelThumbnail: poster ? [image(poster, 1000)] : [],
+            reelVideoThumbnails: thumbsReady ? (clipThumbs as File[]).map((f) => image(f, 1000)) : [],
             reelStills: isTheatreShow ? photos.map((f) => image(f)) : [],
           },
         };
@@ -77,9 +90,16 @@ export default function PerformanceForm() {
       </Section>
 
       <>
-          <Section title="Upload" footer={videos.length > 1 ? "Videos play in this order, like a playlist. The thumbnail comes from the first one unless you add your own." : undefined}>
-            <VideoList videos={videos} onChange={setVideos} />
-            <FileRow noun="thumbnail" accept="image/*" file={thumbnail} onChange={setThumbnail} optional />
+          <Section
+            title="Upload"
+            footer={
+              showcase
+                ? "Videos play in this order, like a playlist. The main thumbnail is the showcase's cover in the feeds. Each video can have its own thumbnail (otherwise a frame from it is used) and the person in it, who's highlighted in the Cast list while their video plays."
+                : undefined
+            }
+          >
+            <VideoList videos={videos} onChange={setVideos} showcase={showcase} />
+            <FileRow noun={showcase ? "main thumbnail" : "thumbnail"} accept="image/*" file={thumbnail} onChange={setThumbnail} optional={!showcase} />
             {isTheatreShow && <FilesRow noun="photos" accept="image/*" files={photos} onChange={setPhotos} optional />}
           </Section>
 
@@ -116,17 +136,25 @@ export default function PerformanceForm() {
   );
 }
 
-type Clip = { file: File; title: string; crop?: VideoCrop | null };
+/** One uploaded video: its title, playback crop (first video only), own thumbnail and performer. */
+type Clip = { file: File; title: string; crop?: VideoCrop | null; thumb?: File | null; actor?: Credit };
 
 /**
  * A small picture of the video, so each one can be told apart while naming it. Shows a
  * frame from just after the start (the very first is often black); click to play or
  * pause it, silently, in place.
  */
-function ClipThumb({ file, crop }: { file: File; crop?: VideoCrop | null }) {
+function ClipThumb({ file, crop, picture }: { file: File; crop?: VideoCrop | null; picture?: File | null }) {
   const url = useMemo(() => URL.createObjectURL(file), [file]);
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  const pictureURL = useMemo(() => (picture ? URL.createObjectURL(picture) : null), [picture]);
+  useEffect(() => () => void (pictureURL && URL.revokeObjectURL(pictureURL)), [pictureURL]);
   const [natural, setNatural] = useState(16 / 9);
+  if (pictureURL) {
+    // The thumbnail picked for this video.
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={pictureURL} alt="" className="h-14 w-24 shrink-0 rounded-lg bg-black object-cover" />;
+  }
   if (crop) {
     // Just the cropped area, fitted inside the thumbnail.
     return (
@@ -165,8 +193,12 @@ function ClipThumb({ file, crop }: { file: File; crop?: VideoCrop | null }) {
   );
 }
 
-/** The post's videos in playing order: one for a reel, several for a showcase. Reorderable, each with a title. */
-function VideoList({ videos, onChange }: { videos: Clip[]; onChange: (v: Clip[]) => void }) {
+/**
+ * The post's videos in playing order: one for a reel, several for a showcase. Reorderable;
+ * in a showcase each has a title, its own thumbnail and the person performing in it.
+ */
+function VideoList({ videos, onChange, showcase }: { videos: Clip[]; onChange: (v: Clip[]) => void; showcase: boolean }) {
+  const patch = (i: number, p: Partial<Clip>) => onChange(videos.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const move = (i: number, by: number) => {
     const next = [...videos];
     const [v] = next.splice(i, 1);
@@ -190,21 +222,12 @@ function VideoList({ videos, onChange }: { videos: Clip[]; onChange: (v: Clip[])
         />
       )}
       {videos.map((v, i) => (
-        <div key={`${v.file.name}-${v.file.lastModified}-${i}`} className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
-          <ClipThumb file={v.file} crop={i === 0 ? v.crop : null} />
+        <div key={`${v.file.name}-${v.file.lastModified}-${i}`} className="px-4 py-2.5">
+        <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-1">
+          <ClipThumb file={v.file} crop={i === 0 ? v.crop : null} picture={showcase ? v.thumb : null} />
           <span className="w-16 shrink-0 text-[15px]">Video {i + 1}</span>
-          {videos.length > 1 ? (
-            <input
-              value={v.title}
-              onChange={(e) => onChange(videos.map((x, j) => (j === i ? { ...x, title: e.target.value } : x)))}
-              placeholder={`Title (e.g. the actor or scene) · ${v.file.name}`}
-              aria-label={`Title of video ${i + 1}`}
-              maxLength={200}
-              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
-            />
-          ) : (
-            <span className="min-w-0 flex-1 truncate text-sm text-muted">{v.file.name}</span>
-          )}
+          <span className="min-w-0 flex-1 truncate text-sm text-muted">{v.file.name}</span>
+          {showcase && <ClipThumbPicker picture={v.thumb ?? null} index={i} onChange={(thumb) => patch(i, { thumb })} />}
           {i === 0 && (
             <button
               type="button"
@@ -220,6 +243,27 @@ function VideoList({ videos, onChange }: { videos: Clip[]; onChange: (v: Clip[])
           <button type="button" aria-label={`Move video ${i + 1} down`} disabled={i === videos.length - 1} onClick={() => move(i, 1)} className="px-1 text-muted hover:text-foreground disabled:invisible">↓</button>
           <button type="button" aria-label={`Remove video ${i + 1}`} onClick={() => onChange(videos.filter((_, j) => j !== i))} className="px-1 text-lg leading-none text-muted hover:text-foreground">×</button>
         </div>
+        {showcase && (
+          // The video's title and who's in it: typing a name suggests Nexus members, and picking
+          // one links their profile (and credits them in the Cast list).
+          <div className="mt-2">
+            <CreditLine
+              credit={{ role: v.title, name: v.actor?.name ?? "", profileID: v.actor?.profileID }}
+              index={i}
+              rolePlaceholder="Title or scene"
+              namePlaceholder="Actor"
+              onChange={(c) =>
+                patch(i, {
+                  ...(c.role !== undefined && { title: c.role.slice(0, 200) }),
+                  ...((c.name !== undefined || "profileID" in c) && {
+                    actor: { role: "Actor", name: c.name ?? v.actor?.name ?? "", profileID: "profileID" in c ? c.profileID : v.actor?.profileID },
+                  }),
+                })
+              }
+            />
+          </div>
+        )}
+        </div>
       ))}
       <div className="p-3">
         <DropZone
@@ -233,6 +277,45 @@ function VideoList({ videos, onChange }: { videos: Clip[]; onChange: (v: Clip[])
         />
       </div>
     </>
+  );
+}
+
+/** Picks (or clears) one showcase video's own thumbnail. */
+function ClipThumbPicker({ picture, index, onChange }: { picture: File | null; index: number; onChange: (f: File | null) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f && f.type.startsWith("image/")) onChange(f);
+          e.target.value = "";
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => input.current?.click()}
+        aria-label={picture ? `Change the thumbnail of video ${index + 1}` : `Add a thumbnail for video ${index + 1}`}
+        className="rounded-full border border-border px-2.5 py-0.5 text-xs font-medium hover:bg-foreground/5"
+      >
+        {picture ? "Change thumbnail" : "Add thumbnail"}
+      </button>
+      {picture && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          aria-label={`Use a frame from video ${index + 1} as its thumbnail`}
+          title="Use a frame from the video instead"
+          className="px-1 text-muted hover:text-foreground"
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }
 

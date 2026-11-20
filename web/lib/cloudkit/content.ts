@@ -515,16 +515,23 @@ export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set
 
 export async function getDiscoverItems(): Promise<(Project | NexusEvent)[]> {
   "use cache: remote";
-  cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(POSTS_TAG);
 
-  const [removed, projects, events] = await Promise.all([
+  const [removed, projects, events, people] = await Promise.all([
     removedIDs(),
     safeQuery("ProjectSubmission"),
     safeQuery("EventSubmission"),
+    profiles(),
   ]);
+  // Without the profiles every project would count as UT's, so check again soon.
+  if (!people.complete) {
+    cacheLife({ stale: 30, revalidate: 30, expire: 300 });
+  } else {
+    cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
+  }
   const ok = visible(removed);
   const items = [...projects.filter(ok).map(project), ...events.filter(ok).map(event)].filter(notPlaceholder);
+  attachProjectSchools(items, people);
   const order = new Map([...projects, ...events].map((r) => [r.recordName, created(r)]));
   return items.sort((a, b) => (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0));
 }
@@ -621,7 +628,7 @@ export async function profileImageSource(profileID: string): Promise<{ url?: str
  * Fills in profile pictures and profile links: by linked profile ID first, then by an
  * unambiguous name, so a credit typed by name still reaches that person's portfolio.
  */
-function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles>>) {
+function personLookup(people: Awaited<ReturnType<typeof profiles>>) {
   // A linked profile with no name is a blank one (e.g. an app account that never filled in
   // its profile while the person set up a full one on the website): the name decides then.
   const find = (id: string | undefined, name: string) => {
@@ -637,6 +644,35 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     if (people.schoolByName.has(key)) return schoolSlugForName(people.schoolByName.get(key));
     return person ? schoolSlugForName(person.school) : undefined;
   };
+  return { find, schoolOf };
+}
+
+/**
+ * Which schools each project belongs to, for Discover: the school of the account that
+ * posted it, of everyone it shared edit access with, and of everyone already on its cast
+ * and crew, so a UT and USC collaboration shows at both. With nobody known it counts as
+ * UT's, like the app's early posts.
+ */
+function attachProjectSchools(items: (Project | NexusEvent)[], people: Awaited<ReturnType<typeof profiles>>) {
+  const { find, schoolOf } = personLookup(people);
+  for (const item of items) {
+    if (item.kind !== "project") continue;
+    const schools = new Set<string>();
+    const add = (id: string | undefined, name: string) => {
+      if (!id && !name) return;
+      const school = schoolOf(find(id, name), name);
+      if (school) schools.add(school);
+    };
+    add(item.postedByProfileID, item.postedBy);
+    for (const id of item.editorIDs ?? []) add(id, "");
+    for (const c of [...(item.castAssembled ?? []), ...(item.crewAssembled ?? [])]) add(c.profileID, c.name);
+    if (!schools.size) schools.add(schoolSlugForName(undefined)!);
+    item.schoolSlugs = [...schools];
+  }
+}
+
+function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles>>) {
+  const { find, schoolOf } = personLookup(people);
   for (const post of posts) {
     const creator = find(post.creatorProfileID, post.creator);
     post.creatorAvatarUrl = creator?.imageUrl;

@@ -19,7 +19,9 @@ export const ASSET_FIELDS: Record<ShareTypeID, Record<string, "one" | "many">> =
   film: { filmVideo: "one", filmThumbnail: "one", filmTrailer: "one", filmBTS: "many", filmStills: "many" },
   music: { musicAudio: "one", musicTracks: "many", musicCover: "one", musicVideo: "one" },
   // reelVideos: a showcase's videos after the first (the first stays in reelVideo, which the app plays).
-  performance: { reelVideo: "one", reelVideos: "many", reelThumbnail: "one", reelStills: "many" },
+  // reelThumbnail is the showcase's main thumbnail (its cover in the feeds); reelVideoThumbnails has
+  // one picture per uploaded video, in playing order (reelVideo first).
+  performance: { reelVideo: "one", reelVideos: "many", reelThumbnail: "one", reelVideoThumbnails: "many", reelStills: "many" },
   photography: { photographyImages: "many", photographyThumbnail: "one" },
   design: { designImages: "many", designThumbnail: "one", designVideo: "one" },
   // scriptFile goes on the app's separate Script record (the Scripts collection).
@@ -37,6 +39,12 @@ export const THUMBNAIL_FIELD: Partial<Record<ShareTypeID, string>> = {
 };
 
 export const MAX_FILES_PER_FIELD = 40;
+
+/**
+ * Asset fields a post can go up without: if CloudKit won't take their files (say the field
+ * isn't in Production's schema yet), the post is saved without them instead of failing.
+ */
+export const OPTIONAL_ASSET_FIELDS: ReadonlySet<string> = new Set(["reelVideoThumbnails"]);
 
 /**
  * CloudKit Web Services takes files up to 50 MB. Anything bigger in these fields goes to

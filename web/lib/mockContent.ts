@@ -20,7 +20,7 @@ export type Post = {
   thumbnailUrl?: string;
   audioUrl?: string;
   /** Performance posts with several videos (a showcase): every video in order, with its title (the first is videoUrl). */
-  videos?: { url: string; title: string; /** Set when the video is an existing post added to a playlist. */ postID?: string }[];
+  videos?: PlaylistVideo[];
   /** Performance posts that are a playlist of existing posts: those posts' IDs, in order. */
   playlistPostIDs?: string[];
   /** EP and album posts: every song in running order (the first is audioUrl). */
@@ -54,3 +54,15 @@ export type Post = {
 };
 
 export const POSTS: Post[] = [];
+
+/** One video of a showcase (a Performance post with several videos). */
+export type PlaylistVideo = {
+  url: string;
+  title: string;
+  /** Set when the video is an existing post added to a playlist. */
+  postID?: string;
+  /** The video's own thumbnail (the post's thumbnailUrl is the showcase's main one). */
+  thumb?: string;
+  /** Who performs in it: shown in the post's Cast list, highlighted while it plays. */
+  actor?: { name: string; profileID?: string; avatarUrl?: string; avatarKey?: string };
+};

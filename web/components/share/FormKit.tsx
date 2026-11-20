@@ -782,7 +782,8 @@ export function CreditLine({
   credit: Credit;
   index: number;
   onChange: (patch: Partial<Credit>) => void;
-  onRemove: () => void;
+  /** Leave out for a line that can't be removed on its own (e.g. a showcase video's performer). */
+  onRemove?: () => void;
   rolePlaceholder?: string;
   namePlaceholder?: string;
   inputClass?: string;
@@ -867,7 +868,7 @@ export function CreditLine({
             </span>
           )}
         </div>
-        <RemoveButton label={`Remove ${credit.role || "row"}`} onClick={onRemove} />
+        {onRemove && <RemoveButton label={`Remove ${credit.role || "row"}`} onClick={onRemove} />}
       </div>
       {/* In the flow under the row, not floating: the form's cards clip anything that hangs outside them. */}
       {shown.length > 0 && (

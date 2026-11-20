@@ -33,6 +33,8 @@ export type Project = {
   postedByProfileID?: string;
   /** Everyone else its poster shared edit access with (profile IDs). */
   editorIDs?: string[];
+  /** Every school it belongs to (the poster's, its editors' and its team's), set from CloudKit profiles. */
+  schoolSlugs?: string[];
   createdAt?: number;
   editedAt?: number;
 };

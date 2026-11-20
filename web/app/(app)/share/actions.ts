@@ -30,6 +30,7 @@ import {
   LARGE_FILE_FIELDS,
   LARGE_PART_BYTES,
   MAX_FILES_PER_FIELD,
+  OPTIONAL_ASSET_FIELDS,
   MAX_LARGE_BYTES_PER_POST,
   MAX_LARGE_FILES_PER_POST,
   MAX_LARGE_FILE_BYTES,
@@ -469,12 +470,14 @@ function build(
       // A playlist of existing posts (admins) needs no upload of its own, but then it needs a thumbnail.
       if (!has("reelVideo") && !playlistIDs.length) return { fields, required: [], missing: "a video" };
       if (!has("reelVideo") && !one(input, "reelThumbnail")) return { fields, required: [], missing: "a thumbnail" };
+      // A new showcase (several videos) needs its own main thumbnail.
+      const newShowcase = (many(input, "reelVideos") || large.reelVideos?.length || playlistIDs.length) && !edit;
+      if (newShowcase && !one(input, "reelThumbnail")) return { fields, required: [], missing: "a main thumbnail" };
       fields.reelTitle = s(title);
       fields.createdDate = time(Date.now());
       text("reelDescription", t("description"));
       text("reelType", t("category", 40));
       text("reelReleaseYear", t("releaseYear", 4));
-      credit("orderedCast", "orderedCastIDs", c("cast"));
       strings("featuredWorkManual", l("featured"));
       put("reelVideo", one(input, "reelVideo"));
       // A showcase's other videos, and a title for every video (the first included), in order.
@@ -486,6 +489,36 @@ function build(
         const titles: unknown[] = Array.isArray(input.lists?.videoTitles) ? input.lists.videoTitles : [];
         fields.reelVideoTitles = list(Array.from({ length: count }, (_, i) => clean(titles[i], 200) || `Video ${i + 1}`));
       }
+      // A showcase's uploaded videos, when they're new: the reel plus the rest, in playing order.
+      const uploaded = fresh("reelVideo") ? 1 + moreCount : 0;
+      const showcase = uploaded > 1 || playlistIDs.length > 0;
+      // Who performs in each uploaded video ("" for none), lined up with the videos. A linked
+      // name must be a real member's; their own name is saved, as with every credit.
+      const actors: CreditInput[] = showcase
+        ? Array.from({ length: uploaded }, (_, i) => {
+            const raw = (Array.isArray(input.credits?.videoCast) ? input.credits.videoCast[i] : undefined) as Partial<CreditInput> | undefined;
+            const id = typeof raw?.profileID === "string" ? raw.profileID : "";
+            const linked = id ? members.get(id) : undefined;
+            return { role: "Actor", name: linked ?? clean(raw?.name, 200), profileID: linked ? id : undefined };
+          })
+        : [];
+      if (actors.some((a) => a.name)) {
+        fields.reelVideoCast = list(actors.map((a) => a.name));
+        fields.reelVideoCastIDs = list(actors.map((a) => a.profileID ?? ""));
+      } else if (edit && fresh("reelVideo")) {
+        // New videos replace the old ones, so the old videos' cast goes too.
+        fields.reelVideoCast = list([]);
+        fields.reelVideoCastIDs = list([]);
+      }
+      // The cast credits (school feeds, portfolios): a Theatre Show's cast plus everyone in the
+      // showcase's videos, once each. Editing without new videos leaves a showcase's cast as it is.
+      const named = actors.filter((a) => a.name);
+      const once = (all: CreditInput[]) => all.filter((a, i) => all.findIndex((b) => (b.profileID && b.profileID === a.profileID) || b.name.toLowerCase() === a.name.toLowerCase()) === i);
+      if (t("category", 40) === "Theatre Show") credit("orderedCast", "orderedCastIDs", once([...asCast(c("cast")), ...named]));
+      else if (!edit || fresh("reelVideo")) credit("orderedCast", "orderedCastIDs", once(named));
+      // One thumbnail per uploaded video, only when there's exactly one for each.
+      const clipThumbs = many(input, "reelVideoThumbnails");
+      if (showcase && uploaded && clipThumbs && (clipThumbs.value as unknown[]).length === uploaded) put("reelVideoThumbnails", clipThumbs);
       const duration = n("videoDuration");
       if (duration) fields.reelVideoDuration = double(duration);
       if (one(input, "reelVideo")) text("reelVideoCrop", crop());
@@ -675,7 +708,14 @@ export async function publishPost(input: PostInput, editPostID?: string): Promis
           receiptsFor[i] = (await uploadAsset(target.recordType, target.recordName, field, bytes, contentType)).value as AssetReceipt;
         }
       };
-      await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+      try {
+        await Promise.all(Array.from({ length: Math.min(4, list.length) }, worker));
+      } catch (error) {
+        // A field the post can do without (e.g. not in Production's schema yet) is left off.
+        if (!OPTIONAL_ASSET_FIELDS.has(field)) throw error;
+        console.warn(`[share] ${field} left off:`, error);
+        continue;
+      }
       if (refused) return { ok: false, message: refused };
       assets[field] = receiptsFor;
     }

@@ -487,3 +487,21 @@ npm run dev        # http://localhost:3000
   Aiden, on the school color like the others; UVA's is on white because its navy sabres vanish on UVA blue.
 - The app (OnboardingSchool.all, SchoolScope, SchoolColors) and `verification-service/seed/schools.sql`
   have them too; the seed must be applied to D1 before their addresses verify.
+
+## Showcase thumbnails and Cast (2026-11-20)
+- A showcase (2+ uploaded videos, or any existing posts added) needs a **main thumbnail** (`reelThumbnail`,
+  its cover in the feeds). Each uploaded video also gets its **own thumbnail** in `reelVideoThumbnails`
+  (Asset List, same order as the videos, `reelVideo` first): the picture picked for it in the form
+  (`ClipThumbPicker`), else a frame from the video, else the main thumbnail. Saved only when there's one per video.
+- Each video row in the form has a "Title or scene" + "Actor" line (`CreditLine`, with Nexus member
+  suggestions). Saved as `reelVideoCast` / `reelVideoCastIDs` (String Lists, one entry per uploaded video,
+  "" for none). Everyone named also goes into `orderedCast` (role "Actor"), so they count as credited
+  (school feeds, portfolios, main "Performed by" credit). Added existing posts use their own thumbnail
+  and main credit.
+- Post page: `PlaylistProvider` (components/PlaylistContext.tsx) shares the playing video between
+  `VideoPlaylist` and `ShowcaseCast`. The Cast list shows who's in each video, highlights whoever is
+  playing, and clicking a row switches the player to that video. Other cast credits (a Theatre Show's)
+  show under "More Cast". Performance posts now show their `orderedCast` as "Cast" too.
+- NEEDS SCHEMA (optional, nothing fails without them; they're just left off): `reelVideoThumbnails`
+  (Asset List), `reelVideoCast` and `reelVideoCastIDs` (String List) on `ReelSubmission` in Production.
+- Not built: changing a video's thumbnail or actor when editing without re-uploading the videos.

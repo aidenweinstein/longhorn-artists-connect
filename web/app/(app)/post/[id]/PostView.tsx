@@ -17,6 +17,8 @@ import PostMedia from "@/components/PostMedia";
 import Player from "@/components/Player";
 import MusicPlayer from "@/components/MusicPlayer";
 import VideoPlaylist from "@/components/VideoPlaylist";
+import { PlaylistProvider } from "@/components/PlaylistContext";
+import ShowcaseCast, { type ShowcaseCastRow } from "@/components/ShowcaseCast";
 import ServiceBadge from "@/components/ServiceBadge";
 import PostLink from "@/components/PostLink";
 import EditPostLink from "@/components/EditPostLink";
@@ -67,15 +69,45 @@ export default async function PostView({ id, school }: { id: string; school?: Sc
   // From a school's feed, that school's posts come first.
   const more = (school ? related.filter(atSchool).concat(related.filter((p) => !atSchool(p))) : related).slice(0, 6);
 
+  // A showcase (several videos): its Cast lists who's in each video, highlights whoever is
+  // playing and switches the player to anyone picked. Pictures come from the post's credits.
+  const playlist = post.videos && post.videos.length > 1 ? post.videos : undefined;
+  const castCredits = d.creditGroups.find((g) => g.title === "Cast")?.credits ?? [];
+  const inVideos = (c: Credit) =>
+    (playlist ?? []).some((v) => v.actor && ((v.actor.profileID && v.actor.profileID === c.profileID) || v.actor.name.toLowerCase() === c.name.toLowerCase()));
+  const castRows: ShowcaseCastRow[] = (playlist ?? []).flatMap((v, i) => {
+    if (!v.actor?.name) return [];
+    const a = v.actor;
+    const known = castCredits.find((c) => (a.profileID && c.profileID === a.profileID) || c.name.toLowerCase() === a.name.toLowerCase());
+    const person = { ...a, ...(known && { profileID: known.profileID ?? a.profileID, avatarUrl: known.avatarUrl ?? a.avatarUrl, avatarKey: known.avatarKey ?? a.avatarKey }) };
+    return [{
+      index: i,
+      role: v.title || `Video ${i + 1}`,
+      person: (
+        <PersonLink name={person.name} profileID={person.profileID} className="group/person flex items-center gap-2.5 hover:no-underline">
+          {person.profileID && <Avatar name={person.name} src={avatarSource(person)} size="sm" />}
+          <span className={`text-sm font-medium ${person.profileID ? "group-hover/person:underline" : ""}`}>{person.name}</span>
+        </PersonLink>
+      ),
+    }];
+  });
+  // Cast credits not in any video (a Theatre Show's other cast) keep the usual list, under the showcase's.
+  const otherGroups = castRows.length
+    ? d.creditGroups
+        .map((g) => (g.title === "Cast" ? { ...g, title: "More Cast", credits: g.credits.filter((c) => !inVideos(c)) } : g))
+        .filter((g) => g.credits.length > 0)
+    : d.creditGroups;
+
   return (
     <div
       // Like the school's feed: its secondary color (Berkeley, USC and Michigan gold) stands in for the brand color, e.g. the player's progress bar.
       style={school ? ({ "--brand": school.accent } as CSSProperties) : undefined}
       className="mx-auto flex max-w-[1920px] flex-col gap-6 xl:flex-row"
     >
+      <PlaylistProvider key={post.id} count={playlist?.length ?? 0} autoStart>
       <div className="min-w-0 flex-1">
-        {post.videos ? (
-          <VideoPlaylist key={post.id} postID={post.id} videos={post.videos} poster={post.thumbnailUrl} aspect={post.aspect} crop={post.videoCrop} autoStart />
+        {playlist ? (
+          <VideoPlaylist key={post.id} postID={post.id} videos={playlist} poster={post.thumbnailUrl} aspect={post.aspect} crop={post.videoCrop} autoStart />
         ) : post.videoUrl ? (
           <Player key={post.id} postID={post.id} src={post.videoUrl} poster={post.thumbnailUrl} aspect={post.aspect} crop={post.videoCrop} autoStart />
         ) : post.tracks ? (
@@ -142,7 +174,9 @@ export default async function PostView({ id, school }: { id: string; school?: Sc
             </div>
           )}
 
-          {d.creditGroups.map((group) => (
+          {castRows.length > 0 && <ShowcaseCast rows={castRows} />}
+
+          {otherGroups.map((group) => (
             <div key={group.title}>
               <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">{group.title}</h2>
               <ul className="mt-3 divide-y divide-border">
@@ -249,6 +283,7 @@ export default async function PostView({ id, school }: { id: string; school?: Sc
 
         </section>
       </div>
+      </PlaylistProvider>
 
       <aside className="w-full shrink-0 xl:w-[340px]">
         <h2 className="mb-4 font-semibold">More on Nexus</h2>
