@@ -511,7 +511,11 @@ type Profile = {
   school?: string;
 };
 
-async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile>; duplicates: Set<string>; complete: boolean }> {
+/** A name as a lookup key: case, accents, punctuation and extra spaces don't matter. */
+const nameKey = (name: string) =>
+  name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile>; schoolByName: Map<string, string>; duplicates: Set<string>; complete: boolean }> {
   // Only the fields used here: profiles also hold bios, links and more that no list needs.
   const loaded = await tryQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes", "school"]);
   const records = loaded ?? [];
@@ -535,16 +539,24 @@ async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<str
   // app account, until verifying that email in the app merges the two.
   const appNames = new Set([...byID.values()].filter((p) => !isWebProfile(p.id)).map((p) => p.name.toLowerCase()).filter(Boolean));
   const duplicates = new Set([...byID.values()].filter((p) => isWebProfile(p.id) && appNames.has(p.name.toLowerCase())).map((p) => p.id));
+  // Every school each name belongs to, website duplicates included.
+  const schoolsByName = new Map<string, Set<string>>();
   for (const profile of byID.values()) {
-    const key = profile.name.toLowerCase();
-    if (!key || duplicates.has(profile.id)) continue;
+    const key = nameKey(profile.name);
+    if (!key) continue;
+    schoolsByName.set(key, (schoolsByName.get(key) ?? new Set()).add(profile.school ?? ""));
+    if (duplicates.has(profile.id)) continue;
     nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
     byName.set(key, profile);
   }
   // A name shared by two people can't pick a photo, so only unique names match.
   for (const [key, count] of nameCounts) if (count > 1) byName.delete(key);
+  // A credit typed by name still puts a post on that person's school feed when every
+  // profile with that name is at the same school (e.g. someone with two accounts).
+  const schoolByName = new Map<string, string>();
+  for (const [key, schools] of schoolsByName) if (schools.size === 1) schoolByName.set(key, [...schools][0]);
   // false when CloudKit couldn't list the profiles: everyone is missing, not just new.
-  return { byID, byName, duplicates, complete: loaded !== null };
+  return { byID, byName, schoolByName, duplicates, complete: loaded !== null };
 }
 
 /** A profile made on the website (UserProfile_web_<id>), not in the app. */
@@ -581,7 +593,10 @@ export async function profileImageSource(profileID: string): Promise<{ url?: str
  */
 function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles>>) {
   const find = (id: string | undefined, name: string) =>
-    (id ? people.byID.get(id) : undefined) ?? people.byName.get(name.trim().toLowerCase());
+    (id ? people.byID.get(id) : undefined) ?? people.byName.get(nameKey(name));
+  // The school of a credited person: their profile's, or the one school everyone with that name is at.
+  const schoolOf = (person: Profile | undefined, name: string) =>
+    person ? schoolSlugForName(person.school) : people.schoolByName.has(nameKey(name)) ? schoolSlugForName(people.schoolByName.get(nameKey(name))) : undefined;
   for (const post of posts) {
     const creator = find(post.creatorProfileID, post.creator);
     post.creatorAvatarUrl = creator?.imageUrl;
@@ -596,7 +611,7 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     const poster = post.makerProfileID ? people.byID.get(post.makerProfileID) : undefined;
     const posterSchool = poster ? schoolSlugForName(poster.school) : undefined;
     if (posterSchool) schools.add(posterSchool);
-    const creatorSchool = creator ? schoolSlugForName(creator.school) : posterSchool ?? schoolSlugForName(undefined);
+    const creatorSchool = schoolOf(creator, post.creator) ?? posterSchool ?? schoolSlugForName(undefined);
     post.creatorSchoolSlug = creatorSchool;
     if (creatorSchool) schools.add(creatorSchool);
     for (const group of post.details?.creditGroups ?? []) {
@@ -605,7 +620,7 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
         c.avatarUrl = person?.imageUrl;
         c.avatarKey = person?.imageKey;
         c.profileID = person?.id ?? c.profileID;
-        const school = person ? schoolSlugForName(person.school) : undefined;
+        const school = schoolOf(person, c.name);
         c.schoolSlug = school;
         if (school) schools.add(school);
       }
