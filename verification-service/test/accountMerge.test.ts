@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { profileFill, rewriteFields } from "../src/accountMerge";
+import { isCompleteProfile, rewriteFields } from "../src/accountMerge";
 
 test("rewrites raw and UserProfile_ mentions, in strings and lists", () => {
     const out = rewriteFields(
@@ -23,16 +23,9 @@ test("leaves records that don't mention the account alone", () => {
     assert.deepEqual(rewriteFields({ userID: { value: "web_abcd", type: "STRING" } }, "web_abc", "_x"), {});
 });
 
-test("fills only empty app profile fields, never private ones or assets", () => {
-    const fill = profileFill(
-        {
-            bio: { value: "Actor in Austin", type: "STRING" },
-            major: { value: "RTF", type: "STRING" },
-            firstName: { value: "Manu", type: "STRING" },
-            verificationNonce: { value: "n", type: "STRING" },
-            profileImage: { value: { downloadURL: "x" }, type: "ASSETID" },
-        },
-        { firstName: { value: "Manuela", type: "STRING" }, major: { value: "", type: "STRING" } },
-    );
-    assert.deepEqual(fill, { bio: { value: "Actor in Austin", type: "STRING" }, major: { value: "RTF", type: "STRING" } });
+test("a profile counts as complete only once isUTStudent is written", () => {
+    assert.equal(isCompleteProfile(null), false);
+    assert.equal(isCompleteProfile({ fields: { verificationNonce: { value: "n", type: "STRING" } } }), false);
+    assert.equal(isCompleteProfile({ fields: { isUTStudent: { value: 0, type: "INT64" } } }), true);
+    assert.equal(isCompleteProfile({ fields: { isUTStudent: { value: 1, type: "INT64" }, firstName: { value: "Natalie", type: "STRING" } } }), true);
 });

@@ -91,6 +91,24 @@ CREATE TABLE IF NOT EXISTS web_account_claims (
 CREATE INDEX IF NOT EXISTS idx_web_claims_expiry ON web_account_claims(expires_at);
 
 -- ---------------------------------------------------------------------------
+-- Website accounts being merged into app accounts (src/accountMerge.ts). A row
+-- is written when the merge starts and finished_at set once the website profile
+-- is deleted. Needed because the app, not this service, copies the website
+-- profile into the iCloud account's own UserProfile (Creator-only: this key
+-- can't write it), and /v1/verify/merge/finish and the nightly cron need to
+-- know which website account belongs to which app account until then.
+-- Added 2026-11-19.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS web_merges (
+    web_user      TEXT PRIMARY KEY,         -- web_<id>
+    app_user      TEXT NOT NULL,            -- the iCloud user record name
+    requested_at  INTEGER NOT NULL,
+    finished_at   INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_merges_app ON web_merges(app_user);
+
+-- ---------------------------------------------------------------------------
 -- Completed verifications. email_hash PK + user_record_name UNIQUE together
 -- enforce one address per account AND one account per address.
 -- ---------------------------------------------------------------------------

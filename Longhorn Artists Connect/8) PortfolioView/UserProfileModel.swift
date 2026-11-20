@@ -793,6 +793,70 @@ class UserProfileModel: ObservableObject {
         }
     }
     
+    /// Copies a profile made on the website (`UserProfile_web_…`) into this Apple
+    /// ID's own `UserProfile`, after the verification service merged that website
+    /// account into this one (see `StudentVerificationManager.confirmCode`).
+    ///
+    /// The service can't do this part itself: our record is Creator-only, so
+    /// CloudKit refuses its server key and only this device can write it.
+    /// Fields this record already has are kept; the website's fill in the rest,
+    /// the profile picture included. Returns true once the record holds a real
+    /// account, at which point `loadFromCloudKit` signs the person in.
+    func adoptWebsiteProfile(webUserRecordName: String) async -> Bool {
+        var userRecordName = CloudKitManager.shared.userRecordID?.recordName
+        if userRecordName == nil {
+            userRecordName = try? await CKContainer.default().userRecordID().recordName
+        }
+        guard let userRecordName else {
+            print("⚠️ Can't adopt website profile: no iCloud user record")
+            return false
+        }
+        let database = CKContainer.default().publicCloudDatabase
+        let ownID = CKRecord.ID(recordName: "UserProfile_\(userRecordName)")
+        let webID = CKRecord.ID(recordName: "UserProfile_\(webUserRecordName)")
+
+        do {
+            let web = try await database.record(for: webID)
+            // The nonce stub written at /verify/request, if the fetch finds it.
+            let own = (try? await database.record(for: ownID))
+                ?? CKRecord(recordType: "UserProfile", recordID: ownID)
+
+            var copied = 0
+            for key in web.allKeys() where !Self.keysNeverAdopted.contains(key) {
+                guard Self.isBlank(own[key]) else { continue }
+                if let asset = web[key] as? CKAsset {
+                    // CloudKit may clean up the downloaded file; upload our own copy.
+                    guard let fileURL = asset.fileURL, let data = try? Data(contentsOf: fileURL) else { continue }
+                    let tempURL = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("adopt_\(key)_\(UUID().uuidString)")
+                    try data.write(to: tempURL)
+                    own[key] = CKAsset(fileURL: tempURL)
+                } else if let value = web[key] {
+                    own[key] = value
+                }
+                copied += 1
+            }
+
+            guard copied > 0 else { return own["isUTStudent"] != nil }
+            try await CloudKitManager.shared.save(record: own)
+            print("✅ Adopted website profile \(webUserRecordName): \(copied) fields")
+            return true
+        } catch {
+            print("❌ Failed to adopt website profile \(webUserRecordName): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// One-time or private values that never travel from a website profile.
+    private static let keysNeverAdopted: Set<String> = ["verificationNonce", "userEmail", "mergedInto"]
+
+    private static func isBlank(_ value: CKRecordValue?) -> Bool {
+        guard let value else { return true }
+        if let string = value as? String { return string.isEmpty }
+        if let list = value as? [String] { return list.isEmpty }
+        return false
+    }
+
     /// Delete user profile from CloudKit
     func deleteFromCloudKit() async {
         guard CloudKitManager.shared.isAvailable else {

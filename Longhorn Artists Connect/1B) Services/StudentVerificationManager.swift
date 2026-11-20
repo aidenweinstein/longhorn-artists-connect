@@ -98,6 +98,11 @@ final class StudentVerificationManager {
     /// nil when verification happened on another device.
     private(set) var verifiedEmail: String?
 
+    /// Set by `confirmCode` when the address belonged to an account made on the
+    /// website: that account's profile is now on this Apple ID, so onboarding
+    /// signs the person in rather than asking them to build a profile again.
+    private(set) var adoptedWebsiteProfile = false
+
     /// Cached so the UI isn't gated behind a network round trip at launch.
     /// Advisory only — `refreshStatus()` re-reads the authoritative record.
     private let cacheKey = "studentVerificationCachedSchool"
@@ -300,14 +305,25 @@ final class StudentVerificationManager {
             let pendingID: String
             let code: String
         }
-        struct Response: Decodable { let verified: Bool }
+        /// Present when this email belonged to an account made on the website,
+        /// which the service has just merged into this one.
+        struct MergedWebAccount: Decodable { let userRecordName: String }
+        struct Response: Decodable {
+            let verified: Bool
+            let mergedWebAccount: MergedWebAccount?
+        }
 
-        let _: Response = try await post(
+        adoptedWebsiteProfile = false
+        let response: Response = try await post(
             baseURL.appendingPathComponent("v1/verify/confirm"),
             body: Request(pendingID: pending.id, code: code)
         )
 
         await refreshStatus()
+
+        if let web = response.mergedWebAccount {
+            await adoptWebsiteAccount(web.userRecordName)
+        }
 
         // The service only answers 2xx once it has written the record, so if
         // the read-back missed it (propagation lag, flaky network), trust the
@@ -318,6 +334,42 @@ final class StudentVerificationManager {
         }
         verifiedEmail = pending.email
         UserDefaults.standard.set(pending.email, forKey: emailCacheKey)
+    }
+
+    // MARK: - Website accounts
+
+    /// Finishes moving a website account onto this Apple ID. The service has
+    /// already moved its posts and connections; the profile itself is copied
+    /// here, because only this device may write our `UserProfile` record. Then
+    /// the service is told, so it can delete the website profile. If that call
+    /// fails, the service's nightly job finishes the merge instead.
+    private func adoptWebsiteAccount(_ webUserRecordName: String) async {
+        guard await UserProfileModel().adoptWebsiteProfile(webUserRecordName: webUserRecordName) else { return }
+        adoptedWebsiteProfile = true
+
+        var userRecordName = CloudKitManager.shared.userRecordID?.recordName
+        if userRecordName == nil {
+            userRecordName = try? await CKContainer.default().userRecordID().recordName
+        }
+        guard let baseURL = Self.baseURL, let userRecordName else { return }
+
+        struct Request: Encodable {
+            let userRecordName: String
+            let webUserRecordName: String
+        }
+        struct Response: Decodable { let finished: Bool }
+
+        do {
+            let result: Response = try await post(
+                baseURL.appendingPathComponent("v1/verify/merge/finish"),
+                body: Request(userRecordName: userRecordName, webUserRecordName: webUserRecordName)
+            )
+            print(result.finished
+                  ? "✅ Website account \(webUserRecordName) merged into this account"
+                  : "ℹ️ Website account \(webUserRecordName) merge will finish overnight")
+        } catch {
+            print("⚠️ Couldn't finish website account merge: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Ownership proof

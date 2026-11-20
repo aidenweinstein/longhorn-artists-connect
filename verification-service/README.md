@@ -314,9 +314,16 @@ full Nexus account. The flow, all in `src/webSession.ts`:
 
 The app sees these profiles like any other. Two things to know:
 
-- **Moving a website account into the app isn't built yet.** If that email is
-  then verified in the app, `/v1/verify/request` refuses with `email_on_web` and
-  a plain explanation, so nobody ends up with two accounts.
+- **Verifying that email in the app merges the website account into the app
+  account** (`src/accountMerge.ts`, added 2026-11-19). `/v1/verify/confirm`
+  rewrites the website account's posts, credits, connections and messages to
+  the iCloud account and answers with `mergedWebAccount.userRecordName`. The
+  **app** then copies the website profile into its own `UserProfile` — this
+  key can't, CloudKit answers `ACCESS_DENIED` for a record the app created —
+  and calls `/v1/verify/merge/finish`, which deletes the website profile once
+  the app profile is a real account. Merges in progress live in `web_merges`;
+  the nightly cron finishes any the app didn't (a crash, or an account the
+  person completed through Create Account instead).
 - **The app can't edit or delete these profiles** (the server key created
   them, and CloudKit only lets the creator write). Moderators change them in
   CloudKit Console, as the app's own error message already says.

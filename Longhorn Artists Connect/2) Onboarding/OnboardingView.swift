@@ -16,6 +16,8 @@
 //    │     └─ alumni    → name + phone           → details
 //    ├─ Sign In → school → verify school email → restore this Apple ID's profile
 //    │     (no profile yet → offered Create Account)
+//    │     (email belongs to an account made on the website → that account is
+//    │      merged onto this Apple ID first, see StudentVerificationManager)
 //    └─ Enthusiast (upper right) → verify any email → name
 //
 //  The individual pages live in their own files: WelcomeView, SchoolSelectionView,
@@ -216,7 +218,16 @@ struct OnboardingView: View {
         case .verifySchoolEmail:
             // Required to move on: no skip button.
             SchoolEmailVerificationView(
-                onFinished: { go(to: .details) },
+                onFinished: {
+                    // The email belonged to an account made on the website, and its
+                    // profile is now on this Apple ID: sign in to it instead of
+                    // building a second one.
+                    if StudentVerificationManager.shared.adoptedWebsiteProfile {
+                        restoreProfile()
+                    } else {
+                        go(to: .details)
+                    }
+                },
                 dismissTitle: nil,
                 school: school?.name,
                 allowedDomains: school?.domain(for: role).map { [$0] },

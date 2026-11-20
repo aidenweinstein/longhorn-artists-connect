@@ -4,7 +4,9 @@
 ///   GET  /v1/health
 ///   GET  /v1/schools?q=          search the school registry
 ///   POST /v1/verify/request      { email, userRecordName } -> { pendingID, nonce }
-///   POST /v1/verify/confirm      { pendingID, code }       -> { verified, school }
+///   POST /v1/verify/confirm      { pendingID, code }       -> { verified, school, mergedWebAccount? }
+///   POST /v1/verify/merge/finish { userRecordName, webUserRecordName } -> { finished }
+///                                after the app copied a merged website profile, see src/accountMerge.ts
 ///   GET  /v1/verify/status?user= has this account been verified
 ///   POST /v1/web/session/request website sign-in (and guest email check), see src/webSession.ts
 ///   POST /v1/web/session/confirm
@@ -37,7 +39,7 @@ import { fetchUserProfile, writeVerificationRecord, clearProfileNonce } from "./
 import { runSweep } from "./sweep";
 import { runBackfill, BackfillCursor } from "./backfill";
 import { handleWebSessionRequest, handleWebSessionConfirm, handleWebAccountCreate, WEB_ACCOUNT_PREFIX } from "./webSession";
-import { mergeWebAccount } from "./accountMerge";
+import { mergeWebAccount, pendingMergeFor, isPendingMerge, finishMerge, finishPendingMerges } from "./accountMerge";
 import { handleWebAppleSession, moveAppleLink } from "./apple";
 import { handlePeople, handlePeopleListed } from "./people";
 
@@ -63,6 +65,9 @@ export default {
             }
             if (url.pathname === "/v1/verify/status" && request.method === "GET") {
                 return await handleStatus(url, env);
+            }
+            if (url.pathname === "/v1/verify/merge/finish" && request.method === "POST") {
+                return await handleMergeFinish(request, env);
             }
             if (url.pathname === "/v1/web/session/request" && request.method === "POST") {
                 return await handleWebSessionRequest(request, env, lookupDomain);
@@ -95,6 +100,7 @@ export default {
 
     async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
         ctx.waitUntil(runSweep(env));
+        ctx.waitUntil(finishPendingMerges(env));
     },
 };
 
@@ -328,19 +334,27 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
 
     // The email now opens this app account on the website too; move the website
     // account's posts, credits and connections here. Never fails the verification.
-    let merged: { rewritten: number; complete: boolean } | undefined;
+    // The website profile itself stays for now: the app reads it and copies it
+    // into its own record (which this key can't write), then calls
+    // /v1/verify/merge/finish. `userRecordName` in the reply is what tells it to.
+    let merged: { userRecordName: string; rewritten: number; complete: boolean } | undefined;
     if (webAccount) {
         try {
             const report = await mergeWebAccount(env, webAccount, pending.user_record_name);
-            merged = { rewritten: report.rewritten, complete: report.profileDeleted };
+            merged = { userRecordName: webAccount, rewritten: report.rewritten, complete: report.profileDeleted };
             // Its Apple ID (if one signed in on the website) now opens the app account.
             await moveAppleLink(env, webAccount, pending.user_record_name);
             if (report.errors.length) console.error(`merge ${webAccount} -> ${pending.user_record_name}:`, report.errors.slice(0, 20));
             else console.log(`merged ${webAccount} -> ${pending.user_record_name} (${report.rewritten} records)`);
         } catch (error) {
             console.error(`merge ${webAccount} -> ${pending.user_record_name} failed`, error);
-            merged = { rewritten: 0, complete: false };
+            merged = { userRecordName: webAccount, rewritten: 0, complete: false };
         }
+    } else {
+        // Verified again before the app finished an earlier merge (or that merge
+        // predates the app's copy step): name the website account so it can.
+        const pendingMerge = await pendingMergeFor(env, pending.user_record_name);
+        if (pendingMerge) merged = { userRecordName: pendingMerge.webUser, rewritten: 0, complete: false };
     }
 
     return json({
@@ -350,6 +364,44 @@ async function handleVerifyConfirm(request: Request, env: Env): Promise<Response
         verifiedAt: now,
         ...(merged ? { mergedWebAccount: merged } : {}),
     });
+}
+
+// MARK: - Finish a website-account merge
+
+/// The app calls this after copying a merged website profile into its own
+/// UserProfile. Needs no ownership proof: finishMerge only deletes the website
+/// profile when the app profile has become a real account (the copy happened),
+/// and only moves website-account records to the app account they were
+/// already being merged into.
+async function handleMergeFinish(request: Request, env: Env): Promise<Response> {
+    const body = await readJSON(request);
+    if (!body) return errorResponse("bad_request", "Malformed body.", 400);
+
+    const userRecordName = String(body.userRecordName ?? "").trim();
+    const webUserRecordName = String(body.webUserRecordName ?? "").trim();
+    if (!userRecordName || !webUserRecordName.startsWith(WEB_ACCOUNT_PREFIX)) {
+        return errorResponse("bad_request", "Missing userRecordName or webUserRecordName.", 400);
+    }
+    if (await checkAllRateLimits(env, [
+        { dimension: "merge_ip", value: clientIP(request), limit: 20, windowSeconds: 3600 },
+    ])) {
+        return errorResponse("rate_limited", "Too many attempts. Try again later.", 429);
+    }
+    if (!(await isPendingMerge(env, webUserRecordName, userRecordName))) {
+        return errorResponse("not_found", "No such merge.", 404);
+    }
+
+    const result = await finishMerge(env, webUserRecordName, userRecordName);
+    switch (result.status) {
+        case "finished":
+        case "already_finished":
+            return json({ finished: true });
+        case "profile_not_ready":
+            return json({ finished: false, reason: "profile_not_ready" });
+        case "incomplete":
+            console.error(`merge ${webUserRecordName} -> ${userRecordName} still incomplete:`, result.report.errors.slice(0, 20));
+            return json({ finished: false, reason: "incomplete", rewritten: result.report.rewritten });
+    }
 }
 
 // MARK: - Status
