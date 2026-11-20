@@ -234,7 +234,8 @@ enum SchoolScope {
         ("Texas A&M", "tamu"),
         ("Ohio State", "ohio-state"),
         ("UVA", "uva"),
-        ("UC Santa Barbara", "ucsb")
+        ("UC Santa Barbara", "ucsb"),
+        ("Northwestern", "northwestern")
     ]
 
     private static let slugsByDisplayName: [String: String] =

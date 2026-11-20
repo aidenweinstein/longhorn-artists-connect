@@ -23,7 +23,8 @@ export const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opaci
  * for a guest); `otherSchools` is the first four other schools (OtherSchools) with their
  * heading ("Other Schools", or "Schools" for a guest, who sees every school), and
  * `moreSchools` the rest, in the "More" dropdown. A guest has no school of their own, so
- * `school` is empty for them and Home sits at the top. `account` stays
+ * `school` is empty for them and Home sits at the top. Only the schools scroll: the
+ * pages stay at the top, and College Artists Connect and `account` at the bottom. `account` stays
  * pinned at the bottom while the rest scrolls.
  *
  * The current address is only known at request time, so reading it here would block
@@ -36,7 +37,7 @@ export default function Sidebar({ account, school, pages, otherSchools, moreScho
   const [hovering, setHovering] = useState(false);
   const [picked, setPicked] = useState(false);
   const open = hovering && !picked;
-  // The "More" dropdown (the rest of the schools, College Artists Connect), closed to start.
+  // The "More" dropdown (the rest of the schools), closed to start.
   const [moreOpen, setMoreOpen] = useState(false);
 
   return (
@@ -65,17 +66,16 @@ export default function Sidebar({ account, school, pages, otherSchools, moreScho
         }}
         className="group/nav absolute inset-y-0 left-0 flex w-[68px] flex-col gap-1 overflow-hidden border-r border-border bg-background px-2 py-3 transition-[width,box-shadow] duration-200 data-[open=true]:w-56 data-[open=true]:shadow-xl"
       >
-        {/* Everything but the account scrolls; -mx-2/px-2 keeps the selected page's indicator (at -left-2) visible. */}
-        <div className="-mx-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {school}
-
-        {pages}
-
-        <div className="mt-3 border-t border-border pt-3">
-          {otherSchools}
+        {/* Your school and the main pages, always in view. -mx-2/px-2 keeps the selected page's indicator (at -left-2) visible. */}
+        <div className="-mx-2 flex shrink-0 flex-col gap-1 px-2">
+          {school}
+          {pages}
         </div>
 
-        <div className="mt-3 border-t border-border pt-3">
+        {/* The schools: the only part that scrolls, between the pages and the bottom rows. */}
+        <div className="-mx-2 mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden border-t border-border px-2 pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {otherSchools}
+
           <button
             type="button"
             aria-expanded={moreOpen}
@@ -84,15 +84,20 @@ export default function Sidebar({ account, school, pages, otherSchools, moreScho
             // Opening or closing More leaves the bar open, unlike picking a page.
             data-keep-open
             onClick={() => setMoreOpen((v) => !v)}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
+            className="flex w-full shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium text-muted transition-colors hover:bg-surface hover:text-foreground"
           >
             <svg viewBox="0 0 24 24" aria-hidden className={`h-6 w-6 shrink-0 transition-transform duration-200 ${moreOpen ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
               <path d="m6 9 6 6 6-6" />
             </svg>
             <span className={LABEL}>{moreOpen ? "Show less" : "More"}</span>
           </button>
-          <div id="sidebar-more" hidden={!moreOpen} className="mt-0.5">
-          {moreSchools}
+          <div id="sidebar-more" hidden={!moreOpen} className="shrink-0">
+            {moreSchools}
+          </div>
+        </div>
+
+        {/* College Artists Connect and the signed-in account (or Sign in), always in view. */}
+        <div className="flex shrink-0 flex-col gap-1 border-t border-border pt-2">
           <a
             href="https://collegeartistsconnect.org"
             target="_blank"
@@ -114,12 +119,6 @@ export default function Sidebar({ account, school, pages, otherSchools, moreScho
               <span className={LABEL}>Launch page</span>
             </Link>
           )}
-          </div>
-        </div>
-        </div>
-
-        {/* The signed-in account (or Sign in), always in view. */}
-        <div className="flex shrink-0 flex-col gap-1 pt-1">
           {account}
         </div>
       </nav>

@@ -128,7 +128,14 @@ struct SchoolTheme {
          SchoolTheme(bubble: Color(hex: "003660"), text: Color(hex: "FEBC11"),
                      appIconName: "AppIcon-UCSB",
                      toolbarPill: Color(hex: "2F6596"),
-                     toolbarHighlight: Color(hex: "002446")))
+                     toolbarHighlight: Color(hex: "002446"))),
+        // Northwestern Purple + white, with a lighter purple pill and deeper purple
+        // highlight.
+        (["Northwestern", "Northwestern University", "NU"],
+         SchoolTheme(bubble: Color(hex: "4E2A84"), text: .white,
+                     appIconName: "AppIcon-Northwestern",
+                     toolbarPill: Color(hex: "7A57B0"),
+                     toolbarHighlight: Color(hex: "3A1F63")))
     ]
 
     /// Every themed school once, under its canonical display name (the one

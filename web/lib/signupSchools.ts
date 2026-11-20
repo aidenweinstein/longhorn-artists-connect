@@ -61,6 +61,12 @@ export const SIGNUP_SCHOOLS: SignupSchool[] = [
     color: "#232D4B", onColor: "#E57200", highlight: "#E57200", glow: 0.85 },
   { id: "ucsb", name: "UC Santa Barbara", studentDomain: "ucsb.edu", educatorDomains: ["ucsb.edu"], idPlaceholder: "netid", exampleNames: [],
     color: "#003660", onColor: "#FEBC11", highlight: "#FEBC11", glow: 0.85 },
+  // BU students and faculty both use username@bu.edu.
+  { id: "bu", name: "Boston University", studentDomain: "bu.edu", educatorDomains: ["bu.edu"], idPlaceholder: "username", exampleNames: [],
+    color: "#CC0000", onColor: "#ffffff", highlight: "#E54444", glow: 0.55 },
+  // Northwestern students use FirstLastYear@u.northwestern.edu; faculty and staff use @northwestern.edu.
+  { id: "northwestern", name: "Northwestern", studentDomain: "u.northwestern.edu", educatorDomains: ["northwestern.edu"], idPlaceholder: "firstlastyear", exampleNames: [],
+    color: "#4E2A84", onColor: "#ffffff", highlight: "#9A7FD1", glow: 0.85 },
 ];
 
 export const signupSchool = (id: string | undefined | null) => SIGNUP_SCHOOLS.find((s) => s.id === id);

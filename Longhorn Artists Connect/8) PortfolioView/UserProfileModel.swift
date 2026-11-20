@@ -241,7 +241,7 @@ class UserProfileModel: ObservableObject {
     /// verified, and its posts land in the wrong feed.
     static let otherSchools = ["University of California, Berkeley", "University of Michigan",
                                "Cal Poly SLO", "USC", "NYU", "DePaul", "BU",
-                               "Ohio State", "UVA", "UC Santa Barbara", "Other"]
+                               "Ohio State", "UVA", "UC Santa Barbara", "Northwestern", "Other"]
     
     // MARK: - Computed Properties
     

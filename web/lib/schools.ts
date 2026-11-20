@@ -13,6 +13,8 @@ export const SCHOOLS = [
   { slug: "ohio-state", name: "Ohio State", short: "OSU", mascot: "Buckeyes", color: "#ba0c2f", accent: "#a7b1b7", logo: "/schools/ohio-state.png" },
   { slug: "uva", name: "UVA", short: "UVA", mascot: "Cavaliers", color: "#232D4B", accent: "#E57200", logo: "/schools/uva.png" },
   { slug: "ucsb", name: "UC Santa Barbara", short: "UCSB", mascot: "Gauchos", color: "#003660", accent: "#FEBC11", logo: "/schools/ucsb.png" },
+  { slug: "bu", name: "Boston University", short: "BU", mascot: "Terriers", color: "#CC0000", accent: "#ffffff", logo: "/schools/bu.png" },
+  { slug: "northwestern", name: "Northwestern", short: "NU", mascot: "Wildcats", color: "#4E2A84", accent: "#ffffff", logo: "/schools/northwestern.png" },
 ] as const;
 
 export type School = (typeof SCHOOLS)[number];
@@ -28,6 +30,9 @@ const SCHOOL_NAMES: Record<string, string[]> = {
   "ohio-state": ["The Ohio State University", "Ohio State University", "Ohio State", "OSU"],
   uva: ["University of Virginia", "UVA", "Virginia"],
   ucsb: ["University of California, Santa Barbara", "UC Santa Barbara", "UCSB"],
+  // The app stores "BU" as an account's school.
+  bu: ["Boston University", "BU"],
+  northwestern: ["Northwestern University", "Northwestern", "NU"],
 };
 
 const normalized = (name: string) => name.toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();

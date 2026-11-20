@@ -319,12 +319,28 @@ function describeError(error: unknown): string {
 }
 
 async function safeQuery(type: string, desiredKeys?: string[]): Promise<CKRecord[]> {
-  try {
-    return await queryAll(type, 2000, desiredKeys);
-  } catch (error) {
-    // One missing or misconfigured record type shouldn't take the whole site down.
-    console.error(`[cloudkit] ${type}:`, describeError(error));
-    return [];
+  // One missing or misconfigured record type shouldn't take the whole site down.
+  return (await tryQuery(type, desiredKeys)) ?? [];
+}
+
+/** Waits between tries of a failed query: CloudKit often fails one request and answers the next. */
+const RETRY_DELAYS_MS = [400, 1200];
+
+/**
+ * Every record of a type, trying again twice if CloudKit fails. Null when it still
+ * fails, so callers can tell "none" from "couldn't load" (see getAllPosts).
+ */
+async function tryQuery(type: string, desiredKeys?: string[]): Promise<CKRecord[] | null> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await queryAll(type, 2000, desiredKeys);
+    } catch (error) {
+      if (attempt >= RETRY_DELAYS_MS.length) {
+        console.error(`[cloudkit] ${type}:`, describeError(error));
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+    }
   }
 }
 
@@ -408,18 +424,26 @@ export async function postByID(id: string): Promise<Post | undefined> {
 
 export async function getAllPosts(): Promise<{ posts: Post[]; festivalBound: Set<string>; inPlaylist: Set<string> }> {
   "use cache: remote";
-  cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag(POSTS_TAG);
 
-  const [removed, people, films, musics, reels, photos, designs] = await Promise.all([
+  const [removed, people, ...loaded] = await Promise.all([
     removedIDs(),
     profiles(),
-    safeQuery("FilmSubmission"),
-    safeQuery("MusicSubmission"),
-    safeQuery("ReelSubmission"),
-    safeQuery("PhotographySubmission"),
-    safeQuery("DesignSubmission"),
+    tryQuery("FilmSubmission"),
+    tryQuery("MusicSubmission"),
+    tryQuery("ReelSubmission"),
+    tryQuery("PhotographySubmission"),
+    tryQuery("DesignSubmission"),
   ]);
+  const [films, musics, reels, photos, designs] = loaded.map((records) => records ?? []);
+  // When CloudKit fails even after retrying, what loaded is still shown, but kept only
+  // briefly. Without the profiles every post would count as UT's (school feeds empty out),
+  // and a missing type would drop those posts from feeds and portfolios, for up to an hour.
+  if (!people.complete || loaded.some((records) => records === null)) {
+    cacheLife({ stale: 30, revalidate: 30, expire: 300 });
+  } else {
+    cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
+  }
   const ok = visible(removed);
   const festivalBound = new Set(films.filter((f) => num(f, "filmFestivalBound") === 1).map((f) => f.recordName));
   const posts = [
@@ -487,9 +511,10 @@ type Profile = {
   school?: string;
 };
 
-async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile>; duplicates: Set<string> }> {
+async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<string, Profile>; duplicates: Set<string>; complete: boolean }> {
   // Only the fields used here: profiles also hold bios, links and more that no list needs.
-  const records = await safeQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes", "school"]);
+  const loaded = await tryQuery("UserProfile", ["firstName", "lastName", "profileImage", "userTypes", "school"]);
+  const records = loaded ?? [];
   const byID = new Map<string, Profile>();
   const nameCounts = new Map<string, number>();
   const byName = new Map<string, Profile>();
@@ -518,7 +543,8 @@ async function profiles(): Promise<{ byID: Map<string, Profile>; byName: Map<str
   }
   // A name shared by two people can't pick a photo, so only unique names match.
   for (const [key, count] of nameCounts) if (count > 1) byName.delete(key);
-  return { byID, byName, duplicates };
+  // false when CloudKit couldn't list the profiles: everyone is missing, not just new.
+  return { byID, byName, duplicates, complete: loaded !== null };
 }
 
 /** A profile made on the website (UserProfile_web_<id>), not in the app. */

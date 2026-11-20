@@ -99,7 +99,17 @@ struct OnboardingSchool: Identifiable, Hashable {
                          idPlaceholder: "computing id"),
         OnboardingSchool(name: "UC Santa Barbara", shortName: "UCSB",
                          studentDomain: "ucsb.edu", facultyDomain: "ucsb.edu",
-                         idPlaceholder: "netid")
+                         idPlaceholder: "netid"),
+        // BU students and faculty both use username@bu.edu. Offered since 2026-11-19;
+        // the display name stays "BU" to match existing accounts' stored school.
+        OnboardingSchool(name: "BU", shortName: "Boston University",
+                         studentDomain: "bu.edu", facultyDomain: "bu.edu",
+                         idPlaceholder: "username"),
+        // Northwestern issues students FirstLastYear@u.northwestern.edu and
+        // faculty/staff @northwestern.edu.
+        OnboardingSchool(name: "Northwestern", shortName: "Northwestern",
+                         studentDomain: "u.northwestern.edu", facultyDomain: "northwestern.edu",
+                         idPlaceholder: "firstlastyear")
     ]
 
     /// Schools that aren't offered in onboarding but that existing accounts may
@@ -117,9 +127,6 @@ struct OnboardingSchool: Identifiable, Hashable {
                          idPlaceholder: "netid"),
         OnboardingSchool(name: "DePaul", shortName: "DePaul",
                          studentDomain: "depaul.edu", facultyDomain: "depaul.edu",
-                         idPlaceholder: "username"),
-        OnboardingSchool(name: "BU", shortName: "BU",
-                         studentDomain: "bu.edu", facultyDomain: "bu.edu",
                          idPlaceholder: "username")
     ]
 

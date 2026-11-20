@@ -15,7 +15,8 @@ INSERT OR REPLACE INTO schools (id, name, short_name, state, enabled) VALUES
     ('tamu',       'Texas A&M University',              'Texas A&M',  'TX', 1),
     ('ohio-state', 'The Ohio State University',         'Ohio State', 'OH', 1),
     ('uva',        'University of Virginia',            'UVA',        'VA', 1),
-    ('ucsb',       'University of California, Santa Barbara', 'UC Santa Barbara', 'CA', 1);
+    ('ucsb',       'University of California, Santa Barbara', 'UC Santa Barbara', 'CA', 1),
+    ('northwestern','Northwestern University',          'Northwestern','IL', 1);
 
 INSERT OR REPLACE INTO school_domains (domain, school_id, kind) VALUES
     ('utexas.edu',        'ut-austin',   'student'),
@@ -42,4 +43,8 @@ INSERT OR REPLACE INTO school_domains (domain, school_id, kind) VALUES
     ('virginia.edu',      'uva',         'student'),
     -- UCSB students and staff both use netid@ucsb.edu (older @umail.ucsb.edu
     -- addresses resolve through it via `domainCandidates`).
-    ('ucsb.edu',          'ucsb',        'student');
+    ('ucsb.edu',          'ucsb',        'student'),
+    -- Northwestern students use FirstLastYear@u.northwestern.edu; faculty and
+    -- staff use @northwestern.edu.
+    ('u.northwestern.edu','northwestern','student'),
+    ('northwestern.edu',  'northwestern','staff');
