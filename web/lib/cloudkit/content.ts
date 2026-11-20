@@ -587,10 +587,16 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     post.creatorAvatarUrl = creator?.imageUrl;
     post.creatorAvatarKey = creator?.imageKey;
     post.creatorProfileID = creator?.id ?? post.creatorProfileID;
-    // A post is on the feed of its creator's school and of every credited person's school,
-    // so a UT and USC collaboration shows on both. An unknown creator counts as UT, like the app's early posts.
+    // A post is on the feed of the school of the account that posted it, of its main
+    // credit's school and of every credited person's school, so a UT and USC collaboration
+    // shows on both. The poster always counts: a song posted under an artist name, or a film
+    // whose director has no profile, still shows at the poster's school. Only when neither
+    // the poster nor the main credit has a profile does it count as UT, like the app's early posts.
     const schools = new Set<string>();
-    const creatorSchool = schoolSlugForName(creator?.school);
+    const poster = post.makerProfileID ? people.byID.get(post.makerProfileID) : undefined;
+    const posterSchool = poster ? schoolSlugForName(poster.school) : undefined;
+    if (posterSchool) schools.add(posterSchool);
+    const creatorSchool = creator ? schoolSlugForName(creator.school) : posterSchool ?? schoolSlugForName(undefined);
     post.creatorSchoolSlug = creatorSchool;
     if (creatorSchool) schools.add(creatorSchool);
     for (const group of post.details?.creditGroups ?? []) {
