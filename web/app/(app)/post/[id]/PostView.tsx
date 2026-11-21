@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import MaskImage from "@/components/MaskImage";
 import MediaViewer from "@/components/MediaViewer";
@@ -13,6 +14,7 @@ import { feedPosts, findPost } from "@/lib/content";
 import type { Post } from "@/lib/mockContent";
 import { schoolSlugForName, type School } from "@/lib/schools";
 import { detailsFor, type Credit } from "@/lib/postDetails";
+import { studioHref } from "@/lib/studioLink";
 import PostMedia from "@/components/PostMedia";
 import Player from "@/components/Player";
 import MusicPlayer from "@/components/MusicPlayer";
@@ -161,7 +163,12 @@ export default async function PostView({ id, school }: { id: string; school?: Sc
             // The studio or organization behind the work, opposite the main credits.
             <div className="min-w-0 shrink text-right">
               <p className="text-xs uppercase tracking-wide text-muted">Org/Class</p>
-              <p className="truncate font-semibold">{d.studio}</p>
+              {/* An org or class with its own page links there. */}
+              {studioHref(d.studio) ? (
+                <Link href={studioHref(d.studio)!} className="block truncate font-semibold hover:underline">{d.studio}</Link>
+              ) : (
+                <p className="truncate font-semibold">{d.studio}</p>
+              )}
             </div>
           )}
         </div>
