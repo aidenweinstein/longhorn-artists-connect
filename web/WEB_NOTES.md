@@ -56,8 +56,7 @@ npm run dev        # http://localhost:3000
   only that list scrolls. Your school and the pages stay at the top, College Artists Connect and
   your account at the bottom.
 - NYU (2026-11-20): `nyu` in `lib/schools.ts` and `lib/signupSchools.ts` (NetID@nyu.edu, violet
-  #57068C, Violets). `public/schools/nyu.png` is a placeholder (white "NYU" on violet) until the real
-  logo is added. Already in the app's registry, colors and icons and in the verification seed; the
+  #57068C, Violets). logo `public/schools/nyu.png` (the torch on violet). Already in the app's registry, colors and icons and in the verification seed; the
   app now offers it at sign-in again.
 - Video and audio links (2026-11-20): CloudKit's download links expire, and the post list (cached
   up to an hour) and the browser's copy of a post page could hand the player a dead one, so videos
