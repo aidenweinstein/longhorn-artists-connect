@@ -634,14 +634,15 @@ function personLookup(people: Awaited<ReturnType<typeof profiles>>) {
     const linked = id ? people.byID.get(id) : undefined;
     return (linked?.name ? linked : undefined) ?? people.byName.get(nameKey(name)) ?? linked;
   };
-  // The school of a credited person: their profile's, or else the one school everyone with
-  // that name is at. A blank profile counts as UT (like the app's early accounts) only when
-  // nothing else says where the person is.
+  // The school of a credited person: their profile's (an early app account with a name but
+  // no school is UT's), or else the one school everyone with that name is at. A blank
+  // profile (no name, e.g. an app account that never filled one in) says nothing about where
+  // someone is: posts that only point at one fall back to UT in the caller, not here.
   const schoolOf = (person: Profile | undefined, name: string) => {
-    if (person?.name && person.school) return schoolSlugForName(person.school);
+    if (person?.name) return schoolSlugForName(person.school);
     const key = nameKey(name);
     if (people.schoolByName.has(key)) return schoolSlugForName(people.schoolByName.get(key));
-    return person ? schoolSlugForName(person.school) : undefined;
+    return undefined;
   };
   return { find, schoolOf };
 }
@@ -680,15 +681,14 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
     // A post is on the feed of the school of the account that posted it, of its main
     // credit's school and of every credited person's school, so a UT and USC collaboration
     // shows on both. The poster always counts: a song posted under an artist name, or a film
-    // whose director has no profile, still shows at the poster's school. Only when neither
-    // the poster nor the main credit has a profile does it count as UT, like the app's early posts.
+    // whose director has no profile, still shows at the poster's school. Only when nobody on it
+    // can be placed at a school does it count as UT, like the app's early posts.
     const schools = new Set<string>();
     const posterName = post.details?.submittedBy ?? "";
     const poster = post.makerProfileID || posterName ? find(post.makerProfileID, posterName) : undefined;
     const posterSchool = poster || posterName ? schoolOf(poster, posterName) : undefined;
     if (posterSchool) schools.add(posterSchool);
-    const creatorSchool = schoolOf(creator, post.creator) ?? posterSchool ?? schoolSlugForName(undefined);
-    post.creatorSchoolSlug = creatorSchool;
+    const creatorSchool = schoolOf(creator, post.creator) ?? posterSchool;
     if (creatorSchool) schools.add(creatorSchool);
     for (const group of post.details?.creditGroups ?? []) {
       for (const c of group.credits) {
@@ -701,6 +701,9 @@ function attachAvatars(posts: Post[], people: Awaited<ReturnType<typeof profiles
         if (school) schools.add(school);
       }
     }
+    // Nobody on it could be placed at a school: UT's, like the app's early posts.
+    if (!schools.size) schools.add(schoolSlugForName(undefined)!);
+    post.creatorSchoolSlug = creatorSchool ?? [...schools][0];
     post.schoolSlugs = [...schools];
   }
 }
