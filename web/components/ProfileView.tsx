@@ -141,12 +141,16 @@ export default function ProfileView({
       {info && <aside className="w-fit max-w-full shrink-0 empty:hidden lg:max-w-md">{info}</aside>}
       </div>
 
-      <hr className="my-8 border-border" />
-
       {posts.length > 0 ? (
         // In the person's own order and tile sizes (UserProfile.portfolioOrder / portfolioLayout).
-        <PortfolioGrid posts={sortByOrder(posts, account.portfolioOrder).map(toCard)} sizes={account.portfolioLayout} editable={canEditGrid} />
-      ) : <p className="py-12 text-center text-muted">{emptyText}</p>}
+        // The grid draws the line above itself, so your Edit grid button sits above the line.
+        <PortfolioGrid posts={sortByOrder(posts, account.portfolioOrder).map(toCard)} sizes={account.portfolioLayout} editable={canEditGrid} divider />
+      ) : (
+        <>
+          <hr className="my-8 border-border" />
+          <p className="py-12 text-center text-muted">{emptyText}</p>
+        </>
+      )}
 
       {/* Resume, filmography, songs: under the grid. */}
       {styled && <div className="mt-12 space-y-12 border-t border-border pt-8 empty:hidden">{styled}</div>}

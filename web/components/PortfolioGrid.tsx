@@ -81,8 +81,10 @@ function arrange(posts: Post[], order: string[]): Post[] {
  * With every post small, the grid is the same masonry as the rest of the site. Once
  * any post is bigger it becomes a six-column grid read across in order, where a tall
  * post (a poster) spans several rows and the next posts fill in beside it.
+ *
+ * `divider` draws the line between the profile and the grid, under the Edit grid button.
  */
-export default function PortfolioGrid({ posts, sizes, editable = false }: { posts: Post[]; sizes: TileSizes; editable?: boolean }) {
+export default function PortfolioGrid({ posts, sizes, editable = false, divider = false }: { posts: Post[]; sizes: TileSizes; editable?: boolean; divider?: boolean }) {
   const router = useRouter();
   const [layout, setLayout] = useState<Layout>(() => ({ order: posts.map((p) => p.id), sizes }));
   const [draft, setDraft] = useState<Layout | null>(null);
@@ -104,7 +106,7 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
     return (
       <>
         {editable && (
-          <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
+          <div className={`flex flex-wrap items-center justify-end gap-3 ${divider ? "mt-6" : "mb-4"}`}>
             {message && <p role="status" className={`text-sm ${message.error ? "text-red-500" : "text-muted"}`}>{message.text}</p>}
             <button
               type="button"
@@ -118,6 +120,8 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
             </button>
           </div>
         )}
+        {/* The line under the profile, with Edit grid just above it. */}
+        {divider && <hr className={`${editable ? "mt-4" : "mt-8"} mb-8 border-border`} />}
         {custom ? (
           <div ref={viewGrid} className={GRID}>
             {shown.map((p, i) => (
@@ -172,6 +176,7 @@ export default function PortfolioGrid({ posts, sizes, editable = false }: { post
 
   return (
     <div>
+      {divider && <hr className="mt-8 border-border" />}
       <div className="sticky top-0 z-10 -mx-3 mb-4 flex flex-wrap items-center gap-3 border-b border-border bg-background/95 px-3 py-3 backdrop-blur">
         <p className="mr-auto text-sm text-muted">
           Drag a post to move it, or use the arrows. Use <span aria-hidden>−</span> and <span aria-hidden>+</span> to make it smaller or bigger.
