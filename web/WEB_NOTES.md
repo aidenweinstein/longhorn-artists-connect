@@ -55,6 +55,10 @@ npm run dev        # http://localhost:3000
 - Sidebar (2026-11-19): every other school is listed under "Other Schools" (no "More" dropdown);
   only that list scrolls. Your school and the pages stay at the top, College Artists Connect and
   your account at the bottom.
+- Home feed (2026-11-20; replaces "Home shows every school's posts"): signed in, Home (and
+  /api/feed) shows only your own school's posts, picked like /school/<slug> (made or credited by
+  someone there). Guests have no school and still see every school. `FeedFilter.school` in
+  `lib/feedPage.ts`.
 - Alumni (2026-11-20): sign-up's "I'm an Alumni" takes any email plus the school they graduated
   from and a class year; sign-in has "I'm an Alumni: sign in with the email I signed up with". The
   account is "alumni_pending" (session `domainKind`, D1 and its `Verification` record) and can only
