@@ -15,6 +15,7 @@ export const SCHOOLS = [
   { slug: "ucsb", name: "UC Santa Barbara", short: "UCSB", mascot: "Gauchos", color: "#003660", accent: "#FEBC11", logo: "/schools/ucsb.png" },
   { slug: "bu", name: "Boston University", short: "BU", mascot: "Terriers", color: "#CC0000", accent: "#ffffff", logo: "/schools/bu.png" },
   { slug: "northwestern", name: "Northwestern", short: "NU", mascot: "Wildcats", color: "#4E2A84", accent: "#ffffff", logo: "/schools/northwestern.png" },
+  { slug: "nyu", name: "NYU", short: "NYU", mascot: "Violets", color: "#57068C", accent: "#ffffff", logo: "/schools/nyu.png" },
 ] as const;
 
 export type School = (typeof SCHOOLS)[number];
@@ -33,6 +34,7 @@ const SCHOOL_NAMES: Record<string, string[]> = {
   // The app stores "BU" as an account's school.
   bu: ["Boston University", "BU"],
   northwestern: ["Northwestern University", "Northwestern", "NU"],
+  nyu: ["New York University", "NYU"],
 };
 
 const normalized = (name: string) => name.toLowerCase().replace(/[^a-z0-9&]+/g, " ").trim();

@@ -78,6 +78,9 @@ export const SIGNUP_SCHOOLS: SignupSchool[] = [
   // Northwestern students use FirstLastYear@u.northwestern.edu; faculty and staff use @northwestern.edu.
   { id: "northwestern", name: "Northwestern", studentDomain: "u.northwestern.edu", educatorDomains: ["northwestern.edu"], idPlaceholder: "firstlastyear", exampleNames: [],
     color: "#4E2A84", onColor: "#ffffff", highlight: "#9A7FD1", glow: 0.85 },
+  // NYU students and faculty both use NetID@nyu.edu.
+  { id: "nyu", name: "NYU", studentDomain: "nyu.edu", educatorDomains: ["nyu.edu"], idPlaceholder: "netid", exampleNames: [],
+    color: "#57068C", onColor: "#ffffff", highlight: "#A97BD6", glow: 0.85 },
 ];
 
 export const signupSchool = (id: string | undefined | null) => SIGNUP_SCHOOLS.find((s) => s.id === id);

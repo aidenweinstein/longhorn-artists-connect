@@ -109,7 +109,12 @@ struct OnboardingSchool: Identifiable, Hashable {
         // faculty/staff @northwestern.edu.
         OnboardingSchool(name: "Northwestern", shortName: "Northwestern",
                          studentDomain: "u.northwestern.edu", facultyDomain: "northwestern.edu",
-                         idPlaceholder: "firstlastyear")
+                         idPlaceholder: "firstlastyear"),
+        // NYU students and faculty both use NetID@nyu.edu. Back on the sign-in
+        // list since 2026-11-20 (it had come off it earlier).
+        OnboardingSchool(name: "NYU", shortName: "NYU",
+                         studentDomain: "nyu.edu", facultyDomain: "nyu.edu",
+                         idPlaceholder: "netid")
     ]
 
     /// Schools that aren't offered in onboarding but that existing accounts may
@@ -122,9 +127,6 @@ struct OnboardingSchool: Identifiable, Hashable {
         OnboardingSchool(name: "University of Michigan", shortName: "UMich",
                          studentDomain: "umich.edu", facultyDomain: "umich.edu",
                          idPlaceholder: "uniqname"),
-        OnboardingSchool(name: "NYU", shortName: "NYU",
-                         studentDomain: "nyu.edu", facultyDomain: "nyu.edu",
-                         idPlaceholder: "netid"),
         OnboardingSchool(name: "DePaul", shortName: "DePaul",
                          studentDomain: "depaul.edu", facultyDomain: "depaul.edu",
                          idPlaceholder: "username")
