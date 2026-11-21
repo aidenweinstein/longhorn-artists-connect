@@ -32,7 +32,7 @@ export default function Share() {
   return (
     <div className="mx-auto w-full max-w-4xl py-6 lg:max-w-none">
       <h1 className="text-3xl font-bold">What are you sharing?</h1>
-      <p className="mt-1 text-muted">Pick a type to start a new submission.</p>
+      <p className="mt-1 text-muted">Your shared work will appear in your school&apos;s feed and on your profile grid.</p>
       {/* An alum waiting for approval sees why they can't post yet. */}
       <Suspense>
         <AlumniHoldNotice className="mt-4" />
