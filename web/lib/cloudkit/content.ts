@@ -8,7 +8,8 @@ import type { Credit, CreditGroup } from "../postDetails";
 import { imageAspect } from "./imageSize";
 import { schoolSlugForName } from "../schools";
 import { posterSource, profileImage } from "../smallImage";
-import { asset, assetChecksum, assetChecksums, assets, fileURL, fileURLs, isCloudKitConfigured, list, lookup, num, queryAll, str, type CKRecord } from "./client";
+import { mediaURL, mediaURLs } from "./media";
+import { asset, assetChecksum, assetChecksums, assets, isCloudKitConfigured, list, lookup, num, queryAll, str, type CKRecord } from "./client";
 
 /**
  * Real content from the app's public CloudKit database, mapped into the website's
@@ -88,7 +89,7 @@ function film(r: CKRecord): Post {
     ...p,
     thumbnailUrl: asset(r, "filmThumbnail", "media.jpg"),
     duration: num(r, "filmVideoDuration"),
-    videoUrl: fileURL(r, "filmVideo", "media.mp4"),
+    videoUrl: mediaURL(r, "filmVideo", "media.mp4"),
     videoCrop: str(r, "filmVideoCrop") || undefined,
     images: [...assets(r, "filmStills", "media.jpg"), ...assets(r, "filmBTS", "media.jpg")],
     imageKeys: [...assetChecksums(r, "filmStills"), ...assetChecksums(r, "filmBTS")],
@@ -101,7 +102,7 @@ function film(r: CKRecord): Post {
       logline: str(r, "filmLogline") || undefined,
       description: str(r, "filmDescription"),
       creditGroups: groups(["Cast", credits(r, "filmCast", "filmCastIDs")], ["Crew", credits(r, "filmCrew", "filmCrewIDs")]),
-      trailerUrl: fileURL(r, "filmTrailer", "media.mp4"),
+      trailerUrl: mediaURL(r, "filmTrailer", "media.mp4"),
       submittedBy: str(r, "submittedBy"),
     },
   };
@@ -110,7 +111,7 @@ function film(r: CKRecord): Post {
 function music(r: CKRecord): Post {
   const artist = str(r, "musicArtist");
   const p = base(r, "music", str(r, "musicTitle"), artist);
-  const ext = (str(r, "musicAudioExt") || "m4a").replace(/^\./, "");
+  const ext = (str(r, "musicAudioExt") || "m4a").replace(/^\./, "").toLowerCase();
   const links = [
     ["Spotify", str(r, "musicSpotifyLink")],
     ["Apple Music", str(r, "musicAppleMusicLink")],
@@ -118,16 +119,14 @@ function music(r: CKRecord): Post {
     ["YouTube Music", str(r, "youtubeMusicLink")],
     ["SoundCloud", str(r, "soundcloudLink")],
   ].filter(([, url]) => url) as [string, string][];
-  const audioUrl = fileURL(r, "musicAudio", `media.${ext}`);
+  const audioUrl = mediaURL(r, "musicAudio", `media.${ext}`);
   // EP/Album tracks after the first, saved by the app as a parallel asset + extension list.
   const exts = list(r, "musicTrackExts");
   // Big website uploads keep R2 links instead (musicTracksURLs), already named with their extension.
   const trackLinks = list(r, "musicTracksURLs");
   const extra = trackLinks.length
-    ? fileURLs(r, "musicTracks", "media.m4a")
-    : ((r.fields["musicTracks"]?.value as { downloadURL?: string }[] | undefined) ?? []).flatMap((a, i) =>
-        a?.downloadURL ? [a.downloadURL.replace("${f}", `media.${(exts[i] || "m4a").replace(/^\./, "")}`)] : [],
-      );
+    ? mediaURLs(r, "musicTracks", "media.m4a")
+    : mediaURLs(r, "musicTracks", (i) => `media.${(exts[i] || "m4a").replace(/^\./, "").toLowerCase()}`);
   const tracks = audioUrl && extra.length ? [audioUrl, ...extra] : undefined;
   return {
     ...p,
@@ -135,7 +134,7 @@ function music(r: CKRecord): Post {
     duration: num(r, "musicAudioDuration"),
     audioUrl,
     tracks,
-    videoUrl: fileURL(r, "musicVideo", "media.mp4"),
+    videoUrl: mediaURL(r, "musicVideo", "media.mp4"),
     details: {
       byline: artist || undefined,
       genres: list(r, "musicGenres"),
@@ -155,9 +154,9 @@ function reel(r: CKRecord): Post {
   const artist = str(r, "reelArtist");
   const p = base(r, "performance", str(r, "reelTitle"), artist);
   const featured = [...list(r, "featuredWorkManual")];
-  const videoUrl = fileURL(r, "reelVideo", "media.mp4");
+  const videoUrl = mediaURL(r, "reelVideo", "media.mp4");
   // A showcase's videos after the first (website posts), with one title per video in reelVideoTitles.
-  const extra = fileURLs(r, "reelVideos", "media.mp4");
+  const extra = mediaURLs(r, "reelVideos", "media.mp4");
   const titles = list(r, "reelVideoTitles");
   const playlistIDs = list(r, "reelPlaylistPostIDs");
   // Per uploaded video: its own thumbnail and who's in it, when saved for every video.
@@ -243,7 +242,7 @@ function design(r: CKRecord): Post {
     duration: num(r, "designVideoDuration"),
     images,
     imageKeys: assetChecksums(r, "designImages"),
-    videoUrl: fileURL(r, "designVideo", "media.mp4"),
+    videoUrl: mediaURL(r, "designVideo", "media.mp4"),
     videoCrop: str(r, "designVideoCrop") || undefined,
     details: {
       genres: [],

@@ -55,6 +55,11 @@ npm run dev        # http://localhost:3000
 - Sidebar (2026-11-19): every other school is listed under "Other Schools" (no "More" dropdown);
   only that list scrolls. Your school and the pages stay at the top, College Artists Connect and
   your account at the bottom.
+- Video and audio links (2026-11-20): CloudKit's download links expire, and the post list (cached
+  up to an hour) and the browser's copy of a post page could hand the player a dead one, so videos
+  often only played after a reload. Post video/audio now point at `/media/<post>/<field>/<i>/media.mp4`
+  (`lib/cloudkit/media.ts`, `app/media/.../route.ts`), which looks up the current link (kept a
+  minute) and redirects to it. R2 uploads keep their permanent links.
 - Sidebar school order (2026-11-20): Other Schools (or Schools, for a guest) are sorted by how many
   posts are on each school's feed, most first; ties keep the `SCHOOLS` order (`VisitorOtherSchools`).
 - Home feed (2026-11-20; replaces "Home shows every school's posts"): signed in, Home (and
