@@ -55,6 +55,8 @@ npm run dev        # http://localhost:3000
 - Sidebar (2026-11-19): every other school is listed under "Other Schools" (no "More" dropdown);
   only that list scrolls. Your school and the pages stay at the top, College Artists Connect and
   your account at the bottom.
+- Sidebar school order (2026-11-20): Other Schools (or Schools, for a guest) are sorted by how many
+  posts are on each school's feed, most first; ties keep the `SCHOOLS` order (`VisitorOtherSchools`).
 - Home feed (2026-11-20; replaces "Home shows every school's posts"): signed in, Home (and
   /api/feed) shows only your own school's posts, picked like /school/<slug> (made or credited by
   someone there). Guests have no school and still see every school. `FeedFilter.school` in

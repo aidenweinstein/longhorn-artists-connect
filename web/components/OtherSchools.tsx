@@ -8,11 +8,16 @@ import { LABEL } from "./Sidebar";
 /**
  * The sidebar's other schools: every school but yours (`mine`), which sits on its own
  * at the top of the sidebar. A guest has no school (`mine` null) and sees them all. A Berkeley student sees UT Austin here, not Berkeley.
- * All of them are listed; there's no "More" dropdown.
+ * All of them are listed; there's no "More" dropdown. `order` (school slugs, most posts
+ * first) sets the order; without it they're in the usual order.
  */
-export default function OtherSchools({ mine, heading }: { mine: string | null; heading?: string }) {
+export default function OtherSchools({ mine, heading, order }: { mine: string | null; heading?: string; order?: string[] }) {
   const viewing = schoolForPath(usePathname());
-  const schools = SCHOOLS.filter((s) => s.slug !== mine);
+  const rank = (slug: string) => {
+    const i = order?.indexOf(slug) ?? -1;
+    return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+  };
+  const schools = SCHOOLS.filter((s) => s.slug !== mine).sort((a, b) => rank(a.slug) - rank(b.slug));
   if (!schools.length) return null;
   return (
     <div className="flex flex-col gap-0.5">

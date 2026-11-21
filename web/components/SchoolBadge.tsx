@@ -1,5 +1,6 @@
 import { currentSession } from "@/lib/account";
-import { schoolForID } from "@/lib/schools";
+import { feedPosts } from "@/lib/content";
+import { SCHOOLS, schoolForID, schoolSlugForName } from "@/lib/schools";
 import OtherSchools from "./OtherSchools";
 import SchoolBadgeLink from "./SchoolBadgeLink";
 
@@ -17,7 +18,7 @@ export function SchoolBadgePlaceholder() {
 /**
  * Your school's logo and name, at the top of the sidebar above the five main pages.
  * It's the school you signed in with. Guests get none (see VisitorOtherSchools).
- * Opens that school's own feed, with only its posts (Home has every school's).
+ * Opens that school's own feed, with only its posts (the same posts as Home).
  */
 export default async function SchoolBadge() {
   const session = await currentSession();
@@ -36,12 +37,33 @@ export default async function SchoolBadge() {
 }
 
 /**
+ * Every school's slug, the one with the most posts on its feed first (counted the way
+ * /school/<slug> picks them: made or credited by someone there). Ties keep the usual order.
+ */
+async function schoolsByPosts(): Promise<string[]> {
+  const counts = new Map<string, number>();
+  try {
+    for (const post of await feedPosts()) {
+      for (const slug of new Set(post.schoolSlugs ?? [schoolSlugForName(post.school)])) {
+        if (slug) counts.set(slug, (counts.get(slug) ?? 0) + 1);
+      }
+    }
+  } catch (error) {
+    // Couldn't load the posts: the usual order.
+    console.error("[sidebar] school order:", error instanceof Error ? error.message : error);
+  }
+  return SCHOOLS.map((s, i) => ({ slug: s.slug, n: counts.get(s.slug) ?? 0, i }))
+    .sort((a, b) => b.n - a.n || a.i - b.i)
+    .map((s) => s.slug);
+}
+
+/**
  * The sidebar's other schools: all but the visitor's own (the home school when signed out).
- * Every one is listed, under "Other Schools".
+ * Every one is listed, under "Other Schools", the school with the most posts first.
  */
 export async function VisitorOtherSchools() {
-  const session = await currentSession();
+  const [session, order] = await Promise.all([currentSession(), schoolsByPosts()]);
   // Guests have no school of their own, so every school is listed, under "Schools".
-  if (!session) return <OtherSchools mine={null} heading="Schools" />;
-  return <OtherSchools mine={schoolForID(session.schoolID).slug} heading="Other Schools" />;
+  if (!session) return <OtherSchools mine={null} heading="Schools" order={order} />;
+  return <OtherSchools mine={schoolForID(session.schoolID).slug} heading="Other Schools" order={order} />;
 }
