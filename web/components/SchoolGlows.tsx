@@ -10,20 +10,22 @@ import { useState } from "react";
  * Drawn as soft radial gradients, not as blurred circles: with
  * `filter: blur`, browsers left an unlit black box behind the buttons on top of a glow.
  */
+// Sized by the wider of the screen's height and width, so on a wide screen too the glows
+// reach the middle and blend into each other instead of sitting apart in the corners.
 const glow = (rgb: string, strength: number, at: string) =>
-  `radial-gradient(circle 60vh at ${at}, rgba(${rgb}, ${strength}) 0%, rgba(${rgb}, ${strength * 0.55}) 40%, rgba(${rgb}, 0) 100%)`;
+  `radial-gradient(circle max(80vh, 58vw) at ${at}, rgba(${rgb}, ${strength}) 0%, rgba(${rgb}, ${(strength * 0.6).toFixed(3)}) 45%, rgba(${rgb}, 0) 100%)`;
 
-const TOP = "50% 6%";
-const BOTTOM_LEFT = "13vh 94%";
-const BOTTOM_RIGHT = "calc(100% - 13vh) 94%";
+const TOP = "50% 0%";
+const BOTTOM_LEFT = "0% 100%";
+const BOTTOM_RIGHT = "100% 100%";
 
 const ALL_SCHOOLS = [
   // UT Austin burnt orange, top center.
-  glow("191, 87, 0", 0.3, TOP),
+  glow("191, 87, 0", 0.42, TOP),
   // UC Berkeley blue, bottom left. Berkeley Blue is dark, so it needs more strength to read on black.
-  glow("0, 50, 98", 0.8, BOTTOM_LEFT),
+  glow("0, 50, 98", 1, BOTTOM_LEFT),
   // USC cardinal, bottom right.
-  glow("153, 0, 0", 0.45, BOTTOM_RIGHT),
+  glow("153, 0, 0", 0.75, BOTTOM_RIGHT),
 ].join(", ");
 
 /** "#bf5700" -> "191, 87, 0" */
