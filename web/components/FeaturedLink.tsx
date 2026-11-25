@@ -5,8 +5,7 @@ import { usePathname } from "next/navigation";
 import { LABEL } from "./Sidebar";
 
 /**
- * Featured, at the very top of the sidebar above Home: the Nexus graph icon (the app's
- * icon), opening /featured, the page admins pick from Manage. Signed-in visitors only.
+ * Featured, at the very top of the sidebar above Home: the white Nexus graph icon, opening /featured, the page admins pick from Manage. Signed-in visitors only.
  */
 export default function FeaturedLink() {
   const pathname = usePathname();
@@ -24,8 +23,12 @@ export default function FeaturedLink() {
         aria-hidden
         className={`absolute -left-2 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-brand transition-opacity ${selected ? "opacity-100" : "opacity-0"}`}
       />
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src="/brand/nexus-icon.png" alt="" className="h-7 w-7 shrink-0 rounded-full object-cover" />
+      {/* The plain graph icon, tinted like the other page icons (gray, or the school color when selected). */}
+      <span
+        aria-hidden
+        className="h-7 w-7 shrink-0 bg-current"
+        style={{ mask: "url(/brand/nexus-graph.png) center / contain no-repeat", WebkitMask: "url(/brand/nexus-graph.png) center / contain no-repeat" }}
+      />
       <span className={LABEL}>Featured</span>
     </Link>
   );
