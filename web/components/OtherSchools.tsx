@@ -22,7 +22,7 @@ export default function OtherSchools({ mine, heading, order }: { mine: string | 
   return (
     <div className="flex flex-col gap-0.5">
       {heading && (
-        <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
+        <p className="mb-0 h-0 overflow-hidden whitespace-nowrap px-3 text-[11px] font-semibold uppercase leading-4 tracking-wider text-muted opacity-0 transition-all duration-150 group-data-[open=true]/nav:mb-1 group-data-[open=true]/nav:h-4 group-data-[open=true]/nav:opacity-100">
           {heading}
         </p>
       )}

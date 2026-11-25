@@ -21,7 +21,7 @@ export default async function VisitorPages() {
     <>
       {/* Your school's name heads the pages, styled like "Other Schools" (shown while the bar is open). */}
       <div className="mt-2 border-t border-border pt-3">
-        <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
+        <p className="mb-0 h-0 overflow-hidden whitespace-nowrap px-3 text-[11px] font-semibold uppercase leading-4 tracking-wider text-muted opacity-0 transition-all duration-150 group-data-[open=true]/nav:mb-1 group-data-[open=true]/nav:h-4 group-data-[open=true]/nav:opacity-100">
           {school.name}
         </p>
       </div>
