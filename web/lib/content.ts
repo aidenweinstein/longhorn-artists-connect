@@ -8,12 +8,13 @@ import { POSTS, type Post } from "./mockContent";
 /** Real posts from CloudKit; empty when it isn't configured. */
 export async function feedPosts(): Promise<Post[]> {
   if (!isCloudKitConfigured()) return POSTS;
-  const { posts, festivalBound, inPlaylist } = await getAllPosts();
+  const { posts, inPlaylist } = await getAllPosts();
   // Posts inside a playlist show only there, not on their own in the feeds.
-  return posts.filter((p) => !festivalBound.has(p.id) && !inPlaylist.has(p.id));
+  // Festival-bound films show and play like any other post on the website.
+  return posts.filter((p) => !inPlaylist.has(p.id));
 }
 
-/** Any post by ID, including festival-bound films (reachable directly, as in the app). */
+/** Any post by ID. */
 export async function findPost(id: string): Promise<Post | undefined> {
   const sample = findSamplePost(id);
   if (sample) return sample;

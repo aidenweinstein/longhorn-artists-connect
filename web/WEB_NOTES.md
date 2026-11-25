@@ -17,7 +17,7 @@ npm run dev        # http://localhost:3000
   `CLOUDKIT_PRIVATE_KEY` instead.
 - `lib/cloudkit/client.ts` signs requests; `lib/cloudkit/content.ts` maps records to
   the site's shapes. Same rules as the app: approved only, ModerationAction removals
-  hidden, festival-bound films kept off the feed. Cached ~5 min.
+  hidden; festival-bound films show and play like any other post (website only: the app shows "Coming Soon"). Cached ~5 min.
 - Field names were read from the app code in this clone. Fields added to the app since
   this clone won't appear until they're added to `content.ts`.
 - Thumbnails' real aspect ratios are read from the image bytes (`imageSize.ts`); content
