@@ -18,8 +18,8 @@ export const LABEL = "whitespace-nowrap leading-tight opacity-0 transition-opaci
 
 /**
  * `account` is the server-rendered Sign in button, or "Signed in as" once signed in.
- * `school` is the server-rendered badge for the visitor's school (SchoolBadge), above the
- * main pages; `pages` is the main pages themselves (VisitorPages: all five, or only Home
+ * `school` is the slot above the main pages: Featured (VisitorFeatured), signed in only;
+ * Home shows your school's logo as its icon; `pages` is the main pages themselves (VisitorPages: all five, or only Home
  * for a guest); `otherSchools` is every other school (OtherSchools) with its heading
  * ("Other Schools", or "Schools" for a guest, who sees every school). A guest has no school of their own, so
  * `school` is empty for them and Home sits at the top. Only the schools scroll: the
@@ -109,15 +109,20 @@ export default function Sidebar({ account, school, pages, otherSchools }: { acco
  * addresses: a guest gets just Home (see VisitorPages). Without `pathname` it reads the
  * address itself, so render it inside <Suspense>; the fallback passes `pathname={null}`.
  */
-export function SidebarPages({ only, pathname: given }: { only?: readonly string[]; pathname?: string | null }) {
-  return given === undefined ? <CurrentSidebarPages only={only} /> : <SidebarPagesView only={only} pathname={given} />;
+export function SidebarPages({ only, pathname: given, homeLogo }: { only?: readonly string[]; pathname?: string | null; homeLogo?: string }) {
+  return given === undefined ? (
+    <CurrentSidebarPages only={only} homeLogo={homeLogo} />
+  ) : (
+    <SidebarPagesView only={only} pathname={given} homeLogo={homeLogo} />
+  );
 }
 
-function CurrentSidebarPages({ only }: { only?: readonly string[] }) {
-  return <SidebarPagesView only={only} pathname={usePathname()} />;
+function CurrentSidebarPages({ only, homeLogo }: { only?: readonly string[]; homeLogo?: string }) {
+  return <SidebarPagesView only={only} pathname={usePathname()} homeLogo={homeLogo} />;
 }
 
-function SidebarPagesView({ only, pathname: current }: { only?: readonly string[]; pathname: string | null }) {
+/** `homeLogo`: your school's logo, shown as Home's icon when signed in (Home is your school's feed). */
+function SidebarPagesView({ only, pathname: current, homeLogo }: { only?: readonly string[]; pathname: string | null; homeLogo?: string }) {
   // `null` while the address is still streaming in: nothing is highlighted yet.
   const known = current !== null;
   const pathname = current ?? "";
@@ -148,7 +153,12 @@ function SidebarPagesView({ only, pathname: current }: { only?: readonly string[
               selected ? "opacity-100" : "opacity-0"
             }`}
           />
-          <PageGlyph icon={page.icon} className="h-7 w-7 shrink-0" />
+          {page.href === "/" && homeLogo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={homeLogo} alt="" className="h-7 w-7 shrink-0 rounded-full object-cover" />
+          ) : (
+            <PageGlyph icon={page.icon} className="h-7 w-7 shrink-0" />
+          )}
           <span className={LABEL}>{page.label}</span>
         </Link>
       );

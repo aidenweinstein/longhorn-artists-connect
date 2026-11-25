@@ -3,9 +3,9 @@ import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import PortfolioBarActions from "@/components/PortfolioBarActions";
 import AccountLink, { AccountPlaceholder } from "@/components/AccountLink";
-import SchoolBadge, { SchoolBadgePlaceholder, VisitorOtherSchools } from "@/components/SchoolBadge";
+import { VisitorOtherSchools } from "@/components/SchoolBadge";
 import SchoolTheme from "@/components/SchoolTheme";
-import VisitorPages, { VisitorPagesPlaceholder } from "@/components/VisitorPages";
+import VisitorPages, { VisitorFeatured, VisitorPagesPlaceholder } from "@/components/VisitorPages";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -29,8 +29,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <div className="flex min-h-0 flex-1">
         <Sidebar
           school={
-            <Suspense fallback={<SchoolBadgePlaceholder />}>
-              <SchoolBadge />
+            // Featured (Nexus graph icon), above Home, which wears your school's logo.
+            <Suspense>
+              <VisitorFeatured />
             </Suspense>
           }
           pages={
