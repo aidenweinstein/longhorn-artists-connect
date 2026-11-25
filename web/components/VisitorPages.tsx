@@ -15,7 +15,19 @@ export function VisitorPagesPlaceholder() {
 export default async function VisitorPages() {
   const session = await currentSession();
   // Signed in, Home is your school's feed, so it wears your school's logo.
-  return session ? <SidebarPages homeLogo={schoolForID(session.schoolID).logo} /> : <SidebarPages only={GUEST_PAGES} />;
+  if (!session) return <SidebarPages only={GUEST_PAGES} />;
+  const school = schoolForID(session.schoolID);
+  return (
+    <>
+      {/* Your school's name heads the pages, styled like "Other Schools" (shown while the bar is open). */}
+      <div className="mt-2 border-t border-border pt-3">
+        <p className="mb-1 h-4 whitespace-nowrap px-3 text-[11px] font-semibold uppercase tracking-wider text-muted opacity-0 transition-opacity group-data-[open=true]/nav:opacity-100">
+          {school.name}
+        </p>
+      </div>
+      <SidebarPages homeLogo={school.logo} />
+    </>
+  );
 }
 
 /** Featured (the Nexus graph icon) above Home, for signed-in visitors; guests only get Home. */
